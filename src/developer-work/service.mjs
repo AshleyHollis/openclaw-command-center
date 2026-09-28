@@ -84,7 +84,7 @@ function recordActivity(metadata, producerId, event) {
   });
 }
 
-export function createDeveloperWorkService({ metadata, attention, devBaseUrl } = {}) {
+export function createDeveloperWorkService({ metadata, attention, devBaseUrl, now = () => Date.now() } = {}) {
   if (!metadata?.acceptDeveloperEvent || !metadata?.listPendingDeveloperEvents || !attention?.registerSourceCapability || !attention?.ingest) throw new TypeError('Developer Work requires durable metadata and Attention owners.');
   if (devBaseUrl !== undefined) developerHandoffUrl(devBaseUrl, 'work', 'request');
   let closed = false;
@@ -151,7 +151,7 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl } =
   async function accept({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
     if (closed) throw new Error('Developer Work service is closed.');
     const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
-    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent });
+    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, acceptedAt: new Date(now()).toISOString() });
     // Acknowledgement means durable receipt, even when the separate projection
     // transaction must be retried during the next drain/startup.
     try { await drain(); } catch { /* receipt remains visibly pending */ }

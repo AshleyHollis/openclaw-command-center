@@ -14,6 +14,7 @@ const authority = { producerId: 'fictional-code', role: 'worker', allowedProject
 const session = { agentId: 'fictional-agent', sessionKey: 'agent:fictional-agent:main', sessionId: 'fictional-incarnation', lifecycleRevision: 'revision-one' };
 const target = { schemaVersion: 1, workId: 'fictional-work', requestId: 'fictional-request' };
 const capabilities = { notes: false, sessions: false, scheduler: false, activity: true, analysis: false, attention: true, search: false };
+const admittedSubmit = (metadata, input) => metadata.submitDeveloperWork({ ...input, assertSourceCurrent: expected => assert.deepEqual(expected, session) });
 
 function draft(expiresAt) {
   return { schemaVersion: 1, workId: target.workId, eventType: 'feature_ready_for_review',
@@ -82,7 +83,7 @@ test('companion issues a credential-free native Chat target only after durable e
     companion = makeCompanion();
     assert.equal(companion.submit, undefined, 'an RPC-only companion cannot submit source-bound work');
     assert.equal((await companion.chatTarget(target)).reason, 'request-missing');
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('2026-09-28T11:00:00Z') });
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('2026-09-28T11:00:00Z') });
     companion.close(); metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities });
     companion = makeCompanion();
@@ -106,7 +107,7 @@ test('companion issues a credential-free native Chat target only after durable e
     assert.equal((await pending).reason, 'request-expired');
     clock = Date.parse('2026-09-28T10:30:00Z');
     // A withdrawn request must never acquire a Chat target, even when its session survives.
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: {
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: {
       ...draft(), eventType: 'request_withdrawn', request: { ...draft().request, expectedRequestRevision: 1 },
       outcome: { code: 'withdrawn', requestId: target.requestId }
     } });
@@ -146,7 +147,7 @@ test('sealed library prepares the fixed ledger before admission and exposes no s
     assert.equal(companion.reconcile({ logicalOperationId, draft: evidence }), null, 'absence does not execute');
     const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
     let committed;
-    try { committed = metadata.submitDeveloperWork({ authority, logicalOperationId, draft: evidence }); }
+    try { committed = admittedSubmit(metadata, { authority, logicalOperationId, draft: evidence }); }
     finally { metadata.close(); }
     assert.deepEqual(companion.reconcile({ logicalOperationId, draft: evidence }), committed);
     assert.throws(() => companion.reconcile({ logicalOperationId, draft: { ...evidence, workId: 'different' } }), { code: 'developer-producer-conflict' });

@@ -8,6 +8,7 @@ const staleReasons = Object.freeze({
   'request-missing': 'That waiting request is no longer available.',
   'request-ended': 'That waiting request has ended.',
   'request-changed': 'That waiting request changed while it was being checked.',
+  'request-expired': 'That waiting request expired. Open current work to find an active request.',
   'session-binding-missing': 'The request has no exact DEV session binding.',
   'session-replaced': 'The DEV session was reset, replaced, or removed.',
   'session-read-unavailable': 'The DEV session could not be checked right now.'
@@ -50,8 +51,9 @@ export function mountDeveloperWorkPage(container, context) {
           const checked = unwrap(await host.request('command-center.v1.developer-work.resolve', target()));
           if (!current(pending)) return;
           if (!boundReady(checked) || checked.workId !== result.workId || checked.requestId !== result.requestId || checked.requestRevision !== result.requestRevision || checked.agentId !== result.agentId || checked.sessionKey !== result.sessionKey || checked.sessionId !== result.sessionId || checked.lifecycleRevision !== result.lifecycleRevision) {
-            render({ schemaVersion: 1, status: 'stale', reason: checked?.status === 'ready' && !boundReady(checked) ? 'session-binding-missing' : 'request-changed', workId: result.workId, requestId: result.requestId }, pending);
-            report('The exact DEV context changed. Choose a current request separately.');
+            const reason = checked?.status === 'stale' && checked.reason === 'request-expired' ? 'request-expired' : checked?.status === 'ready' && !boundReady(checked) ? 'session-binding-missing' : 'request-changed';
+            render({ schemaVersion: 1, status: 'stale', reason, workId: result.workId, requestId: result.requestId }, pending);
+            report(reason === 'request-expired' ? staleReasons[reason] : 'The exact DEV context changed. Choose a current request separately.');
             return;
           }
           host.sessions.openChat({ sessionKey: checked.sessionKey, agentId: checked.agentId });

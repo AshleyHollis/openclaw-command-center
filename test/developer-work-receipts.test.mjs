@@ -83,6 +83,26 @@ test('delivery watermark is monotonic across duplicate receipts and waits for co
   } finally { db.close(); }
 });
 
+test('receiver refuses an already expired request atomically, but preserves exact receipt replay', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
+  const metadata = owner(db);
+  const original = event(1, randomUUID(), 'review-expiring');
+  const expiring = normalizeDeveloperEvent({ ...original, request: { ...original.request, expiresAt: '2026-09-26T10:01:00Z' } }, authority);
+  try {
+    for (const acceptedAt of ['2026-09-26T10:01:00Z', '2026-09-26T10:01:01Z']) {
+      assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, acceptedAt }), { code: 'developer-request-expired' });
+      for (const table of ['developer_work_cursors', 'developer_work_requests', 'developer_work_receipts', 'developer_work_watermarks']) assert.equal(db.prepare('SELECT count(*) AS count FROM ' + table).get().count, 0, table);
+    }
+    const accepted = metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, acceptedAt: '2026-09-26T10:00:59Z' });
+    assert.equal(accepted.workRevision, 1);
+    assert.equal(metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, acceptedAt: '2026-09-26T10:01:01Z' }).duplicate, true, 'already accepted evidence remains replayable');
+    assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: { ...expiring, occurredAt: '2026-09-26T10:00:01Z' }, acceptedAt: '2026-09-26T10:01:01Z' }), { code: 'developer-event-conflict' });
+    assert.equal(db.prepare('SELECT count(*) AS count FROM developer_work_receipts').get().count, 1);
+  } finally { db.close(); }
+});
+
 test('a deployment has one durable incident identity across outcome updates', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');

@@ -50,12 +50,12 @@ test('a queued request followed by its resolution produces no push after the ann
 
 for (const quietDrain of [false, true]) test(`expired Developer Work request stays visible but cannot push (quiet drain: ${quietDrain})`, async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-notification-expiry-'));
-  const initial = quietDrain ? '2026-09-26T23:00:00.000Z' : '2026-09-26T10:00:00.000Z';
+  const initial = quietDrain ? '2026-09-26T23:00:00.000Z' : '2026-09-26T08:00:00.000Z';
   let clock = Date.parse(initial);
   const expiresAt = quietDrain ? '2026-09-26T23:30:00.000Z' : '2026-09-26T09:00:00.000Z';
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { activity: true, attention: true } });
   const attention = createAttentionService({ metadata, now: () => new Date(clock).toISOString() });
-  const developer = createDeveloperWorkService({ metadata, attention });
+  const developer = createDeveloperWorkService({ metadata, attention, now: () => clock });
   const candidates = [];
   const notification = createNotificationService({ metadata, attentionService: attention, now: () => clock,
     emitter: { async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } } });
@@ -64,6 +64,7 @@ for (const quietDrain of [false, true]) test(`expired Developer Work request sta
     const episode = attention.allEpisodes()[0];
     assert.equal(episode.state, 'Active');
     assert.equal(episode.evidenceFacts.requestExpiresAt, expiresAt);
+    if (!quietDrain) clock = Date.parse('2026-09-26T10:00:00.000Z');
     await notification.reconcile();
     assert.equal(candidates.length, 0);
     if (quietDrain) {

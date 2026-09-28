@@ -13,6 +13,8 @@ import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 const authority = { producerId: 'sample-dev', role: 'worker', allowedProjects: ['sample-project'] };
 const session = { agentId: 'sample-agent', sessionKey: 'agent:sample-agent:main', sessionId: 'session-1', lifecycleRevision: 'lifecycle-1' };
 const capabilities = { notes: false, sessions: false, scheduler: false, activity: true, analysis: false, attention: true, search: false };
+// Fictional test admission: only an exact fixture session may be committed.
+const admittedSubmit = (metadata, input) => metadata.submitDeveloperWork({ ...input, assertSourceCurrent: input.assertSourceCurrent ?? (expected => assert.deepEqual(expected, session)) });
 
 test('DEV resolver is a closed operator.read bridge command', async () => {
   const method = 'command-center.v1.developer-work.resolve';
@@ -40,17 +42,17 @@ test('DEV owner assigns one durable event per operation and preserves request in
     let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
     const operationId = randomUUID();
     const firstDraft = draft('review-a');
-    const first = metadata.submitDeveloperWork({ authority, logicalOperationId: operationId, draft: firstDraft });
+    const first = admittedSubmit(metadata, { authority, logicalOperationId: operationId, draft: firstDraft });
     assert.equal(first.workRevision, 1);
     assert.equal(first.deliveryState, 'pending');
-    assert.deepEqual(metadata.submitDeveloperWork({ authority, logicalOperationId: operationId, draft: firstDraft }), first);
-    assert.throws(() => metadata.submitDeveloperWork({ authority, logicalOperationId: operationId, draft: { ...firstDraft, occurredAt: '2026-09-26T10:00:01.000Z' } }), { code: 'developer-producer-conflict' });
-    const second = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
-    const resolved = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
+    assert.deepEqual(admittedSubmit(metadata, { authority, logicalOperationId: operationId, draft: firstDraft }), first);
+    assert.throws(() => admittedSubmit(metadata, { authority, logicalOperationId: operationId, draft: { ...firstDraft, occurredAt: '2026-09-26T10:00:01.000Z' } }), { code: 'developer-producer-conflict' });
+    const second = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
+    const resolved = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
     assert.deepEqual([second.workRevision, resolved.workRevision], [2, 3]);
     assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: 'feature-1', requestId: 'review-a' }).state, 'resolved');
     assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: 'feature-1', requestId: 'review-b' }).state, 'active');
-    assert.throws(() => metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1) }), { code: 'developer-request-stale' });
+    assert.throws(() => admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1) }), { code: 'developer-request-stale' });
     metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities });
     try {
@@ -93,6 +95,35 @@ test('producer rejects asynchronous source checks before any durable event, requ
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('metadata owner refuses absent, stale and negative source admission without writes, but replays exact intent', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
+  let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  const evidence = draft('review-a');
+  const logicalOperationId = randomUUID();
+  const snapshot = () => ({
+    operation: metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId }) ?? null,
+    request: metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: evidence.workId, requestId: evidence.request.requestId }),
+    outbox: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId })
+  });
+  try {
+    const input = { authority, logicalOperationId, draft: evidence };
+    assert.throws(() => metadata.submitDeveloperWork(input), { code: 'source-admission-required' });
+    assert.deepEqual(snapshot(), { operation: null, request: null, outbox: [] });
+    for (const assertSourceCurrent of [() => { throw Object.assign(new Error('replaced'), { code: 'session-stale' }); }, () => false]) {
+      assert.throws(() => metadata.submitDeveloperWork({ ...input, assertSourceCurrent }));
+      assert.deepEqual(snapshot(), { operation: null, request: null, outbox: [] });
+    }
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    const first = metadata.submitDeveloperWork({ ...input, assertSourceCurrent: expected => { assert.deepEqual(expected, session); } });
+    assert.equal(first.workRevision, 1, 'no rejected admission advanced the cursor');
+    assert.deepEqual(metadata.submitDeveloperWork(input), first, 'lost reply replays without rechecking a now-unavailable source');
+    assert.throws(() => metadata.submitDeveloperWork({ ...input, draft: { ...evidence, occurredAt: '2026-09-26T10:00:01Z' } }), { code: 'developer-producer-conflict' });
+    assert.deepEqual(snapshot().outbox.map(row => row.eventId), [first.eventId]);
+    assert.equal(metadata.submitDeveloperWork({ ...input, logicalOperationId: randomUUID(), draft: draft('review-b'), assertSourceCurrent: () => {} }).workRevision, 2);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('controller producer keeps one incident per deployment and rejects changed identity', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
@@ -103,7 +134,7 @@ test('controller producer keeps one incident per deployment and rejects changed 
     request: { requestId, kind: 'deployment-incident', expectedRequestRevision, summary: 'Deployment needs review' },
     outcome: { code, deploymentId }
   });
-  const submit = draft => metadata.submitDeveloperWork({ authority: controller, logicalOperationId: randomUUID(), draft });
+  const submit = draft => admittedSubmit(metadata, { authority: controller, logicalOperationId: randomUUID(), draft });
   try {
     submit(incident('production_deployment_failed', 'incident-1', 'deployment-1', 0, 'failed'));
     assert.throws(() => submit(incident('production_rollback', 'incident-1', 'deployment-2', 1, 'rolled-back')), { code: 'developer-request-conflict' });
@@ -124,7 +155,7 @@ test('DEV resolver checks exact session incarnation and request state at readbac
   const calls = [];
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: async input => { calls.push(input); duringRead(); return entry; }, now: () => clock, receiver: { send: async () => { throw new Error('receiver unavailable'); } } });
   try {
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
     const ready = await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' });
     assert.equal(ready.status, 'ready');
     assert.equal(ready.sessionKey, session.sessionKey);
@@ -143,13 +174,13 @@ test('DEV resolver checks exact session incarnation and request state at readbac
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
     const currentWork = await producer.resolve({ schemaVersion: 1, workId: 'feature-1' });
     assert.deepEqual(currentWork.requests.map(row => row.requestId), ['review-a']);
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'request-ended');
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1' })).requests, []);
     entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision };
     const expiresAt = '2026-09-26T10:01:00Z';
     const expiring = draft('review-expiring');
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: { ...expiring, request: { ...expiring.request, expiresAt } } });
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: { ...expiring, request: { ...expiring.request, expiresAt } } });
     const target = { schemaVersion: 1, workId: 'feature-1', requestId: 'review-expiring' };
     assert.equal((await producer.resolve(target)).status, 'ready');
     duringRead = () => { clock = Date.parse(expiresAt); };
@@ -176,9 +207,9 @@ test('lost receiver reply leaves the same event pending and blocks its successor
   const operations = new Map();
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver, now: () => clock });
   try {
-    const first = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+    const first = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
     operations.set(first.eventId, first.logicalOperationId);
-    const second = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
+    const second = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
     operations.set(second.eventId, second.logicalOperationId);
     const firstFlush = await producer.flush();
     assert.equal(firstFlush.delivered, 0);
@@ -200,8 +231,8 @@ test('lost receiver reply leaves the same event pending and blocks its successor
 test('authentication refusal pauses durable delivery across restart without retrying later revisions', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-pause-'));
   let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
-  const first = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
-  metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
+  const first = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+  admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
   let calls = 0;
   let reject = true;
   const receiver = { async send(event) {
@@ -252,14 +283,14 @@ test('a delivery pass freezes its per-work watermark before awaiting the receive
     sent.push({ eventId: event.eventId, watermark: options.watermark });
     if (appendResolution) {
       appendResolution = false;
-      metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
+      admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
     }
     const row = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).find(item => item.eventId === event.eventId);
     return { schemaVersion: 1, producerId: authority.producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: row.eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' };
   } };
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
   try {
-    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+    admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
     const first = await producer.flush();
     assert.deepEqual({ delivered: first.delivered, pending: first.pending }, { delivered: 1, pending: 1 });
     assert.deepEqual(sent.map(row => row.watermark), [1]);
@@ -276,7 +307,7 @@ test('a retry run is bounded even when the receiver accepts a large outbox', asy
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver: { send: async value => receipts.get(value.eventId) } });
   try {
     for (let index = 0; index < 11; index++) {
-      const row = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: { ...draft('review-a'), workId: `feature-${index}` } });
+      const row = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: { ...draft('review-a'), workId: `feature-${index}` } });
       receipts.set(row.eventId, { schemaVersion: 1, producerId: authority.producerId, eventId: row.eventId, workId: row.workId, workRevision: row.workRevision, eventDigest: row.eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' });
     }
     const first = await producer.flush();
@@ -299,7 +330,7 @@ test('the DEV agent tool derives session identity and preserves one operation ac
     const repeated = await tool.execute('tool-call-1', params);
     assert.deepEqual(repeated.details, first.details);
     assert.equal(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length, 1);
-    assert.throws(() => metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: { schemaVersion: 1, workId: 'feature-1', eventType: 'feature_ready_for_review', context: { projectAlias: 'sample-project' }, session: { ...session, lifecycleRevision: 'lifecycle-2' }, request: params.request }, assertSourceCurrent: () => { throw Object.assign(new Error('changed'), { code: 'session-stale' }); } }), { code: 'session-stale' });
+    assert.throws(() => admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: { schemaVersion: 1, workId: 'feature-1', eventType: 'feature_ready_for_review', context: { projectAlias: 'sample-project' }, session: { ...session, lifecycleRevision: 'lifecycle-2' }, request: params.request }, assertSourceCurrent: () => { throw Object.assign(new Error('changed'), { code: 'session-stale' }); } }), { code: 'session-stale' });
     assert.equal(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length, 1);
     await assert.rejects(() => tool.execute('tool-call-1', { ...params, request: { ...params.request, question: 'Different question' } }), { code: 'developer-producer-conflict' });
     entry = { sessionId: 'session-1', lifecycleRevision: 'lifecycle-2' };

@@ -143,6 +143,13 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
         announceWatermark();
         return receipt(old, true);
       }
+      // A previously accepted receipt remains replayable after its deadline;
+      // a new expired request must not advance the cursor or create a receipt.
+      if (event.request?.expiresAt !== undefined) {
+        const expiresAtMs = typeof event.request.expiresAt === 'string' ? Date.parse(event.request.expiresAt) : NaN;
+        if (!Number.isFinite(expiresAtMs)) fail('developer-event-invalid');
+        if (expiresAtMs <= Date.parse(acceptedAt)) fail('developer-request-expired', 'The request expired before acceptance.');
+      }
       const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
       const expected = (cursor?.revision ?? 0) + 1;
       if (event.workRevision !== expected) fail(event.workRevision < expected ? 'developer-event-stale' : 'developer-event-gap', `Expected work revision ${expected}.`);
@@ -252,11 +259,12 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const current = db.prepare('SELECT revision FROM developer_work_producer_cursors WHERE producer_id = ? AND work_id = ?').get(authority.producerId, draft.workId);
       const revision = (current?.revision ?? 0) + 1;
       const event = normalizeDeveloperEvent({ ...draft, occurredAt: draft.occurredAt ?? new Date().toISOString(), eventId: randomUUID(), workRevision: revision }, authority);
-      if (event.session && assertSourceCurrent) {
-        if (typeof assertSourceCurrent !== 'function') fail('developer-producer-invalid');
+      if (event.session) {
+        if (typeof assertSourceCurrent !== 'function') fail('source-admission-required', 'Bound work requires synchronous source admission.');
         const sourceCheck = assertSourceCurrent(event.session);
         // SQLite mutate is synchronous: a Promise cannot certify the source at commit.
         if (sourceCheck !== null && (typeof sourceCheck === 'object' || typeof sourceCheck === 'function') && typeof sourceCheck.then === 'function') fail('developer-producer-invalid', 'Source check must complete synchronously before commit.');
+        if (sourceCheck === false) fail('developer-producer-invalid', 'The source did not certify this session.');
       }
       if (event.request) {
         const request = db.prepare('SELECT * FROM developer_work_producer_requests WHERE producer_id = ? AND work_id = ? AND request_id = ?').get(authority.producerId, event.workId, event.request.requestId);
