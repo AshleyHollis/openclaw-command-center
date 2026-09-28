@@ -10,7 +10,7 @@ import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from '../src/candidate-pair.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchCandidateHost,
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, closedCandidateSmokeFailure, launchCandidateHost,
   parseCandidateHostDescriptor, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { developerEventRoute } from '../src/developer-work/http-route.mjs';
@@ -237,6 +237,6 @@ async function main() {
 
 main().catch((error) => {
   // Never copy host output, fixture credentials or local paths into a report.
-  process.stderr.write(`Candidate pair smoke failed: ${error?.category ?? error?.code ?? 'unclassified'}\n`);
+  process.stderr.write(`${JSON.stringify(closedCandidateSmokeFailure(error))}\n`);
   process.exitCode = 1;
 });

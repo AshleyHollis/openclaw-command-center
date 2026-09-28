@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import * as hostHarness from '../src/host-harness.mjs';
 import { build } from '../src/build.mjs';
 import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, closedCandidateSmokeFailure, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
@@ -59,6 +59,36 @@ function hostGit({ commit = pinnedHost.commit, status = '', blob } = {}) {
   };
 }
 
+function integrityReason(expected) {
+  return error => error instanceof HarnessFailure && error.category === 'host-integrity' && error.reason === expected;
+}
+
+test('candidate smoke failure report has only closed, non-interpolated fields', () => {
+  const privateText = 'fictional-private-host/path-and-token';
+  const failure = new HarnessFailure('host-integrity', privateText, 'runtime-inventory-unsafe');
+  failure.code = privateText;
+  failure.stack = privateText;
+  assert.deepEqual(closedCandidateSmokeFailure(failure), {
+    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'host-verification'
+  });
+  for (const untrusted of [new Error(privateText), { category: 'host-integrity', reason: 'runtime-inventory-unsafe', code: privateText },
+    new HarnessFailure(privateText, privateText, privateText), new HarnessFailure('host-integrity', privateText, privateText),
+    Object.defineProperty(new HarnessFailure('host-integrity', privateText), 'category', { get() { throw new Error(privateText); } }), null]) {
+    const report = closedCandidateSmokeFailure(untrusted);
+    assert.deepEqual(Object.keys(report), ['category', 'reason', 'phase']);
+    assert.doesNotMatch(JSON.stringify(report), /fictional-private-host|path-and-token/u);
+    assert.equal(report.reason, 'unspecified');
+    assert.equal(report.phase, 'candidate-smoke');
+  }
+  assert.deepEqual(closedCandidateSmokeFailure(new HarnessFailure('host-launch', privateText)), {
+    category: 'host-launch', reason: 'unspecified', phase: 'candidate-smoke'
+  });
+});
+
+test('candidate launch refuses injected host verification options before any host work', async () => {
+  await assert.rejects(hostHarness.launchCandidateHost({ hostVerificationOptions: {} }), integrityReason('verification-bypass'));
+});
+
 test('ordinary repository check accepts only the released 2026.9.6 host tuple', () => {
   assert.doesNotThrow(() => assertReleasedHostMetadata(canonical));
   const historical = structuredClone(canonical);
@@ -84,13 +114,16 @@ test('packaged host binds installed build and dependencies independently of clea
     const descriptor = parseHostDescriptor(raw);
     const options = { gitCommand: hostGit({ blob: fixture.blob }) };
     assert.equal((await verifyHost(descriptor, options)).checkout, installed);
-    assert.throws(() => parseHostDescriptor(JSON.stringify({ ...JSON.parse(raw), integrity: { ...integrity, packageDigest: sourceDigest } })), error => error.category === 'host-integrity');
-    await assert.rejects(verifyHost({ ...descriptor, runtimeRoot: fixture.root }, options), error => error.category === 'host-integrity');
+    assert.throws(() => parseHostDescriptor(JSON.stringify({ ...JSON.parse(raw), integrity: { ...integrity, packageDigest: sourceDigest } })), integrityReason('package-digest-mismatch'));
+    await assert.rejects(verifyHost({ ...descriptor, runtimeRoot: fixture.root }, options), integrityReason('runtime-layout-mismatch'));
     await writeFile(dependency, 'tampered');
-    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('runtime-digest-mismatch'));
     await writeFile(dependency, 'export const dependency = true;');
     await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: 'wrong', version: pinnedHost.packageVersion }));
-    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('installed-build-mismatch'));
+    await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: pinnedHost.commit, version: pinnedHost.packageVersion }));
+    await symlink('../outside-runtime', path.join(runtimeRoot, 'unsafe-link'));
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('runtime-inventory-unsafe'));
   } finally {
     await rm(fixture.parent, { recursive: true, force: true });
   }
@@ -261,6 +294,10 @@ test('categorizes host integrity failures and early exit', async () => {
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ commit: 'different', blob: fixture.blob }) }), (error) => error.category === 'invalid-commit');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ status: ' M src/index.mjs', blob: fixture.blob }) }), (error) => error.category === 'dirty-host-source');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: '0'.repeat(40) }) }), (error) => error.category === 'wrapper-mismatch');
+    await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: fixture.blob }), read: async (filename) => {
+      if (filename.endsWith('receipt.json')) throw new Error('fictional private filesystem path');
+      return readFile(filename);
+    } }), integrityReason('source-receipt-unavailable'));
     await assert.rejects(
       verifyHost(descriptor, {
         gitCommand: hostGit({ blob: fixture.blob }),
@@ -268,7 +305,7 @@ test('categorizes host integrity failures and early exit', async () => {
           ? JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, sourceDigest: `sha256:${'d'.repeat(64)}`, executableDigest: fixture.integrity.executableDigest, contractDigest })
           : readFile(filename)
       }),
-      (error) => error.category === 'host-integrity'
+      integrityReason('source-receipt-mismatch')
     );
     await assert.rejects(
       verifyHost(descriptor, {

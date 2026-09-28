@@ -26,8 +26,35 @@ export const pinnedHost = Object.freeze({
 const sha256Digest = /^sha256:[a-f0-9]{64}$/;
 const hostOutputClassifierTailLength = 1024;
 
+// Report vocabulary is deliberately finite: never print exception properties
+// supplied by a host, filesystem, process or validation dependency.
+const reportCategories = new Set(['descriptor-absent', 'descriptor-invalid', 'wrapper-mismatch',
+  'invalid-commit', 'dirty-host-source', 'host-integrity', 'restart-owner', 'restart-limit',
+  'endpoint-isolation', 'host-early-exit', 'host-launch', 'host-stop', 'readiness-timeout',
+  'readiness-flapping', 'transport-timeout', 'isolation-evidence-unavailable',
+  'isolation-violation', 'plugin-not-found', 'bootstrap-authentication-failure']);
+const hostIntegrityReasons = new Set(['package-digest-mismatch', 'source-receipt-unavailable',
+  'source-receipt-mismatch', 'runtime-layout-mismatch', 'installed-build-mismatch',
+  'runtime-inventory-unsafe', 'runtime-digest-mismatch', 'candidate-descriptor-mismatch',
+  'verification-bypass']);
+
 export class HarnessFailure extends Error {
-  constructor(category, message) { super(message); this.name = 'HarnessFailure'; this.category = category; }
+  constructor(category, message, reason) {
+    super(message);
+    this.name = 'HarnessFailure';
+    this.category = category;
+    this.reason = hostIntegrityReasons.has(reason) ? reason : 'unspecified';
+  }
+}
+
+export function closedCandidateSmokeFailure(error) {
+  try {
+    const category = error instanceof HarnessFailure && reportCategories.has(error.category) ? error.category : 'unclassified';
+    const reason = category === 'host-integrity' && hostIntegrityReasons.has(error.reason) ? error.reason : 'unspecified';
+    return Object.freeze({ category, reason, phase: reason === 'unspecified' ? 'candidate-smoke' : 'host-verification' });
+  } catch {
+    return Object.freeze({ category: 'unclassified', reason: 'unspecified', phase: 'candidate-smoke' });
+  }
 }
 
 function parseIntegrity(value, packaged = false) {
@@ -83,7 +110,7 @@ function parseDescriptorAgainstHost(raw, expectedHost) {
     throw new HarnessFailure('descriptor-invalid', 'Packaged host requires the exact installed layout');
   }
   const integrity = parseIntegrity(descriptor.integrity, packaged);
-  if (packaged && integrity.packageDigest !== expectedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package');
+  if (packaged && integrity.packageDigest !== expectedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package', 'package-digest-mismatch');
   return Object.freeze({ commit: descriptor.commit, checkout: descriptor.checkout, executable: wrapper, runtimeExecutable, args: Object.freeze([...args]), integrity, ...(packaged ? { schemaVersion: 2, runtimeRoot: descriptor.runtimeRoot } : {}) });
 }
 
@@ -124,7 +151,7 @@ async function assertHostIntegrity(checkout, descriptor, read, expectedHost) {
   try {
     receipt = JSON.parse(await read(path.join(path.dirname(checkout), 'receipt.json'), 'utf8'));
   } catch {
-    throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable');
+    throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable', 'source-receipt-unavailable');
   }
   if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== expectedHost.commit
     || !sha256Digest.test(receipt.sourceDigest)
@@ -134,7 +161,7 @@ async function assertHostIntegrity(checkout, descriptor, read, expectedHost) {
     || receipt.executableDigest !== descriptor.integrity.executableDigest
     || receipt.contractDigest !== descriptor.integrity.contractDigest
     || (descriptor.schemaVersion === 2 && (receipt.packageDigest !== descriptor.integrity.packageDigest || receipt.runtimeDigest !== descriptor.integrity.runtimeDigest))) {
-    throw new HarnessFailure('host-integrity', 'Host source/runtime integrity receipt differs from the descriptor');
+    throw new HarnessFailure('host-integrity', 'Host source/runtime integrity receipt differs from the descriptor', 'source-receipt-mismatch');
   }
 }
 
@@ -145,7 +172,7 @@ async function verifyHostAgainst(descriptor, expectedHost, { gitCommand = git, r
   let runtimeRoot = checkout;
   if (packaged) {
     const expectedRoot = path.join(path.dirname(checkout), 'runtime');
-    if (path.resolve(descriptor.runtimeRoot) !== expectedRoot || (await stat(expectedRoot)).isSymbolicLink()) throw new HarnessFailure('host-integrity', 'Packaged runtime must be the separate sibling handoff');
+    if (path.resolve(descriptor.runtimeRoot) !== expectedRoot || (await stat(expectedRoot)).isSymbolicLink()) throw new HarnessFailure('host-integrity', 'Packaged runtime must be the separate sibling handoff', 'runtime-layout-mismatch');
     runtimeRoot = await resolvePath(expectedRoot);
   }
   const wrapper = path.resolve(runtimeRoot, descriptor.executable);
@@ -182,9 +209,9 @@ async function verifyHostAgainst(descriptor, expectedHost, { gitCommand = git, r
     const installed = path.dirname(wrapper);
     const installedPackage = JSON.parse(await read(path.join(installed, 'package.json'), 'utf8'));
     const build = JSON.parse(await read(path.join(installed, 'dist/build-info.json'), 'utf8'));
-    if (installedPackage.name !== 'openclaw' || installedPackage.version !== expectedHost.packageVersion || build.commit !== expectedHost.commit || build.version !== expectedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source');
-    const actual = await packagedHostDigest(runtimeRoot).catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe'); });
-    if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt');
+    if (installedPackage.name !== 'openclaw' || installedPackage.version !== expectedHost.packageVersion || build.commit !== expectedHost.commit || build.version !== expectedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source', 'installed-build-mismatch');
+    const actual = await packagedHostDigest(runtimeRoot).catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe', 'runtime-inventory-unsafe'); });
+    if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt', 'runtime-digest-mismatch');
   }
   return Object.freeze({ checkout: packaged ? path.dirname(wrapper) : checkout, wrapper, commit, runtimeExecutable: descriptor.runtimeExecutable });
 }
@@ -199,7 +226,7 @@ export function verifyCandidateHost(descriptor, pairValue, options) {
       Object.entries({ packageDigest: host.packageDigest, runtimeDigest: host.runtimeDigest,
         sourceDigest: host.sourceDigest, executableDigest: host.executableDigest,
         contractDigest: host.contractDigest }).some(([key, value]) => parsed.integrity?.[key] !== value)) {
-    throw new HarnessFailure('host-integrity', 'Candidate host descriptor differs from the pair');
+    throw new HarnessFailure('host-integrity', 'Candidate host descriptor differs from the pair', 'candidate-descriptor-mismatch');
   }
   return verifyHostAgainst(parsed, { ...host, commit: host.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args }, options);
 }
@@ -291,7 +318,7 @@ export async function launchPinnedHost(options) {
 
 /** Candidate launch uses the same isolated world and lifecycle safeguards. */
 export async function launchCandidateHost(options) {
-  if (options.hostVerificationOptions) throw new HarnessFailure('host-integrity', 'Candidate launch requires real source and runtime verification');
+  if (options.hostVerificationOptions) throw new HarnessFailure('host-integrity', 'Candidate launch requires real source and runtime verification', 'verification-bypass');
   const descriptor = parseCandidateHostDescriptor(JSON.stringify(options.descriptor), options.candidatePair);
   const pair = assertCandidatePairEvidence(options.candidatePair, {
     inputTreeReceipt: options.inputTreeReceipt, buildReceipt: options.buildReceipt,
