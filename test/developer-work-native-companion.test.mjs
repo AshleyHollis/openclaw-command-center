@@ -39,6 +39,45 @@ test('injected authorized sessions.describe rejects missing lifecycle, ambiguous
   await assert.rejects(() => reader({ ...input, agentId: 'other' }), TypeError);
 });
 
+test('same-machine local SDK read guards producer submission at SQLite commit', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-native-companion-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  const sdkScope = { agentId: session.agentId, sessionKey: session.sessionKey, readConsistency: 'latest' };
+  const live = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision };
+  let local = () => live;
+  const reads = [];
+  const companion = createNativeDeveloperWorkCompanion({ metadata, authority,
+    gatewayRequest: async () => ({ session: { key: session.sessionKey, agentId: session.agentId, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision }),
+    chatBaseUrl: 'https://code.invalid/ui/',
+    localSource: { binding: session, getSessionEntry(scope) { reads.push(scope); return local(); } } });
+  try {
+    const evidence = draft('2026-09-28T11:00:00Z');
+    assert.equal(typeof companion.submit, 'function');
+    await assert.rejects(() => companion.submit({ logicalOperationId: randomUUID(), draft: { ...evidence, session: { ...session, agentId: 'wrong-agent' } } }), { code: 'session-stale' });
+    assert.equal(reads.length, 0, 'caller cannot select another agent before the fixed read');
+    for (const changed of [undefined, { ...live, sessionId: 'replaced' },
+      { ...live, lifecycleRevision: 'reset-in-place' }, { ...live, lifecycleRevision: '' }, Promise.resolve(live)]) {
+      local = () => changed;
+      await assert.rejects(() => companion.submit({ logicalOperationId: randomUUID(), draft: evidence }), { code: 'session-stale' });
+      assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }), []);
+    }
+    let count = 0;
+    local = () => ++count === 1 ? live : { ...live, lifecycleRevision: 'reset-in-place' };
+    await assert.rejects(() => companion.submit({ logicalOperationId: randomUUID(), draft: evidence }), { code: 'session-stale' });
+    assert.equal(count, 2, 'source changes between preflight and the synchronous ledger guard');
+    assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: evidence.workId, requestId: evidence.request.requestId }), null);
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }), []);
+    local = () => live;
+    const logicalOperationId = randomUUID();
+    const result = await companion.submit({ logicalOperationId, draft: evidence });
+    assert.equal(result.workRevision, 1, 'failed checks do not advance the durable cursor');
+    assert.deepEqual(reads, Array.from({ length: reads.length }, () => sdkScope), 'no caller-supplied store path or identity');
+    local = () => ({ ...live, lifecycleRevision: 'reset-in-place' });
+    await assert.rejects(() => companion.submit({ logicalOperationId, draft: evidence }), { code: 'session-stale' });
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).map(item => item.eventId), [result.eventId]);
+  } finally { companion.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('companion issues a credential-free native Chat target only after durable exact request and fresh session check', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-native-companion-'));
   let metadata;
@@ -51,6 +90,7 @@ test('companion issues a credential-free native Chat target only after durable e
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities });
     companion = makeCompanion();
+    assert.equal(companion.submit, undefined, 'an RPC-only companion cannot submit source-bound work');
     assert.equal((await companion.chatTarget(target)).reason, 'request-missing');
     metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('2026-09-28T11:00:00Z') });
     companion.close(); metadata.close();
