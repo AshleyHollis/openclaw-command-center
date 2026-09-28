@@ -352,6 +352,47 @@ test('restart repairs a sent High emission whose slot receipt was interrupted', 
   });
 });
 
+test('restart finishes an interrupted quiet-summary cohort without a second operation', async () => {
+  await fixture(async ({ metadata, service, attention, episode, episodes, binding, candidates, clears, devices, now, advance }) => {
+    episodes.push({ ...episode, episodeId: 'episode-a' });
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '86666666-4444-4444-8444-444444444444', expectedRevision: 1, settings: { quietHoursEnd: '23:00' } });
+    await service.reconcile();
+    advance(60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    const originalId = candidates[0].logicalOperationId;
+    // inspect() retains the row order used by the quiet-summary slot loop.
+    const cohort = service.inspect().slots.filter(slot => slot.status === 'emitted');
+    assert.equal(cohort.length, 2);
+    assert.equal(new Set(cohort.map(slot => slot.episode_id)).size, 2);
+    assert.equal(cohort[0].episode_id, episodes[1].episodeId);
+    service.close();
+
+    // Interruption simulation, NOT a killed process: the host sent and CC
+    // persisted its emission, but only the first cohort slot receipt survived.
+    const db = new DatabaseSync(metadata.databasePath);
+    try {
+      db.prepare("UPDATE notification_slots SET status = 'queued', logical_operation_id = NULL, emission_id = NULL, emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
+        .run(candidates[0].emissionId, cohort[0].slot_id);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'emitted' AND logical_operation_id = ?").get(originalId).count, 1);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued'").get().count, 1);
+      assert.equal(db.prepare("SELECT status FROM notification_emissions WHERE logical_operation_id = ?").get(originalId).status, 'sent');
+    } finally { db.close(); }
+
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      await restarted.reconcile();
+      assert.equal(candidates.length, 1, 'the remaining cohort must not create a second host operation');
+      const cohortIds = new Set(cohort.map(slot => slot.slot_id));
+      assert.equal(restarted.inspect().slots.filter(slot => cohortIds.has(slot.slot_id)).every(slot => slot.status === 'emitted' && slot.logical_operation_id === originalId), true);
+      episode.state = 'Action running';
+      await restarted.reconcile();
+      assert.deepEqual(clears.map(clear => clear.logicalOperationId), [originalId]);
+      assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    } finally { restarted.close(); }
+  }, '2026-08-27T22:00:00.000Z');
+});
+
 test('repeated Snooze returns cannot exceed the High generation cap after restart', async () => {
   await fixture(async ({ metadata, service, attention, episode, binding, candidates, now, advance }) => {
     await service.reconcile();
