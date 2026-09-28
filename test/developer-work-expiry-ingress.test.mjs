@@ -252,7 +252,7 @@ test('separate SQLite stores carry ordered expired openings, active updates, ter
   }
 });
 
-test('disposition survives actual receiver process death before producer acknowledgement', { timeout: 20_000 }, async () => {
+test('metadata-only disposition survives process death before any HTTP or producer acknowledgement', { timeout: 20_000 }, async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-disposition-crash-'));
   const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/developer-work-disposition-child.mjs', import.meta.url)), stateDir], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let closed = false;
@@ -286,5 +286,99 @@ test('disposition survives actual receiver process death before producer acknowl
   } finally {
     if (!closed) { child.kill('SIGKILL'); await exit; }
     await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+// A separate child owns the receiver SQLite store and real loopback HTTP
+// listener. Only that child can commit the disposition before being killed.
+async function startHttpReceiver(stateDir, mode) {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/developer-work-http-receiver-child.mjs', import.meta.url)), stateDir, mode], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let output = '';
+  let stderr = '';
+  let closed = false;
+  const watchers = new Set();
+  child.stdout.on('data', data => { output += String(data); for (const check of watchers) check(); });
+  child.stderr.on('data', data => { stderr += String(data); });
+  const exited = new Promise(resolve => child.once('close', (code, signal) => { closed = true; resolve({ code, signal }); }));
+  const waitFor = marker => new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); watchers.delete(check); child.off('close', died); child.off('error', died); };
+    const check = () => { if (output.includes(marker)) { cleanup(); resolve(output); } };
+    const died = () => { cleanup(); reject(new Error('HTTP receiver died before ' + marker + ': ' + stderr.slice(0, 500))); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('HTTP receiver timed out before ' + marker + ': ' + stderr.slice(0, 500))); }, 10_000);
+    watchers.add(check);
+    child.once('close', died);
+    child.once('error', died);
+    check();
+  });
+  try {
+    const ready = await waitFor('ready:');
+    const port = Number(ready.match(/ready:(\d+)/)?.[1]);
+    if (!Number.isInteger(port) || port < 1) throw new Error('HTTP receiver did not announce a port');
+    return { child, port, waitFor, exited, isClosed: () => closed, stderr: () => stderr };
+  } catch (error) { if (!closed) child.kill('SIGKILL'); await exited; throw error; }
+}
+
+test('authenticated HTTP disposition survives receiver SIGKILL before producer acknowledgement and ordered retry', { timeout: 30_000 }, async () => {
+  const senderDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-http-crash-sender-'));
+  const receiverDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-http-crash-receiver-'));
+  const sender = openCommandCenterMetadataService({ stateDir: senderDir, capabilities: { activity: true, attention: true } });
+  const authority = { producerId: principal.producerId, role: 'worker', allowedProjects: principal.allowedProjects };
+  const bound = { agentId: 'sample-agent', sessionKey: 'agent:sample-agent:main', sessionId: 'crash-session', lifecycleRevision: 'crash-lifecycle' };
+  const base = { schemaVersion: 1, workId: 'crash-work', occurredAt: '2026-09-26T10:00:00Z', context: { projectAlias: 'sample-project' }, session: bound };
+  const drafts = [
+    { ...base, eventType: 'feature_ready_for_review', request: { requestId: 'crash-expired', kind: 'review', expectedRequestRevision: 0, summary: 'Fictional expired request', question: 'Review?', expiresAt: '2026-09-26T10:01:00Z' } },
+    { ...base, eventType: 'request_withdrawn', request: { requestId: 'crash-expired', kind: 'review', expectedRequestRevision: 1 }, outcome: { code: 'withdrawn', requestId: 'crash-expired' } },
+    { ...base, eventType: 'feature_ready_for_review', request: { requestId: 'crash-current', kind: 'review', expectedRequestRevision: 0, summary: 'Fictional current request', question: 'Review?' } }
+  ];
+  const ids = drafts.map(() => randomUUID());
+  let crashed, restarted, producer;
+  let port;
+  const statuses = [];
+  const transport = createDeveloperEventTransport({ baseUrl: 'https://receiver.example.test/', tokenEnv: 'SAMPLE_DEV_BEARER', env: { SAMPLE_DEV_BEARER: credential }, fetchImpl: async (url, options) => {
+    // Real HTTP over loopback through the route's explicit trusted-proxy
+    // branch, not an in-process handler call or a claim of wire-level TLS.
+    const result = await fetch('http://127.0.0.1:' + port + new URL(url).pathname, { ...options, headers: { ...options.headers, 'x-forwarded-proto': 'https' } });
+    statuses.push([options.headers['x-developer-work-disposition'] ?? 'normal', result.status]);
+    return result;
+  } });
+  try {
+    crashed = await startHttpReceiver(receiverDir, 'hold');
+    port = crashed.port;
+    producer = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => Date.parse('2026-09-26T10:02:00Z') });
+    for (const [index, draft] of drafts.entries()) producer.commit({ logicalOperationId: ids[index], draft, assertSourceCurrent(expected) { assert.deepEqual(expected, bound); } });
+    const committedSignal = crashed.waitFor('disposition-committed');
+    const firstFlush = producer.flush();
+    await committedSignal;
+    assert.equal(crashed.child.kill('SIGKILL'), true);
+    await crashed.exited;
+    assert.deepEqual({ delivered: (await firstFlush).delivered, pending: sender.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length }, { delivered: 0, pending: 3 });
+    const pending = sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: ids[0] });
+    assert.equal(pending.deliveryState, 'pending');
+    const afterKill = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities: { activity: true, attention: true } });
+    try {
+      assert.equal(afterKill.getDeveloperReceipt({ producerId: authority.producerId, eventId: pending.eventId }).dispositionReason, 'request-expired');
+      assert.equal(afterKill.getDeveloperRequest({ producerId: authority.producerId, workId: 'crash-work', requestId: 'crash-expired' }), null);
+      assert.equal(afterKill.getDeveloperReceipt({ producerId: authority.producerId, eventId: sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: ids[1] }).eventId }), null);
+    } finally { afterKill.close(); }
+    producer.close();
+    restarted = await startHttpReceiver(receiverDir, 'normal');
+    port = restarted.port;
+    producer = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => pending.deliveryDiagnostic.nextAttemptAtMs });
+    assert.deepEqual({ delivered: (await producer.flush()).delivered, pending: sender.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length }, { delivered: 3, pending: 0 });
+    assert.deepEqual(ids.map(id => sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: id }).receiverReceipt.dispositionReason ?? 'accepted'), ['request-expired', 'expired-dependency', 'accepted']);
+    assert.deepEqual(statuses, [['normal', 400], ['normal', 200], ['normal', 409], ['expired', 200], ['normal', 200]], 'duplicate opening receipt replays via ordinary HTTP, while the dependent terminal needs disposition');
+    const afterReplay = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities: { activity: true, attention: true } });
+    const attention = createAttentionService({ metadata: afterReplay, now: () => '2026-09-26T10:02:00Z' });
+    try {
+      assert.equal(afterReplay.getDeveloperRequest({ producerId: authority.producerId, workId: 'crash-work', requestId: 'crash-expired' }), null);
+      assert.equal(afterReplay.getDeveloperRequest({ producerId: authority.producerId, workId: 'crash-work', requestId: 'crash-current' }).state, 'active');
+      assert.deepEqual(attention.list().episodes.map(row => row.evidenceFacts.requestId), ['crash-current']);
+    } finally { attention.close(); afterReplay.close(); }
+  } finally {
+    producer?.close();
+    sender.close();
+    for (const child of [crashed, restarted]) if (child && !child.isClosed()) { child.child.kill('SIGKILL'); await child.exited; }
+    await rm(senderDir, { recursive: true, force: true });
+    await rm(receiverDir, { recursive: true, force: true });
   }
 });
