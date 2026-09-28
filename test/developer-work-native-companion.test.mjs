@@ -112,7 +112,7 @@ test('companion issues a credential-free native Chat target only after durable e
     } });
     assert.equal((await companion.chatTarget(target)).reason, 'request-ended');
     assert.throws(() => makeCompanionWithBadBase(), /credential-free/);
-    function makeCompanionWithBadBase() { return createNativeDeveloperWorkCompanion({ metadata, authority, gatewayRequest, chatBaseUrl: 'https://code.invalid/ui/?token=fictional' }); }
+    function makeCompanionWithBadBase() { return createNativeDeveloperWorkCompanion({ metadata, authority, gatewayRequest, chatBaseUrl: 'https://code.invalid/ui/?query=fictional' }); }
   } finally {
     companion?.close(); metadata?.close();
     await rm(stateDir, { recursive: true, force: true });
