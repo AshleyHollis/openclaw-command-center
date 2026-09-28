@@ -20,6 +20,12 @@ function event(revision, eventId, requestId, expectedRequestRevision = 0, eventT
   }, authority);
 }
 function owner(db, { beforeBegin = () => {}, afterBegin = () => {} } = {}) {
+  db.exec(`CREATE TABLE IF NOT EXISTS operation_journal (
+    logical_operation_id TEXT PRIMARY KEY, transport_request_id TEXT NOT NULL,
+    intent_digest TEXT NOT NULL, operation_kind TEXT NOT NULL, state TEXT NOT NULL,
+    result_status TEXT, result_identity TEXT, observed_revision TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  ) STRICT;`);
   const service = {};
   installDeveloperWorkMetadata(service, {
     ErrorType: MetadataError,

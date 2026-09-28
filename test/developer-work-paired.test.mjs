@@ -42,7 +42,7 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     const operationId = randomUUID();
     const draft = { schemaVersion: 1, workId: 'sample-feature', eventType: 'feature_ready_for_review', occurredAt: '2026-09-26T10:00:00.000Z', context: { projectAlias: 'sample-project', phase: 'reviewing' }, session,
       request: { requestId: 'review-a', kind: 'review', expectedRequestRevision: 0, summary: 'Review sample feature', question: 'Is this ready?' } };
-    const pending = await producer.submit({ logicalOperationId: operationId, draft });
+    const pending = await producer.submit({ assertSourceCurrent: expected => assert.deepEqual(expected, session), logicalOperationId: operationId, draft });
     assert.equal(pending.deliveryState, 'pending');
     assert.equal(attention.list().episodes.length, 1);
     clock = pending.deliveryDiagnostic.nextAttemptAtMs;
@@ -56,7 +56,7 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     assert.equal(exact.sessionKey, session.sessionKey);
     assert.equal(JSON.stringify(attention.list().episodes[0]).includes(session.sessionKey), false);
     delete receiverEnv.SAMPLE_DEV_BEARER;
-    const blocked = await producer.submit({ logicalOperationId: randomUUID(), draft: { ...draft, workId: 'sample-feature-two', request: { ...draft.request, requestId: 'review-b' } } });
+    const blocked = await producer.submit({ assertSourceCurrent: expected => assert.deepEqual(expected, session), logicalOperationId: randomUUID(), draft: { ...draft, workId: 'sample-feature-two', request: { ...draft.request, requestId: 'review-b' } } });
     assert.equal(blocked.deliveryState, 'pending');
     assert.equal(attention.list().episodes.length, 1);
     receiverEnv.SAMPLE_DEV_BEARER = credential;

@@ -3,6 +3,7 @@ import { developerEventDigest, normalizeDeveloperEvent } from '../developer-work
 
 const MAX_PENDING_RECEIPTS = 500;
 const MAX_WATERMARK_LEAD = 500;
+const expiryDispositionId = (producerId, eventId) => 'developer-expiry:' + createHash('sha256').update(producerId + '\u0000' + eventId).digest('hex');
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const requestOpeningTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_deployment_failed']);
 const deliveryDiagnosticId = (producerId, eventId) => `developer-delivery:${createHash('sha256').update(`${producerId}\u0000${eventId}`).digest('hex')}`;
@@ -101,7 +102,7 @@ CREATE TABLE developer_work_watermarks (
 ) STRICT;
 `;
 
-function receipt(row, duplicate = false) {
+function receipt(row, duplicate = false, disposition = null) {
   return Object.freeze({
     schemaVersion: 1,
     producerId: row.producer_id,
@@ -112,6 +113,7 @@ function receipt(row, duplicate = false) {
     projectionState: row.projection_state,
     acceptedAt: row.accepted_at,
     ...(row.projected_at ? { projectedAt: row.projected_at } : {}),
+    ...(disposition ? { disposition: 'expired', dispositionReason: disposition.reason } : {}),
     duplicate
   });
 }
@@ -119,6 +121,25 @@ function receipt(row, duplicate = false) {
 export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorType }) {
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
   const readReceipt = (db, producerId, eventId) => db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
+  const disposition = (db, producerId, eventId, digest) => {
+    const row = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(expiryDispositionId(producerId, eventId));
+    if (!row) return null;
+    if (row.operation_kind !== 'developer-work.expiry-disposition.v1' || row.transport_request_id !== eventId || row.intent_digest !== digest || row.state !== 'applied' || row.result_status !== 'expired') fail('developer-event-conflict');
+    const result = JSON.parse(row.result_identity);
+    if (result.producerId !== producerId || result.eventId !== eventId || result.eventDigest !== digest || !['request-expired', 'expired-dependency'].includes(result.reason)) fail('developer-event-conflict');
+    const eventRow = readReceipt(db, producerId, eventId);
+    if (!eventRow || eventRow.event_digest !== digest || eventRow.work_id !== result.workId || eventRow.work_revision !== result.workRevision || eventRow.accepted_at !== result.acceptedAt || eventRow.projection_state !== 'projected' || eventRow.projected_at !== result.acceptedAt || row.observed_revision !== String(result.workRevision)) fail('developer-event-conflict');
+    return result;
+  };
+  const disposedPredecessor = (db, producerId, event) => {
+    if (!event.request || event.request.expectedRequestRevision < 1) return false;
+    const previous = db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND work_id = ? AND work_revision = ?').get(producerId, event.workId, event.request.expectedRequestRevision);
+    if (!previous) return false;
+    const prior = disposition(db, producerId, previous.event_id, previous.event_digest);
+    if (!prior || prior.workId !== previous.work_id || prior.workRevision !== previous.work_revision) return false;
+    const request = JSON.parse(previous.event_json).request;
+    return request?.requestId === event.request.requestId && request.kind === event.request.kind;
+  };
 
   service.acceptDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, now = () => Date.now() } = {}) => {
     if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || typeof now !== 'function') fail('developer-event-invalid');
@@ -141,7 +162,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       if (old) {
         if (old.event_digest !== eventDigest) fail('developer-event-conflict', 'An event ID was replayed with changed evidence.');
         announceWatermark();
-        return receipt(old, true);
+        return receipt(old, true, disposition(db, producerId, event.eventId, eventDigest));
       }
       // Snapshot acceptance time after SQLite obtains the write lock. An
       // admission waiting for another writer cannot carry a pre-lock clock.
@@ -163,11 +184,11 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
         const current = db.prepare('SELECT * FROM developer_work_requests WHERE producer_id = ? AND work_id = ? AND request_id = ?').get(producerId, event.workId, event.request.requestId);
         const deploymentId = event.request.kind === 'deployment-incident' ? event.context?.deploymentId : null;
         if (event.request.kind === 'deployment-incident' && (!deploymentId || event.outcome?.deploymentId !== deploymentId)) fail('developer-request-conflict', 'Deployment incident identity is incomplete.');
-        if ((current?.revision ?? 0) !== event.request.expectedRequestRevision) fail('developer-request-stale', 'The exact request revision changed.');
+        if ((current?.revision ?? 0) !== event.request.expectedRequestRevision) fail(!current && disposedPredecessor(db, producerId, event) ? 'developer-request-expired-dependency' : 'developer-request-stale', 'The exact request revision changed.');
         if (current && current.kind !== event.request.kind) fail('developer-request-conflict', 'A request cannot change its kind.');
         if (current && current.deployment_id !== deploymentId) fail('developer-request-conflict', 'A request cannot change its deployment.');
         if (current && current.state !== 'active') fail('developer-request-terminal', 'A terminal request cannot be reopened.');
-        if (!current && !requestOpeningTypes.has(event.eventType)) fail('developer-request-missing', 'A request transition requires an existing request.');
+        if (!current && !requestOpeningTypes.has(event.eventType)) fail(disposedPredecessor(db, producerId, event) ? 'developer-request-expired-dependency' : 'developer-request-missing', 'A request transition requires an existing request.');
         if (current && requestOpeningTypes.has(event.eventType) && event.request.expectedRequestRevision === 0) fail('developer-request-conflict');
         if (deploymentId && !current && db.prepare('SELECT 1 FROM developer_work_requests WHERE deployment_id = ?').get(deploymentId)) fail('developer-request-conflict', 'A deployment already has an incident.');
         const state = terminalTypes.has(event.eventType) ? event.eventType === 'request_resolved' ? 'resolved' : 'withdrawn' : 'active';
@@ -179,6 +200,51 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`).run(producerId, event.eventId, event.workId, event.workRevision, eventDigest, eventJson, clock);
       announceWatermark();
       return receipt(readReceipt(db, producerId, event.eventId));
+    });
+  };
+
+  // Explicit terminal disposition is a separate machine-authenticated command.
+  // The ordinary ingress keeps refusing expired content without any write.
+  service.disposeExpiredDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, now = () => Date.now() } = {}) => {
+    if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || !event.request || typeof now !== 'function') fail('developer-event-invalid');
+    if (watermark !== undefined && (!Number.isSafeInteger(watermark) || watermark < event.workRevision)) fail('delivery-watermark-invalid');
+    const digest = developerEventDigest(event);
+    return mutate(null, db => {
+      if (typeof assertAuthorityCurrent !== 'function') fail('unauthorized');
+      assertAuthorityCurrent();
+      const announceWatermark = () => {
+        if (watermark === undefined) return;
+        const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
+        if (!cursor || watermark > Math.max(cursor.revision, event.workRevision) + MAX_WATERMARK_LEAD) fail('delivery-watermark-invalid');
+        db.prepare('INSERT INTO developer_work_watermarks (producer_id, work_id, announced_revision) VALUES (?, ?, ?) ON CONFLICT (producer_id, work_id) DO UPDATE SET announced_revision = MAX(announced_revision, excluded.announced_revision)').run(producerId, event.workId, watermark);
+      };
+      const old = readReceipt(db, producerId, event.eventId);
+      if (old) {
+        if (old.event_digest !== digest) fail('developer-event-conflict');
+        const prior = disposition(db, producerId, event.eventId, digest);
+        if (!prior || prior.workId !== event.workId || prior.workRevision !== event.workRevision) fail('developer-event-conflict', 'Accepted evidence cannot be reclassified.');
+        announceWatermark();
+        return receipt(old, true, prior);
+      }
+      const clock = new Date(now()).toISOString();
+      const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
+      const expected = (cursor?.revision ?? 0) + 1;
+      if (event.workRevision !== expected) fail(event.workRevision < expected ? 'developer-event-stale' : 'developer-event-gap');
+      const current = db.prepare('SELECT * FROM developer_work_requests WHERE producer_id = ? AND work_id = ? AND request_id = ?').get(producerId, event.workId, event.request.requestId);
+      if (current) fail('developer-request-conflict', 'An existing request cannot be suppressed by disposition.');
+      const expiresAt = event.request.expiresAt === undefined ? NaN : Date.parse(event.request.expiresAt);
+      const predecessor = disposedPredecessor(db, producerId, event);
+      const expired = Number.isFinite(expiresAt) && expiresAt <= Date.parse(clock);
+      if (expired && event.request.expectedRequestRevision > 0 && !predecessor || !expired && !predecessor) fail('developer-request-disposition-invalid');
+      const reason = expired ? 'request-expired' : 'expired-dependency';
+      db.prepare('INSERT INTO developer_work_cursors (producer_id, work_id, revision) VALUES (?, ?, ?) ON CONFLICT (producer_id, work_id) DO UPDATE SET revision = excluded.revision').run(producerId, event.workId, event.workRevision);
+      db.prepare(`INSERT INTO developer_work_receipts (producer_id, event_id, work_id, work_revision, event_digest, event_json, projection_state, accepted_at, projected_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'projected', ?, ?)`).run(producerId, event.eventId, event.workId, event.workRevision, digest, JSON.stringify(event), clock, clock);
+      const identity = { producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: digest, reason, acceptedAt: clock };
+      db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, 'developer-work.expiry-disposition.v1', 'applied', 'expired', ?, ?, ?, ?)`).run(expiryDispositionId(producerId, event.eventId), event.eventId, digest, JSON.stringify(identity), String(event.workRevision), clock, clock);
+      announceWatermark();
+      return receipt(readReceipt(db, producerId, event.eventId), false, identity);
     });
   };
 
@@ -204,7 +270,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     if (typeof producerId !== 'string' || typeof eventId !== 'string') fail('developer-event-invalid');
     return inspect(db => {
       const row = readReceipt(db, producerId, eventId);
-      return row ? receipt(row) : null;
+      return row ? receipt(row, false, disposition(db, producerId, eventId, row.event_digest)) : null;
     });
   };
 
@@ -350,14 +416,24 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
   };
 
   service.markDeveloperDelivery = ({ producerId, eventId, receiverReceipt } = {}) => {
-    if (typeof producerId !== 'string' || typeof eventId !== 'string' || !receiverReceipt || typeof receiverReceipt !== 'object' || Array.isArray(receiverReceipt) || Object.keys(receiverReceipt).some(key => !['schemaVersion', 'producerId', 'eventId', 'workId', 'workRevision', 'eventDigest', 'projectionState', 'acceptedAt', 'projectedAt', 'duplicate'].includes(key)) || JSON.stringify(receiverReceipt).length > 4096) fail('developer-producer-invalid');
+    if (typeof producerId !== 'string' || typeof eventId !== 'string' || !receiverReceipt || typeof receiverReceipt !== 'object' || Array.isArray(receiverReceipt) || Object.keys(receiverReceipt).some(key => !['schemaVersion', 'producerId', 'eventId', 'workId', 'workRevision', 'eventDigest', 'projectionState', 'acceptedAt', 'projectedAt', 'duplicate', 'disposition', 'dispositionReason'].includes(key)) || JSON.stringify(receiverReceipt).length > 4096) fail('developer-producer-invalid');
     return mutate(null, db => {
       const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
       if (!row) fail('developer-event-missing');
       if (receiverReceipt.schemaVersion !== 1 || receiverReceipt.producerId !== producerId || receiverReceipt.eventId !== eventId || receiverReceipt.workId !== row.work_id || receiverReceipt.workRevision !== row.work_revision || receiverReceipt.eventDigest !== row.event_digest || !['pending', 'projected'].includes(receiverReceipt.projectionState) || typeof receiverReceipt.acceptedAt !== 'string' || Number.isNaN(Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
+      if (receiverReceipt.disposition !== undefined && (receiverReceipt.disposition !== 'expired' || !['request-expired', 'expired-dependency'].includes(receiverReceipt.dispositionReason) || receiverReceipt.projectionState !== 'projected' || receiverReceipt.projectedAt !== receiverReceipt.acceptedAt || !JSON.parse(row.event_json).request)) fail('developer-receipt-conflict');
+      if (receiverReceipt.disposition === undefined && receiverReceipt.dispositionReason !== undefined) fail('developer-receipt-conflict');
+      const request = JSON.parse(row.event_json).request;
+      if (receiverReceipt.dispositionReason === 'request-expired' && !(Date.parse(request.expiresAt) <= Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
+      if (receiverReceipt.disposition === 'expired' && request.expectedRequestRevision > 0) {
+        const previous = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND work_id = ? AND work_revision = ?').get(producerId, row.work_id, request.expectedRequestRevision);
+        const priorRequest = previous && JSON.parse(previous.event_json).request;
+        if (previous?.delivery_state !== 'delivered' || JSON.parse(previous.receiver_receipt_json).disposition !== 'expired' || priorRequest?.requestId !== request.requestId || priorRequest.kind !== request.kind) fail('developer-receipt-conflict');
+      }
+      if (receiverReceipt.dispositionReason === 'expired-dependency' && request.expectedRequestRevision === 0) fail('developer-receipt-conflict');
       if (row.delivery_state === 'delivered') {
         const prior = JSON.parse(row.receiver_receipt_json);
-        if (prior.producerId !== receiverReceipt.producerId || prior.eventId !== receiverReceipt.eventId || prior.eventDigest !== receiverReceipt.eventDigest) fail('developer-receipt-conflict');
+        if (prior.producerId !== receiverReceipt.producerId || prior.eventId !== receiverReceipt.eventId || prior.eventDigest !== receiverReceipt.eventDigest || prior.disposition !== receiverReceipt.disposition || prior.dispositionReason !== receiverReceipt.dispositionReason) fail('developer-receipt-conflict');
         return producerRow(row, db);
       }
       const deliveredAt = new Date().toISOString();

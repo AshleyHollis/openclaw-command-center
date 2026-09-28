@@ -12,30 +12,42 @@ export function createDeveloperEventTransport({ baseUrl, tokenEnv, env = process
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash || !/^\/[A-Za-z0-9/_-]*$/u.test(base.pathname)) throw new TypeError('Developer Work receiver must use a credential-free HTTPS base URL.');
   if (typeof tokenEnv !== 'string' || !/^[A-Z][A-Z0-9_]{7,127}$/u.test(tokenEnv)) throw new TypeError('Developer Work credential reference is invalid.');
   const endpoint = new URL(`${base.pathname.replace(/\/$/u, '')}${developerEventRoute}`, base.origin);
-  return Object.freeze({
-    async send(event, { watermark } = {}) {
-      if (!Number.isSafeInteger(watermark) || watermark < event.workRevision || watermark > event.workRevision + 500) throw Object.assign(new Error('Developer Work delivery watermark is invalid.'), { code: 'delivery-watermark-invalid' });
-      const credential = env[tokenEnv];
-      if (typeof credential !== 'string' || credential.length < 32 || credential.length > 512) throw Object.assign(new Error('Developer Work credential is unavailable.'), { code: 'credential-unavailable' });
-      const response = await fetchImpl(endpoint, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
-        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': String(watermark) },
-        body: JSON.stringify(event)
-      });
-      if (![200, 202].includes(response.status) || !/^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '')) throw Object.assign(new Error('Developer Work receipt was not confirmed.'), { code: `receiver-http-${response.status}` });
-      let envelope;
-      try { envelope = (await readBoundedJson(response.body, MAX_RECEIPT_BYTES)).body; }
-      catch { throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' }); }
-      if (envelope?.schemaVersion !== 1 || envelope.status !== 'accepted' || !envelope.receipt) throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' });
-      return envelope.receipt;
+  async function transmit(event, { watermark, disposition = false } = {}) {
+    if (!Number.isSafeInteger(watermark) || watermark < event.workRevision || watermark > event.workRevision + 500) throw Object.assign(new Error('Developer Work delivery watermark is invalid.'), { code: 'delivery-watermark-invalid' });
+    const credential = env[tokenEnv];
+    if (typeof credential !== 'string' || credential.length < 32 || credential.length > 512) throw Object.assign(new Error('Developer Work credential is unavailable.'), { code: 'credential-unavailable' });
+    const response = await fetchImpl(endpoint, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+      headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': String(watermark), ...(disposition ? { 'x-developer-work-disposition': 'expired' } : {}) },
+      body: JSON.stringify(event)
+    });
+    const json = /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '');
+    if (![200, 202].includes(response.status) || !json) {
+      if (json && (!disposition && [400, 409].includes(response.status) || disposition && response.status === 503)) {
+        try {
+          const { body } = await readBoundedJson(response.body, MAX_RECEIPT_BYTES);
+          if (body?.schemaVersion === 1 && body.status === 'error' && ['developer-request-expired', 'developer-request-expired-dependency'].includes(body.code)) throw Object.assign(new Error('Explicit expiry disposition required.'), { code: body.code });
+          if (disposition && body?.schemaVersion === 1 && body.status === 'error' && body.code === 'capability-unavailable') throw Object.assign(new Error('Receiver has no expiry disposition owner.'), { code: 'receiver-disposition-unavailable' });
+        } catch (error) { if (['developer-request-expired', 'developer-request-expired-dependency', 'receiver-disposition-unavailable'].includes(error.code)) throw error; }
+      }
+      throw Object.assign(new Error('Developer Work receipt was not confirmed.'), { code: `receiver-http-${response.status}` });
     }
+    let envelope;
+    try { envelope = (await readBoundedJson(response.body, MAX_RECEIPT_BYTES)).body; }
+    catch { throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' }); }
+    if (envelope?.schemaVersion !== 1 || !envelope.receipt || (envelope.status !== 'accepted' && envelope.status !== 'disposed') || (envelope.status === 'disposed') !== (envelope.receipt.disposition === 'expired') || disposition && envelope.status !== 'disposed') throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' });
+    return envelope.receipt;
+  }
+  return Object.freeze({
+    send: (event, options) => transmit(event, options),
+    disposeExpired: (event, options) => transmit(event, { ...options, disposition: true })
   });
 }
 
 function deliveryFailure(error) {
   const code = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'receiver-unavailable';
   const status = /^receiver-http-([0-9]{3})$/u.exec(code);
-  const paused = ['credential-unavailable', 'receiver-receipt-invalid', 'developer-receipt-conflict'].includes(code)
+  const paused = ['credential-unavailable', 'receiver-receipt-invalid', 'developer-receipt-conflict', 'developer-request-expired', 'developer-request-expired-dependency', 'receiver-disposition-unavailable'].includes(code)
     || status && Number(status[1]) >= 400 && Number(status[1]) < 500 && ![408, 429].includes(Number(status[1]));
   return { code, paused: Boolean(paused) };
 }
@@ -79,6 +91,16 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
           delivered += 1;
         } catch (error) {
           if (closed) assertOpen();
+          if (['developer-request-expired', 'developer-request-expired-dependency'].includes(error?.code) && typeof receiver.disposeExpired === 'function') {
+            try {
+              const disposition = await receiver.disposeExpired(item.event, { watermark: watermarks.get(item.workId) });
+              assertOpen();
+              if (disposition?.disposition !== 'expired') throw Object.assign(new Error('Receiver did not confirm an expiry disposition.'), { code: 'receiver-receipt-invalid' });
+              metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: item.eventId, receiverReceipt: disposition });
+              delivered += 1;
+              continue;
+            } catch (dispositionError) { error = dispositionError; }
+          }
           const failure = deliveryFailure(error);
           metadata.recordDeveloperDeliveryFailure({ producerId: authority.producerId, eventId: item.eventId, ...failure, observedAtMs: now() });
           failedWork.add(item.workId);

@@ -77,12 +77,16 @@ export function createDeveloperEventHandler({ service, principals = [], trustedP
       if (!principal.families?.includes(eventFamilies[body?.eventType])) return reply(res, 403, { schemaVersion: 1, status: 'error', code: 'event-family-denied' });
       const watermarkHeader = req.headers?.['x-developer-work-watermark'];
       if (watermarkHeader !== undefined && (typeof watermarkHeader !== 'string' || !/^[1-9][0-9]{0,15}$/u.test(watermarkHeader) || !Number.isSafeInteger(Number(watermarkHeader)))) throw Object.assign(new Error('Invalid delivery watermark.'), { code: 'delivery-watermark-invalid' });
-      const receipt = await service.accept({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body, assertAuthorityCurrent,
+      const mode = req.headers?.['x-developer-work-disposition'];
+      if (mode !== undefined && mode !== 'expired') throw Object.assign(new Error('Invalid disposition mode.'), { code: 'developer-event-invalid' });
+      const command = mode === 'expired' ? service.disposeExpired : service.accept;
+      if (typeof command !== 'function') throw Object.assign(new Error('Expiry disposition is unavailable.'), { code: 'capability-unavailable' });
+      const receipt = await command({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body, assertAuthorityCurrent,
         ...(watermarkHeader !== undefined ? { watermark: Number(watermarkHeader) } : {}) });
-      return reply(res, receipt.projectionState === 'projected' ? 200 : 202, { schemaVersion: 1, status: 'accepted', receipt });
+      return reply(res, receipt.disposition === 'expired' ? 200 : receipt.projectionState === 'projected' ? 200 : 202, { schemaVersion: 1, status: receipt.disposition === 'expired' ? 'disposed' : 'accepted', receipt });
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'invalid-request';
-      const status = code === 'unauthorized' ? 401 : code === 'body-too-large' ? 413 : code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' ? 503 : /(?:stale|gap|conflict|terminal|order|missing)$/u.test(code) ? 409 : 400;
+      const status = code === 'unauthorized' ? 401 : code === 'body-too-large' ? 413 : code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' ? 503 : /(?:stale|gap|conflict|terminal|order|missing|expired-dependency)$/u.test(code) ? 409 : 400;
       return reply(res, status, { schemaVersion: 1, status: 'error', code }, status === 429 ? { 'retry-after': '60' } : {});
     }
   };

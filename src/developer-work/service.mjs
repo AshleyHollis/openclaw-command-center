@@ -159,5 +159,11 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
     return Object.freeze({ ...(metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId }) ?? receipt), duplicate: receipt.duplicate });
   }
 
-  return Object.freeze({ accept, drain, close() { closed = true; } });
+  function disposeExpired({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
+    if (closed) throw new Error('Developer Work service is closed.');
+    const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
+    return metadata.disposeExpiredDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
+  }
+
+  return Object.freeze({ accept, disposeExpired, drain, close() { closed = true; } });
 }
