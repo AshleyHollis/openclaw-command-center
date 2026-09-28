@@ -124,7 +124,12 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
     const { receipt, event } = item;
     const producerId = receipt.producerId;
     if (event.request && isCurrent(producerId, event)) {
-      const result = await attention.ingest(occurrenceFor(producerId, event, devBaseUrl, receipt.acceptedAt));
+      // Closure-only disposition projects the exact terminal state, not its
+      // expired request text, deadline or a new human-facing request.
+      const projectionEvent = receipt.dispositionReason === 'expired-terminal-closure'
+        ? { ...event, request: { requestId: event.request.requestId, kind: event.request.kind, expectedRequestRevision: event.request.expectedRequestRevision } }
+        : event;
+      const result = await attention.ingest(occurrenceFor(producerId, projectionEvent, devBaseUrl, receipt.acceptedAt));
       if (terminalTypes.has(event.eventType) && !result.activity) recordActivity(metadata, producerId, event);
       if (incidentTypes.has(event.eventType)) recordActivity(metadata, producerId, event);
     } else if (terminalTypes.has(event.eventType) || incidentTypes.has(event.eventType) || activityOnlyTypes.has(event.eventType)) {
@@ -159,10 +164,14 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
     return Object.freeze({ ...(metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId }) ?? receipt), duplicate: receipt.duplicate });
   }
 
-  function disposeExpired({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
+  async function disposeExpired({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
     if (closed) throw new Error('Developer Work service is closed.');
     const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
-    return metadata.disposeExpiredDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
+    const receipt = metadata.disposeExpiredDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
+    if (receipt.dispositionReason === 'expired-terminal-closure') {
+      try { await drain(); } catch { /* closure remains durable and visibly pending */ }
+    }
+    return Object.freeze({ ...(metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId }) ?? receipt), duplicate: receipt.duplicate });
   }
 
   return Object.freeze({ accept, disposeExpired, drain, close() { closed = true; } });
