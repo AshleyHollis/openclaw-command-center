@@ -393,6 +393,48 @@ test('restart finishes an interrupted quiet-summary cohort without a second oper
   }, '2026-08-27T22:00:00.000Z');
 });
 
+test('quiet-summary replay keeps its preassigned identity across local midnight', async () => {
+  await fixture(async ({ metadata, service, attention, episode, episodes, binding, candidates, clears, devices, now, advance }) => {
+    episodes.push({ ...episode, episodeId: 'episode-a' });
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '81111111-4444-4444-8444-444444444444', expectedRevision: 1, settings: { quietHoursEnd: '23:50', timeZone: 'UTC' } });
+    await service.reconcile();
+    advance(10 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    const original = candidates[0];
+    const cohort = service.inspect().slots.filter(slot => slot.status === 'emitted');
+    assert.equal(cohort.length, 2);
+    assert.equal(new Set(cohort.map(slot => slot.episode_id)).size, 2);
+    assert.equal(cohort.every(slot => slot.emission_id === original.emissionId && slot.logical_operation_id === original.logicalOperationId), true);
+    service.close();
+
+    // SQLite interruption simulation, not process death: the host reported sent,
+    // but CC committed only the first slot receipt after preparing both IDs.
+    const db = new DatabaseSync(metadata.databasePath);
+    try {
+      db.prepare("UPDATE notification_slots SET status = 'queued', emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
+        .run(original.emissionId, cohort[0].slot_id);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued' AND emission_id = ? AND logical_operation_id = ?").get(original.emissionId, original.logicalOperationId).count, 1);
+      assert.equal(db.prepare("SELECT status FROM notification_emissions WHERE emission_id = ?").get(original.emissionId).status, 'sent');
+    } finally { db.close(); }
+
+    advance(20 * 60 * 1000);
+    assert.equal(new Date(now()).toISOString(), '2026-08-28T00:10:00.000Z');
+    assert.ok(original.expiresAtMs > now(), 'the original candidate is still unexpired');
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      await restarted.reconcile();
+      assert.equal(candidates.length, 1, 'midnight must not create a second host operation');
+      const cohortIds = new Set(cohort.map(slot => slot.slot_id));
+      assert.equal(restarted.inspect().slots.filter(slot => cohortIds.has(slot.slot_id)).every(slot => slot.status === 'emitted' && slot.emission_id === original.emissionId && slot.logical_operation_id === original.logicalOperationId), true);
+      episode.state = 'Action running';
+      await restarted.reconcile();
+      assert.deepEqual(clears.map(clear => clear.logicalOperationId), [original.logicalOperationId]);
+      assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    } finally { restarted.close(); }
+  }, '2026-08-27T23:40:00.000Z');
+});
+
 test('repeated Snooze returns cannot exceed the High generation cap after restart', async () => {
   await fixture(async ({ metadata, service, attention, episode, binding, candidates, now, advance }) => {
     await service.reconcile();
