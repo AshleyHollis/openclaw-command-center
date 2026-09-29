@@ -66,22 +66,17 @@ function managedChromiumOptions(options) {
   return { ...options, args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
 }
 
-// The optional diagnostic callback receives only fixed transport stage names.
-// It is separate from Chromium options, including for existing one-argument callers.
-export async function launchManagedBrowser(options, onTransportStage = () => {}) {
+export async function launchManagedBrowser(options) {
   // A direct connection avoids the additional CDP WebSocket client used by
   // launchServer/connect. Keep the same Chromium options and lifecycle shape
   // so focused diagnosis can distinguish host/UI behavior from that transport.
   if (process.env.COMMAND_CENTER_BROWSER_TRANSPORT === 'direct') {
-    onTransportStage('browser-direct-launch');
     const browser = await chromium.launch(managedChromiumOptions(options));
     const close = async () => { await browser.close(); };
     return { browser, server: { kill: close }, close };
   }
-  onTransportStage('browser-server-launch');
   const server = await chromium.launchServer(managedChromiumOptions(options));
   try {
-    onTransportStage('browser-connect');
     const browser = await chromium.connect(server.wsEndpoint());
     return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
   } catch (error) {

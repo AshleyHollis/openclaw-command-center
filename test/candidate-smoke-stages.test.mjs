@@ -54,11 +54,10 @@ test('cleanup emits fixed failure marker, runs all tasks and never replaces prim
   assert.equal(second.records.filter(record => record.event === 'cleanup-failure').length, 2);
 });
 
-test('installed browser substages distinguish transport and first navigation with closed fields', () => {
-  const phases = ['browser-preflight', 'browser-launch', 'browser-server-launch', 'browser-connect',
-    'browser-context', 'browser-http-route', 'browser-websocket-route', 'browser-page',
-    'browser-evidence-page', 'browser-attention-navigation'];
-  for (const failedAt of phases.slice(2)) {
+test('installed browser boundaries are fixed-field markers, never exception data', () => {
+  const phases = ['browser-launch', 'browser-managed-ready', 'browser-page-ready',
+    'browser-first-navigation', 'browser-attention-link'];
+  for (const failedAt of phases) {
     const { records, stages } = recorder();
     for (const phase of phases.slice(0, phases.indexOf(failedAt) + 1)) stages.stage(phase);
     stages.failure(new Error('fictional-marker-zeta'));
@@ -67,39 +66,24 @@ test('installed browser substages distinguish transport and first navigation wit
     assert.ok(records.every(record => Object.keys(record).sort().join(',') === 'event,kind,stage'));
     assert.doesNotMatch(JSON.stringify(records), /fictional-marker-zeta/u);
   }
-  const direct = recorder();
-  direct.stages.stage('browser-direct-launch');
-  direct.stages.failure(new Error('fictional-marker-zeta'));
-  assert.equal(direct.records.at(-1).stage, 'browser-direct-launch');
 });
 
-test('installed browser reports substages before operations and does not forward callback as Playwright option', async () => {
+test('installed browser boundaries bracket transport return, page setup and first navigation', async () => {
   const browser = await readFile(new URL('../scripts/support/installed-developer-browser.mjs', import.meta.url), 'utf8');
-  const runtime = await readFile(new URL('./support/real-host-runtime.mjs', import.meta.url), 'utf8');
   const ordered = [
-    ["onStage('browser-context')", 'await browser.newContext('],
-    ["onStage('browser-http-route')", "await context.route('**/*'"],
-    ["onStage('browser-websocket-route')", "await context.routeWebSocket('**/*'"],
-    ["onStage('browser-page')", 'await context.newPage()'],
-    ["onStage('browser-evidence-page')", 'await configureEvidencePage(lifePage'],
-    ["onStage('browser-attention-navigation')", 'await lifePage.goto(attention.href']
+    'await launchManagedBrowser(', "onStage('browser-managed-ready')", 'await browser.newContext(',
+    "await context.route('**/*'", "await context.routeWebSocket('**/*'", 'await context.newPage()',
+    'await configureEvidencePage(lifePage', "onStage('browser-page-ready')",
+    "onStage('browser-first-navigation')", 'await lifePage.goto(attention.href',
+    "onStage('browser-attention-link')"
   ];
-  let previous = browser.indexOf('await launchManagedBrowser(');
-  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, onStage\)/u);
-  for (const [marker, operation] of ordered) {
-    const at = browser.indexOf(marker);
-    assert.ok(at > previous && browser.indexOf(operation, at) > at, marker);
-    previous = at;
+  let previous = -1;
+  for (const item of ordered) {
+    const position = browser.indexOf(item);
+    assert.ok(position > previous, item);
+    previous = position;
   }
-  assert.ok(browser.indexOf("onStage('browser-attention-link')") > previous);
-  assert.match(runtime, /launchManagedBrowser\(options, onTransportStage = \(\) => \{\}\)/u);
-  for (const [marker, operation] of [
-    ["onTransportStage('browser-direct-launch')", 'await chromium.launch('],
-    ["onTransportStage('browser-server-launch')", 'await chromium.launchServer('],
-    ["onTransportStage('browser-connect')", 'await chromium.connect(']
-  ]) assert.ok(runtime.indexOf(marker) < runtime.indexOf(operation), marker);
-  assert.match(runtime, /chromium.launchServer\(managedChromiumOptions\(options\)\)/u);
-  assert.match(runtime, /chromium.connect\(server.wsEndpoint\(\)\)/u);
+  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
 });
 
 test('candidate success kind and legacy launch/restart failure phases remain unchanged', async () => {

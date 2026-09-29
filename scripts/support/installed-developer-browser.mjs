@@ -46,27 +46,24 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
   let primaryFailed = false;
   try {
     onStage('browser-launch');
-    managed = await launchManagedBrowser({ headless: true, timeout: 60_000, executablePath }, onStage);
+    managed = await launchManagedBrowser({ headless: true, timeout: 60_000, executablePath });
+    onStage('browser-managed-ready');
     const browser = managed.browser;
-    onStage('browser-context');
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
-    onStage('browser-http-route');
     await context.route('**/*', route => {
       try { guard.assert(new URL(route.request().url()).hostname, 'browser-popup'); return route.continue(); }
       catch { return route.abort(); }
     });
-    onStage('browser-websocket-route');
     await context.routeWebSocket('**/*', socket => {
       try { assertWebSocketDestination(guard, socket.url()); socket.connectToServer(); }
       catch { socket.close(); }
     });
-    onStage('browser-page');
     const lifePage = await context.newPage();
-    onStage('browser-evidence-page');
     const routes = [await configureEvidencePage(lifePage, guard, evidence)];
+    onStage('browser-page-ready');
     const attention = new URL(uiUrl(live, 'attention'));
     attention.searchParams.set('p.attentionRecord', card.attentionRecordId);
-    onStage('browser-attention-navigation');
+    onStage('browser-first-navigation');
     await lifePage.goto(attention.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     onStage('browser-attention-link');
     const link = (await nativePlugin(lifePage)).getByRole('link', { name: 'Open DEV Session', exact: true });

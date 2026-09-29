@@ -3,10 +3,8 @@ const stages = new Set(['input', 'initial-host-launch', 'initial-readiness', 'pl
   'notification-setup', 'machine-ingress', 'attention-check', 'installed-world-setup',
   'installed-live-launch', 'installed-dev-launch', 'installed-session', 'installed-producer',
   'installed-attention', 'installed-handoff', 'installed-browser', 'browser-preflight',
-  'browser-launch', 'browser-direct-launch', 'browser-server-launch', 'browser-connect',
-  'browser-context', 'browser-http-route', 'browser-websocket-route',
-  'browser-page', 'browser-evidence-page', 'browser-attention-navigation',
-  'browser-attention-link', 'browser-unauthenticated',
+  'browser-launch', 'browser-managed-ready', 'browser-page-ready',
+  'browser-first-navigation', 'browser-attention-link', 'browser-unauthenticated',
   'browser-authenticated-chat', 'browser-stale', 'browser-resolve', 'installed-resolution',
   'host-restart', 'restart-readiness', 'clear-check', 'final-checks', 'cleanup']);
 
