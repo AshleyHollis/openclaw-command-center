@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access, lstat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
+import { runCandidateSmokeCleanup } from '../../src/candidate-smoke-stages.mjs';
 import { runtimeCapability } from '../../src/runtime-capability.mjs';
 import { TrafficGuard, assertWebSocketDestination } from '../../src/isolation.mjs';
 import { closeManagedBrowser, configureEvidencePage, launchManagedBrowser, requestAuthenticatedGateway } from '../../test/support/real-host-runtime.mjs';
@@ -35,12 +36,16 @@ const noChat = async page => assert.equal(await page.locator('openclaw-chat-pane
 const uiUrl = (world, routeId) => controlUiPluginUrl({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
   pluginId: 'command-center', routeId, fragmentParameter: runtimeCapability.authentication.urlFragmentParameter });
 
-export async function installedBrowserHandoff({ live, dev, handoff, card, sessionKey, created, workId, requestId, dashboard, invoke }) {
+export async function installedBrowserHandoff({ live, dev, handoff, card, sessionKey, created, workId, requestId, dashboard, invoke,
+  onStage = () => {}, onFailure = () => {}, onCleanupFailure = () => {} }) {
+  onStage('browser-preflight');
   const executablePath = await requireInstalledChromium();
   const guard = new TrafficGuard();
   const evidence = { requests: [], responses: [], console: [], errors: [] };
   let managed;
+  let primaryFailed = false;
   try {
+    onStage('browser-launch');
     managed = await launchManagedBrowser({ headless: true, timeout: 60_000, executablePath });
     const browser = managed.browser;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -57,6 +62,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     const attention = new URL(uiUrl(live, 'attention'));
     attention.searchParams.set('p.attentionRecord', card.attentionRecordId);
     await lifePage.goto(attention.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    onStage('browser-attention-link');
     const link = (await nativePlugin(lifePage)).getByRole('link', { name: 'Open DEV Session', exact: true });
     await link.waitFor({ timeout: 30_000 });
     const href = new URL(await link.getAttribute('href'));
@@ -66,6 +72,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     assert.equal(await link.getAttribute('target'), '_blank');
     assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
     const popup = context.waitForEvent('page', { timeout: 30_000 });
+    onStage('browser-unauthenticated');
     await link.click();
     const codePage = await popup;
     routes.push(await configureEvidencePage(codePage, guard, evidence));
@@ -92,6 +99,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     const authenticated = new URL(href);
     authenticated.hash = runtimeCapability.authentication.urlFragmentParameter + '=' + encodeURIComponent(dev.gatewayCredential);
     await codePage.goto(authenticated.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    onStage('browser-authenticated-chat');
     const open = (await nativePlugin(codePage)).getByRole('button', { name: 'Open exact Code session', exact: true });
     await open.waitFor({ timeout: 30_000 });
     await open.click();
@@ -100,6 +108,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     assert.equal(created.key, sessionKey);
     assert.ok((await dashboard()).attention.some(row => row.episodeId === card.episodeId), 'Chat resolved Life Attention');
     const stalePage = await context.newPage();
+    onStage('browser-stale');
     routes.push(await configureEvidencePage(stalePage, guard, evidence));
     await stalePage.goto(authenticated.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     const staleOpen = (await nativePlugin(stalePage)).getByRole('button', { name: 'Open exact Code session', exact: true });
@@ -113,6 +122,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     await staleOpen.click();
     await (await nativePlugin(stalePage)).getByRole('heading', { name: 'This handoff is stale' }).waitFor({ timeout: 30_000 });
     await noChat(stalePage);
+    onStage('browser-resolve');
     assert.ok((await dashboard()).attention.some(row => row.episodeId === card.episodeId), 'Session deletion resolved Life Attention');
     await invoke('request_resolved', { requestId, kind: 'input', expectedRequestRevision: 1 }, { code: 'answered', requestId });
     assert.ok(!(await dashboard()).attention.some(row => row.episodeId === card.episodeId), 'Explicit resolution left Life Attention active');
@@ -120,5 +130,13 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     guard.assertClean();
     return ['live-attention-browser-link', 'cross-origin-code-authentication', 'installed-exact-code-chat',
       'navigation-keeps-attention', 'deleted-session-stale-browser', 'explicit-producer-resolution'];
-  } finally { await closeManagedBrowser(managed); guard.assertClean(); }
+  } catch (error) {
+    primaryFailed = true;
+    onFailure();
+    throw error;
+  } finally {
+    await runCandidateSmokeCleanup([
+      () => closeManagedBrowser(managed), () => guard.assertClean()
+    ], primaryFailed, { stage: onStage, cleanupFailure: onCleanupFailure });
+  }
 }

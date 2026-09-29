@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
+import { createCandidateSmokeStages, runCandidateSmokeCleanup } from '../src/candidate-smoke-stages.mjs';
 import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from '../src/candidate-pair.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, candidateRuntimeDiff, closedCandidateSmokeFailure, launchCandidateHost,
@@ -64,8 +65,10 @@ function notificationStatus(world, status) {
 
 // Set only at the two host lifecycle boundaries; other failures remain unknown.
 let executionPhase = 'unknown';
+const stages = createCandidateSmokeStages(line => process.stderr.write(line));
 
 async function main() {
+  stages.stage('input');
   assert.equal(process.platform, 'linux', 'Candidate Gateway smoke requires Linux isolation');
   assert.equal(process.argv.length, 3, 'Usage: node scripts/smoke-candidate-pair.mjs ABSOLUTE_INPUT_JSON');
   const input = await boundedJson(process.argv[2]);
@@ -84,6 +87,7 @@ async function main() {
   const result = await withIsolatedWorld(async (world) => {
     const receiver = await loopbackPushReceiver(world.tempRoot);
     let run;
+    let primaryFailed = false;
     const awaitBootstrap = currentRun => waitForConsecutiveReadiness(async (signal) => {
       try {
         const response = await fetchWithRuntimeDispatcher(
@@ -99,12 +103,15 @@ async function main() {
     }, currentRun.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 250 });
     try {
       executionPhase = 'initial-host-launch';
+      stages.stage('initial-host-launch');
       run = await launchCandidateHost({ descriptor, candidatePair: pair, inputTreeReceipt,
         artifactReceipt, buildReceipt, pluginArchivePath: input.pluginArchivePath,
         hostArchivePath: input.hostArchivePath, world, notificationCaPath: receiver.certificatePath });
       executionPhase = 'unknown';
+      stages.stage('initial-readiness');
       await awaitBootstrap(run);
       let read;
+      stages.stage('plugin-read');
       await waitForConsecutiveReadiness(async (signal) => {
         try {
           read = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
@@ -124,6 +131,7 @@ async function main() {
       const bootstrapBody = await bootstrap.json();
       assert.ok(typeof bootstrapBody.serverBuildId === 'string' && bootstrapBody.serverBuildId);
       const operators = [];
+      stages.stage('notification-setup');
       for (const device of ['first', 'second']) {
         const deviceIdentity = createGatewayDeviceIdentity();
         const receiverKey = createECDH('prime256v1');
@@ -161,6 +169,7 @@ async function main() {
       });
       assert.equal(settingsResponse.status, 200, 'Fixture notification settings update failed');
       const requestId = 'fictional-input-a';
+      stages.stage('machine-ingress');
       const request = { requestId, kind: 'input', expectedRequestRevision: 0,
         summary: 'Fictional input required', question: 'Fictional private question?' };
       const base = { schemaVersion: 1, workId: 'fictional-work',
@@ -180,6 +189,7 @@ async function main() {
       };
       await send({ ...base, eventId: randomUUID(), workRevision: 1,
         eventType: 'human_input_required', occurredAt: new Date().toISOString(), request }, 1);
+      stages.stage('attention-check');
       const dashboard = async () => {
         const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
           credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get',
@@ -193,12 +203,15 @@ async function main() {
       assert.deepEqual(receiver.deliveries.map(delivery => delivery.path).sort(), ['/push/first', '/push/second'],
         'Fictional devices did not each get one activation');
       const developerJourney = await runInstalledDevLiveJourney({ input, pair, inputTreeReceipt,
-        artifactReceipt, descriptor, buildReceipt });
+        artifactReceipt, descriptor, buildReceipt, onStage: stage => stages.stage(stage),
+        onFailure: () => stages.failure(), onCleanupFailure: () => stages.cleanupFailure() });
       assert.equal(developerJourney.kind, 'installed-dev-live-session-smoke');
       assert.ok(developerJourney.checks.includes('explicit-producer-resolution'));
       executionPhase = 'host-restart';
+      stages.stage('host-restart');
       run = await restartPinnedHost(run);
       executionPhase = 'unknown';
+      stages.stage('restart-readiness');
       await awaitBootstrap(run);
       await waitForConsecutiveReadiness(async (signal) => {
         try {
@@ -213,6 +226,7 @@ async function main() {
         }
       }, run.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250 });
       assert.equal(receiver.deliveries.length, 2, 'Fresh Gateway worker duplicated the activation');
+      stages.stage('clear-check');
       await send({ ...base, eventId: randomUUID(), workRevision: 2,
         eventType: 'request_resolved', occurredAt: new Date().toISOString(),
         request: { ...request, expectedRequestRevision: 1 },
@@ -224,6 +238,7 @@ async function main() {
         ['/push/first', '/push/first', '/push/second', '/push/second'],
         'Fresh Gateway worker did not clear both fictional devices');
       await assertRecordedChildTraffic(world);
+      stages.stage('final-checks');
       assertNoFatalHostOutput(run.diagnostics);
       return { schemaVersion: 1, kind: 'candidate-pair-isolated-smoke',
         candidatePairSeal: pair.seal, hostCommit: pair.openClaw.sourceCommit,
@@ -233,26 +248,26 @@ async function main() {
           'attention-lifecycle', 'native-multi-device-push-and-clear', 'gateway-restart-continuity',
           'child-traffic-isolation', ...developerJourney.checks],
         releaseQualified: false };
+    } catch (error) {
+      primaryFailed = true;
+      stages.failure();
+      throw error;
     } finally {
-      try {
-        if (run) {
-          await stopPinnedHost(run.child);
-          await run.outputDrained;
-          await assertRecordedChildTraffic(world);
-          assertNoFatalHostOutput(run.diagnostics);
-        }
-      } catch (error) {
-        executionPhase = 'unknown';
-        throw error;
-      } finally {
-        try { await receiver.close(); } catch (error) { executionPhase = 'unknown'; throw error; }
-      }
+      if (!primaryFailed) executionPhase = 'unknown';
+      await runCandidateSmokeCleanup([
+        async () => { if (run) await stopPinnedHost(run.child); },
+        async () => { if (run) await run.outputDrained; },
+        async () => { if (run) await assertRecordedChildTraffic(world); },
+        async () => { if (run) assertNoFatalHostOutput(run.diagnostics); },
+        () => receiver.close()
+      ], primaryFailed, stages);
     }
   }, { candidateRoot: root, machineIngress: true });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 main().catch((error) => {
+  stages.failure();
   // The worker's private smoke.log may retain one bounded diagnostic record.
   // The final failure report remains the closed three-field record below.
   const diagnostic = executionPhase === 'host-restart' ? candidateRuntimeDiff(error) : undefined;

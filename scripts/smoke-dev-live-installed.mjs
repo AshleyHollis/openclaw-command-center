@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
+import { runCandidateSmokeCleanup } from '../src/candidate-smoke-stages.mjs';
 import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from '../src/candidate-pair.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchCandidateHost,
@@ -122,8 +123,10 @@ async function main() {
   return runInstalledDevLiveJourney({ input, pair, inputTreeReceipt, artifactReceipt, descriptor, buildReceipt });
 }
 
-export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt, artifactReceipt, descriptor, buildReceipt }) {
+export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt, artifactReceipt, descriptor, buildReceipt,
+  onStage = () => {}, onFailure = () => {}, onCleanupFailure = () => {} }) {
   phase = 'worlds';
+  onStage('installed-world-setup');
   return withIsolatedWorld(live => withIsolatedWorld(async originalDev => {
     const dev = { ...originalDev, machineCredential: live.machineCredential };
     assert.notEqual(dev.root, live.root);
@@ -134,6 +137,7 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
     const handoff = await tlsLoopbackProxy(dev.gateway.url, certificate);
     let liveRun;
     let devRun;
+    let primaryFailed = false;
     try {
       await configure(live, config => { config.plugins.entries['command-center'].config.developerWork.devBaseUrl = handoff.url; });
       await configure(dev, config => {
@@ -146,16 +150,19 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
         };
       });
       phase = 'live-start';
+      onStage('installed-live-launch');
       liveRun = await launchCandidateHost({ descriptor, candidatePair: pair, inputTreeReceipt,
         artifactReceipt, buildReceipt, pluginArchivePath: input.pluginArchivePath,
         hostArchivePath: input.hostArchivePath, world: live });
       await ready(live, liveRun);
       phase = 'dev-start';
+      onStage('installed-dev-launch');
       devRun = await launchCandidateHost({ descriptor, candidatePair: pair, inputTreeReceipt,
         artifactReceipt, buildReceipt, pluginArchivePath: input.pluginArchivePath,
         hostArchivePath: input.hostArchivePath, world: dev, notificationCaPath: certificate.certificatePath });
       await ready(dev, devRun);
       phase = 'session';
+      onStage('installed-session');
       const sessionKey = `agent:main:command-center:acceptance-dev:${randomUUID()}`;
       const createdResponse = await requestAuthenticatedGateway({ gatewayUrl: dev.gateway.url,
         credential: dev.gatewayCredential, method: 'sessions.create',
@@ -168,6 +175,7 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
         credential: live.gatewayCredential, method: 'command-center.v1.topics.list',
         params: { schemaVersion: 1 }, scopes: ['operator.read'] }));
       phase = 'producer';
+      onStage('installed-producer');
       const workId = 'fictional-installed-dev-work';
       const requestId = 'fictional-installed-input';
       const invoke = async (eventType, request, outcome) => {
@@ -193,6 +201,7 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
         assert.equal(joined.count, 1, 'Installed DEV producer request lost its event lineage');
       } finally { db.close(); }
       phase = 'attention';
+      onStage('installed-attention');
       const dashboardResponse = await requestAuthenticatedGateway({ gatewayUrl: live.gateway.url,
         credential: live.gatewayCredential, method: 'command-center.v1.dashboard.get',
         params: { schemaVersion: 1, activityOffset: 0, activityLimit: 20 }, scopes: ['operator.admin'] });
@@ -205,6 +214,7 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
       assert.equal(link.searchParams.get('p.requestId'), requestId);
       assert.ok(receiver.count() > 0, 'DEV did not use the independent HTTPS receiver');
       phase = 'handoff';
+      onStage('installed-handoff');
       const currentResponse = await requestAuthenticatedGateway({ gatewayUrl: dev.gateway.url,
         credential: dev.gatewayCredential, method: 'command-center.v1.developer-work.resolve',
         params: { schemaVersion: 1, workId }, scopes: ['operator.read'] });
@@ -221,6 +231,7 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
       assert.equal(resolved.sessionId, created.sessionId);
       assert.ok(resolved.lifecycleRevision);
       phase = 'resolution';
+      onStage('installed-browser');
       const readDashboard = async () => {
         const response = await requestAuthenticatedGateway({ gatewayUrl: live.gateway.url,
           credential: live.gatewayCredential, method: 'command-center.v1.dashboard.get',
@@ -228,7 +239,8 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
         return response?.result ?? response;
       };
       const browserChecks = await installedBrowserHandoff({ live, dev, handoff, card, sessionKey, created, workId,
-        requestId, dashboard: readDashboard, invoke });
+        requestId, dashboard: readDashboard, invoke, onStage, onFailure, onCleanupFailure });
+      onStage('installed-resolution');
       const finalResponse = await requestAuthenticatedGateway({ gatewayUrl: live.gateway.url,
         credential: live.gatewayCredential, method: 'command-center.v1.dashboard.get',
         params: { schemaVersion: 1, activityOffset: 0, activityLimit: 20 }, scopes: ['operator.admin'] });
@@ -239,12 +251,15 @@ export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt
         checks: ['two-isolated-installed-gateways', 'separate-authentication',
           'dev-session-bound-producer-tool', 'https-machine-receipt', 'live-attention',
           'exact-dev-session-resolution', 'request-resolution', ...browserChecks], releaseQualified: false };
+    } catch (error) {
+      primaryFailed = true;
+      onFailure();
+      throw error;
     } finally {
-      try { await stop(devRun, dev); } finally {
-        try { await stop(liveRun, live); } finally {
-          try { await handoff.close(); } finally { await receiver.close(); }
-        }
-      }
+      await runCandidateSmokeCleanup([
+        () => stop(devRun, dev), () => stop(liveRun, live),
+        () => handoff.close(), () => receiver.close()
+      ], primaryFailed, { stage: onStage, cleanupFailure: onCleanupFailure });
     }
   }, { candidateRoot: root }), { candidateRoot: root, machineIngress: true });
 }
