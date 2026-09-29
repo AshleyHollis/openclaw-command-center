@@ -16,6 +16,7 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchCandidateHos
   parseCandidateHostDescriptor, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
+import { installedBrowserHandoff } from './support/installed-developer-browser.mjs';
 import { isGatewayStartupPending, requestAuthenticatedGateway } from '../test/support/real-host-runtime.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,6 +52,22 @@ async function tlsLoopbackProxy(target, certificate) {
     });
     upstream.on('error', () => { if (!response.headersSent) response.writeHead(502); response.end(); });
     request.pipe(upstream);
+  });
+  server.on('upgrade', (request, socket, head) => {
+    const destination = new URL(request.url, target);
+    const upstream = httpRequest(destination, { method: request.method,
+      headers: { ...request.headers, host: destination.host, 'x-forwarded-proto': 'https' } });
+    upstream.on('upgrade', (reply, remote, remoteHead) => {
+      const headers = Object.entries(reply.headers).map(([key, value]) => key + ': ' + value).join('\r\n');
+      socket.write('HTTP/1.1 101 Switching Protocols\r\n' + headers + '\r\n\r\n');
+      if (head.length) remote.write(head);
+      if (remoteHead.length) socket.write(remoteHead);
+      remote.pipe(socket).pipe(remote);
+    });
+    upstream.on('error', () => socket.destroy());
+    upstream.on('response', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+    upstream.end();
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   return { url: `https://127.0.0.1:${server.address().port}`, count: () => upstreamRequests,
@@ -102,6 +119,10 @@ async function main() {
   await assertBuiltDigest(buildReceipt);
   assertCandidatePairEvidence(pair, { inputTreeReceipt, buildReceipt, artifactReceipt, hostDescriptor: descriptor });
   await assertCandidateArchiveBytes(pair, input);
+  return runInstalledDevLiveJourney({ input, pair, inputTreeReceipt, artifactReceipt, descriptor, buildReceipt });
+}
+
+export async function runInstalledDevLiveJourney({ input, pair, inputTreeReceipt, artifactReceipt, descriptor, buildReceipt }) {
   phase = 'worlds';
   return withIsolatedWorld(live => withIsolatedWorld(async originalDev => {
     const dev = { ...originalDev, machineCredential: live.machineCredential };
@@ -117,6 +138,7 @@ async function main() {
       await configure(live, config => { config.plugins.entries['command-center'].config.developerWork.devBaseUrl = handoff.url; });
       await configure(dev, config => {
         config.cron = { enabled: true };
+        config.gateway.controlUi.allowedOrigins = [handoff.url];
         config.plugins.entries['command-center'].config.developerWorkProducer = {
           enabled: true, producerId: 'fictional-dev', allowedProjects: ['fictional-project'],
           allowedAgentIds: ['main'], receiverBaseUrl: receiver.url,
@@ -199,8 +221,14 @@ async function main() {
       assert.equal(resolved.sessionId, created.sessionId);
       assert.ok(resolved.lifecycleRevision);
       phase = 'resolution';
-      await invoke('request_resolved', { requestId, kind: 'input', expectedRequestRevision: 1 },
-        { code: 'answered', requestId });
+      const readDashboard = async () => {
+        const response = await requestAuthenticatedGateway({ gatewayUrl: live.gateway.url,
+          credential: live.gatewayCredential, method: 'command-center.v1.dashboard.get',
+          params: { schemaVersion: 1, activityOffset: 0, activityLimit: 20 }, scopes: ['operator.admin'] });
+        return response?.result ?? response;
+      };
+      const browserChecks = await installedBrowserHandoff({ live, dev, handoff, card, sessionKey, created, workId,
+        requestId, dashboard: readDashboard, invoke });
       const finalResponse = await requestAuthenticatedGateway({ gatewayUrl: live.gateway.url,
         credential: live.gatewayCredential, method: 'command-center.v1.dashboard.get',
         params: { schemaVersion: 1, activityOffset: 0, activityLimit: 20 }, scopes: ['operator.admin'] });
@@ -210,7 +238,7 @@ async function main() {
         hostCommit: pair.openClaw.sourceCommit, pluginBuildDigest: pair.commandCenter.buildDigest,
         checks: ['two-isolated-installed-gateways', 'separate-authentication',
           'dev-session-bound-producer-tool', 'https-machine-receipt', 'live-attention',
-          'exact-dev-session-resolution', 'request-resolution'], releaseQualified: false };
+          'exact-dev-session-resolution', 'request-resolution', ...browserChecks], releaseQualified: false };
     } finally {
       try { await stop(devRun, dev); } finally {
         try { await stop(liveRun, live); } finally {
@@ -221,7 +249,7 @@ async function main() {
   }, { candidateRoot: root }), { candidateRoot: root, machineIngress: true });
 }
 
-main().then(result => process.stdout.write(`${JSON.stringify(result)}\n`)).catch(error => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().then(result => process.stdout.write(`${JSON.stringify(result)}\n`)).catch(error => {
   const line = /smoke-dev-live-installed\.mjs:(\d+)/u.exec(error?.stack ?? '')?.[1] ?? 'unknown';
   process.stderr.write(`Installed DEV/LIVE smoke failed at ${phase}, line ${line}: ${error?.category ?? error?.code ?? error?.name ?? 'unclassified'}\n`);
   process.exitCode = 1;

@@ -16,6 +16,7 @@ import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { developerEventRoute } from '../src/developer-work/http-route.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { createGatewayDeviceIdentity, isGatewayStartupPending, requestAuthenticatedGateway } from '../test/support/real-host-runtime.mjs';
+import { runInstalledDevLiveJourney } from './smoke-dev-live-installed.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedFields = ['schemaVersion', 'candidatePairPath', 'inputTreeReceiptPath',
@@ -191,6 +192,10 @@ async function main() {
       assert.ok(notificationStatus(world, 'sent') > 0, 'Installed host did not record a sent notification');
       assert.deepEqual(receiver.deliveries.map(delivery => delivery.path).sort(), ['/push/first', '/push/second'],
         'Fictional devices did not each get one activation');
+      const developerJourney = await runInstalledDevLiveJourney({ input, pair, inputTreeReceipt,
+        artifactReceipt, descriptor, buildReceipt });
+      assert.equal(developerJourney.kind, 'installed-dev-live-session-smoke');
+      assert.ok(developerJourney.checks.includes('explicit-producer-resolution'));
       executionPhase = 'host-restart';
       run = await restartPinnedHost(run);
       executionPhase = 'unknown';
@@ -226,7 +231,7 @@ async function main() {
         pluginBuildDigest: pair.commandCenter.buildDigest, fixtureDigest: pair.fixtureDigest,
         checks: ['isolated-gateway-startup', 'authenticated-plugin-read', 'machine-ingress-projection',
           'attention-lifecycle', 'native-multi-device-push-and-clear', 'gateway-restart-continuity',
-          'child-traffic-isolation'],
+          'child-traffic-isolation', ...developerJourney.checks],
         releaseQualified: false };
     } finally {
       try {
