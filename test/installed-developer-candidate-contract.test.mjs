@@ -44,7 +44,7 @@ test('fixed candidate smoke executes installed Code-to-Life browser journey befo
   assert.ok(browser.includes("route.locator('openclaw-plugin-view [data-plugin-view-root]')"));
   assert.ok(browser.includes("root.waitFor({ state: 'attached'"));
   assert.doesNotMatch(browser, /contentFrame\(|getAttribute\('srcdoc'\)|getAttribute\('sandbox'\)/u);
-  assert.ok(browser.includes("(await nativePlugin(lifePage)).getByRole('link'"));
+  assert.match(browser, /const root = await nativePlugin\(lifePage\);\s+onStage\('browser-attention-root'\);\s+const link = root\.getByRole\('link', \{ name: 'Open DEV Session', exact: true \}\);/u);
   assert.ok(browser.includes("(await nativePlugin(codePage)).getByRole('button'"));
   assert.ok(browser.includes("(await nativePlugin(stalePage)).getByRole('button'"));
   assert.ok(browser.includes("(await nativePlugin(stalePage)).getByRole('heading'"));
