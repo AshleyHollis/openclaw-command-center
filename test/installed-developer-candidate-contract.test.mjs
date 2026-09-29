@@ -23,15 +23,19 @@ test('fixed candidate smoke executes installed Code-to-Life browser journey befo
   assert.match(browser, /installedChromiumPath = '\/usr\/bin\/chromium'/u);
   assert.match(browser, /await requireInstalledChromium\(\)/u);
   assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
-  // A host plugin-page exists in the parent DOM, but installed controls live
-  // only inside the mounted, scripts-only descriptor iframe.
-  assert.match(browser, /page\.locator\('iframe\.plugin-tab-embed__frame\[title="Command Center"\]'\)/u);
-  assert.match(browser, /iframe\.getAttribute\('sandbox'\).*'allow-scripts'/u);
-  assert.match(browser, /iframe\.getAttribute\('srcdoc'\)/u);
-  assert.match(browser, /return iframe\.contentFrame\(\)/u);
-  assert.doesNotMatch(browser, /page\.locator\('openclaw-plugin-page'\)/u);
-  for (const page of ['lifePage', 'codePage', 'wrongPage', 'stalePage']) {
-    assert.match(browser, new RegExp('\\(await plugin\\(' + page + '\\)\\)\\.getByRole\\(', 'u'), page);
+  // Attention and developer-work register native pages, unlike descriptor frames.
+  assert.ok(browser.includes("page.locator('openclaw-plugin-page')"));
+  assert.ok(browser.includes("page.locator('iframe.plugin-tab-embed__frame').count(), 0"));
+  assert.ok(browser.includes('const route = await plugin(page);'));
+  assert.ok(browser.includes("route.locator('openclaw-plugin-view [data-plugin-view-root]')"));
+  assert.ok(browser.includes("root.waitFor({ state: 'attached'"));
+  assert.doesNotMatch(browser, /contentFrame\(|getAttribute\('srcdoc'\)|getAttribute\('sandbox'\)/u);
+  assert.ok(browser.includes("(await nativePlugin(lifePage)).getByRole('link'"));
+  assert.ok(browser.includes("(await nativePlugin(codePage)).getByRole('button'"));
+  assert.ok(browser.includes("(await nativePlugin(stalePage)).getByRole('button'"));
+  assert.ok(browser.includes("(await nativePlugin(stalePage)).getByRole('heading'"));
+  for (const page of ['codePage', 'wrongPage']) {
+    assert.ok(browser.includes('(await plugin(' + page + ")).getByRole('button'"), page);
   }
   assert.match(browser, /await invoke\('request_resolved'/u);
   assert.match(browser, /method: 'sessions.delete'/u);
