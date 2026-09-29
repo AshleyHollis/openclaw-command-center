@@ -86,6 +86,55 @@ test('installed browser boundaries bracket transport return, page setup and firs
   assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, \{ transport: 'direct' \}\)/u);
 });
 
+test('Attention link diagnostics preserve exact browser source order and a closed marker vocabulary', async () => {
+  const browser = await readFile(new URL('../scripts/support/installed-developer-browser.mjs', import.meta.url), 'utf8');
+  const ordered = [
+    "onStage('browser-attention-link')", 'const root = await nativePlugin(lifePage)',
+    "onStage('browser-attention-root')", "root.getByRole('link', { name: 'Open DEV Session', exact: true })",
+    'await link.waitFor({ timeout: 30_000 })', "onStage('browser-attention-visible')",
+    "new URL(await link.getAttribute('href'))", 'assert.equal(href.href, card.evidence.devHandoffUrl)',
+    'assert.equal(href.origin, handoff.url)', "assert.equal(href.hash, '')",
+    "assert.equal(href.username, '')", "assert.equal(href.password, '')",
+    "assert.equal(await link.getAttribute('target'), '_blank')",
+    "assert.equal(await link.getAttribute('rel'), 'noopener noreferrer')",
+    "onStage('browser-attention-attributes')", "context.waitForEvent('page'",
+    "onStage('browser-unauthenticated')", 'await link.click()'
+  ];
+  let previous = -1;
+  for (const anchor of ordered) {
+    const position = browser.indexOf(anchor);
+    assert.ok(position > previous, 'Missing or out-of-order Attention link boundary: ' + anchor);
+    assert.equal(browser.indexOf(anchor, position + 1), -1, 'Ambiguous Attention link boundary: ' + anchor);
+    previous = position;
+  }
+  const stagesSource = await readFile(new URL('../src/candidate-smoke-stages.mjs', import.meta.url), 'utf8');
+  const literal = stagesSource.match(/const stages = new Set\(\[([\s\S]*?)\]\);/u);
+  assert.ok(literal, 'Fixed stage set must remain a literal');
+  const allowed = [...literal[1].matchAll(/'([^']+)'/gu)].map(match => match[1]);
+  assert.deepEqual(allowed, [
+    'input', 'initial-host-launch', 'initial-readiness', 'plugin-read',
+    'notification-setup', 'machine-ingress', 'attention-check', 'installed-world-setup',
+    'installed-live-launch', 'installed-dev-launch', 'installed-session', 'installed-producer',
+    'installed-attention', 'installed-handoff', 'installed-browser', 'browser-preflight',
+    'browser-launch', 'browser-managed-ready', 'browser-page-ready',
+    'browser-first-navigation', 'browser-attention-link', 'browser-attention-root',
+    'browser-attention-visible', 'browser-attention-attributes', 'browser-unauthenticated',
+    'browser-authenticated-chat', 'browser-stale', 'browser-resolve', 'installed-resolution',
+    'host-restart', 'restart-readiness', 'clear-check', 'final-checks', 'cleanup'
+  ]);
+  const { records, stages } = recorder();
+  for (const stage of allowed) stages.stage(stage);
+  stages.stage('browser-attention-unlisted');
+  stages.failure(new Error('fictional-private-error'));
+  assert.deepEqual(records.slice(-2), [
+    { kind: 'candidate-smoke-stage', event: 'start', stage: 'input' },
+    { kind: 'candidate-smoke-stage', event: 'failure', stage: 'input' }
+  ]);
+  assert.deepEqual(records.slice(0, -2).map(record => record.stage), allowed);
+  assert.ok(records.every(record => Object.keys(record).sort().join(',') === 'event,kind,stage'));
+  assert.doesNotMatch(JSON.stringify(records), /fictional-private-error/u);
+});
+
 test('candidate success kind and legacy launch/restart failure phases remain unchanged', async () => {
   const candidate = await readFile(new URL('../scripts/smoke-candidate-pair.mjs', import.meta.url), 'utf8');
   const installed = await readFile(new URL('../scripts/smoke-dev-live-installed.mjs', import.meta.url), 'utf8');

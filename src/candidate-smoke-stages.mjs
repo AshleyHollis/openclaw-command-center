@@ -4,7 +4,8 @@ const stages = new Set(['input', 'initial-host-launch', 'initial-readiness', 'pl
   'installed-live-launch', 'installed-dev-launch', 'installed-session', 'installed-producer',
   'installed-attention', 'installed-handoff', 'installed-browser', 'browser-preflight',
   'browser-launch', 'browser-managed-ready', 'browser-page-ready',
-  'browser-first-navigation', 'browser-attention-link', 'browser-unauthenticated',
+  'browser-first-navigation', 'browser-attention-link', 'browser-attention-root',
+  'browser-attention-visible', 'browser-attention-attributes', 'browser-unauthenticated',
   'browser-authenticated-chat', 'browser-stale', 'browser-resolve', 'installed-resolution',
   'host-restart', 'restart-readiness', 'clear-check', 'final-checks', 'cleanup']);
 
