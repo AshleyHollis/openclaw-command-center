@@ -83,7 +83,7 @@ test('installed browser boundaries bracket transport return, page setup and firs
     assert.ok(position > previous, item);
     previous = position;
   }
-  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
+  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, \{ transport: 'direct' \}\)/u);
 });
 
 test('candidate success kind and legacy launch/restart failure phases remain unchanged', async () => {

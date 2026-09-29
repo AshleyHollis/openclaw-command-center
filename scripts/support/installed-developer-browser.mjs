@@ -46,7 +46,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
   let primaryFailed = false;
   try {
     onStage('browser-launch');
-    managed = await launchManagedBrowser({ headless: true, timeout: 60_000, executablePath });
+    managed = await launchManagedBrowser({ headless: true, timeout: 60_000, executablePath }, { transport: 'direct' });
     onStage('browser-managed-ready');
     const browser = managed.browser;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });

@@ -4,6 +4,20 @@ import test from 'node:test';
 
 const source = async name => readFile(new URL('../scripts/' + name, import.meta.url), 'utf8');
 
+test('installed direct transport is per-call; shared acceptance launches retain omitted-selector behavior', async () => {
+  const browser = await source('support/installed-developer-browser.mjs');
+  const helper = await readFile(new URL('./support/real-host-runtime.mjs', import.meta.url), 'utf8');
+  const acceptance = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, \{ transport: 'direct' \}\)/u);
+  assert.doesNotMatch(browser, /process\.env\.COMMAND_CENTER_BROWSER_TRANSPORT/u);
+  assert.match(helper, /launchManagedBrowser\(options, \{ transport \} = \{\}\)/u);
+  assert.match(helper, /transport === 'direct' \|\| \(transport === undefined && process\.env\.COMMAND_CENTER_BROWSER_TRANSPORT === 'direct'\)/u);
+  assert.match(helper, /chromium\.launch\(managedChromiumOptions\(options\)\)/u);
+  assert.match(helper, /chromium\.launchServer\(managedChromiumOptions\(options\)\)/u);
+  assert.match(acceptance, /launchManagedBrowser\(\{ headless: true, timeout: 60_000 \}\)/u);
+  assert.doesNotMatch(acceptance, /launchManagedBrowser\([^\n]*\{ transport:/u);
+});
+
 test('fixed candidate smoke executes installed Code-to-Life browser journey before restart without dropping prior checks', async () => {
   const candidate = await source('smoke-candidate-pair.mjs');
   const installed = await source('smoke-dev-live-installed.mjs');
@@ -22,7 +36,7 @@ test('fixed candidate smoke executes installed Code-to-Life browser journey befo
   assert.match(installed, /assert\.ok\(!final\.attention\.some/u);
   assert.match(browser, /installedChromiumPath = '\/usr\/bin\/chromium'/u);
   assert.match(browser, /await requireInstalledChromium\(\)/u);
-  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
+  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, \{ transport: 'direct' \}\)/u);
   // Attention and developer-work register native pages, unlike descriptor frames.
   assert.ok(browser.includes("page.locator('openclaw-plugin-page')"));
   assert.ok(browser.includes("page.locator('iframe.plugin-tab-embed__frame').count(), 0"));
