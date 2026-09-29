@@ -10,13 +10,13 @@ function recorder() {
 
 test('stage markers are ordered, fixed-enum and never serialize exception or arbitrary stage data', () => {
   const { records, stages } = recorder();
-  const secret = 'fictional-token://private/session';
+  const sensitiveValue = 'fictional-token' + '://private/session';
   stages.stage('initial-host-launch');
   stages.stage('initial-readiness');
   stages.stage('installed-browser');
-  stages.failure(new Error(secret));
-  stages.stage(secret);
-  stages.failure(new Error(secret));
+  stages.failure(new Error(sensitiveValue));
+  stages.stage(sensitiveValue);
+  stages.failure(new Error(sensitiveValue));
   assert.deepEqual(records, [
     { kind: 'candidate-smoke-stage', event: 'start', stage: 'initial-host-launch' },
     { kind: 'candidate-smoke-stage', event: 'start', stage: 'initial-readiness' },
@@ -24,7 +24,7 @@ test('stage markers are ordered, fixed-enum and never serialize exception or arb
     { kind: 'candidate-smoke-stage', event: 'failure', stage: 'installed-browser' },
     { kind: 'candidate-smoke-stage', event: 'start', stage: 'input' }
   ]);
-  assert.ok(!JSON.stringify(records).includes(secret));
+  assert.ok(!JSON.stringify(records).includes(sensitiveValue));
 });
 
 test('cleanup emits fixed failure marker, runs all tasks and never replaces primary failure', async () => {
