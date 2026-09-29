@@ -22,7 +22,7 @@ test('fixed candidate smoke executes installed Code-to-Life browser journey befo
   assert.match(installed, /assert\.ok\(!final\.attention\.some/u);
   assert.match(browser, /installedChromiumPath = '\/usr\/bin\/chromium'/u);
   assert.match(browser, /await requireInstalledChromium\(\)/u);
-  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
+  assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}, onStage\)/u);
   // Attention and developer-work register native pages, unlike descriptor frames.
   assert.ok(browser.includes("page.locator('openclaw-plugin-page')"));
   assert.ok(browser.includes("page.locator('iframe.plugin-tab-embed__frame').count(), 0"));
