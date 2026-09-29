@@ -13,16 +13,18 @@ async function withIsolatedBuild(run) {
     await cp(path.resolve('src'), path.join(root, 'src'), { recursive: true, verbatimSymlinks: true });
     // This build-only fixture verifies that sealed assets remain importable
     // beneath an external-tab plugin root. It is not a host-contract test;
-    // supply only the public SDK export imported at module load time instead
+    // supply only the public SDK exports imported at module load time instead
     // of making a temporary build accidentally resolve this checkout's SDK.
     const sdkRoot = path.join(root, 'node_modules', 'openclaw');
     await mkdir(path.join(sdkRoot, 'dist', 'plugin-sdk'), { recursive: true });
     await writeFile(path.join(sdkRoot, 'package.json'), JSON.stringify({
       name: 'openclaw', type: 'module', exports: {
-        './plugin-sdk/session-store-runtime': './dist/plugin-sdk/session-store-runtime.mjs'
+        './plugin-sdk/session-store-runtime': './dist/plugin-sdk/session-store-runtime.mjs',
+        './plugin-sdk/session-store-paths': './dist/plugin-sdk/session-store-paths.mjs'
       }
     }));
     await writeFile(path.join(sdkRoot, 'dist', 'plugin-sdk', 'session-store-runtime.mjs'), 'export function getSessionEntry() { return null; }\n');
+    await writeFile(path.join(sdkRoot, 'dist', 'plugin-sdk', 'session-store-paths.mjs'), 'export function resolveStorePath() { throw new Error("Build fixture must not resolve a host session store"); }\n');
     const buildModule = await import(`${pathToFileURL(path.join(root, 'src', 'build.mjs')).href}?test=${Date.now()}-${Math.random()}`);
     await run(buildModule, root);
   } finally {

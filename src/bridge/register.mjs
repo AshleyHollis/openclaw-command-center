@@ -223,6 +223,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
   'command-center.v1.dashboard.get': (service, params, runtime) => service.dashboardGet(params, runtime),
+  'command-center.v1.developer-work.resolve': (service, params) => service.developerWorkResolve(params),
   'command-center.v1.briefings.set-read': (service, params) => service.briefingSetRead(params),
   'command-center.v1.routines.decide': (service, params) => service.routineDecide(params),
   'command-center.v1.open-loops.list': (service, params) => service.openLoopsList(params),
@@ -252,7 +253,11 @@ export async function invokeBridgeMethod(service, method, params, requestId = nu
   validateBridgeRequest(method, params, { mutation: WRITE_METHODS.includes(method) });
   const handler = handlerMap[method];
   if (!handler) throw new SourceServiceError('invalid-request', 'Unsupported Command Center method.');
-  return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
+  // Developer Work owns requestId as its exact domain target. The Gateway RPC
+  // envelope has a different request ID and must not shadow that target (or
+  // turn a current-work listing into an exact lookup).
+  const correlation = requestId === null || method === 'command-center.v1.developer-work.resolve' ? {} : { requestId };
+  return sanitizeBridgeResult(method, await handler(service, { ...params, ...correlation, ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
 }
 
 export function registerBridgeMethods(api, service, { mutationsAllowed = true } = {}) {
@@ -271,7 +276,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
         if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
         assertFirstLiveCommand('bridge', method);
-        if (FIRST_LIVE_FEATURES.notifications) service.notificationCaptureBinding?.();
+        if (FIRST_LIVE_FEATURES.notifications) await service.notificationCaptureBinding?.();
         // The host profile is canonical across HTTP and WebSocket. An invalid
         // profile must not switch an approval to a login label or legacy owner.
         const principal = client?.authenticatedUserProfile !== undefined

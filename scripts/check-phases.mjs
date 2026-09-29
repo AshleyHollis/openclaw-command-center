@@ -1,5 +1,5 @@
 export function repositoryArtifactCheckPhases(purpose, { verifyBaseline, scanGenerated }) {
-  if (!['qualification', 'capture-prerequisites'].includes(purpose)) throw new Error('Unsupported repository check purpose');
+  if (!['qualification', 'capture-prerequisites', 'candidate-prerequisites'].includes(purpose)) throw new Error('Unsupported repository check purpose');
   if (typeof verifyBaseline !== 'function' || typeof scanGenerated !== 'function') throw new TypeError('Both artifact check owners are required');
   return [
     ...(purpose === 'qualification' ? [{ id: 'performance-baseline', run: verifyBaseline }] : []),

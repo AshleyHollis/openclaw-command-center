@@ -6,6 +6,10 @@ export const DEFAULT_NOTIFICATION_SETTINGS = Object.freeze({
   dueReminders: true,
   importantItems: true,
   criticalRealerts: true,
+  developerInput: true,
+  developerApproval: true,
+  developerReview: false,
+  developerDeployment: true,
   quietHoursEnabled: true,
   quietHoursStart: '22:00',
   quietHoursEnd: '07:00',
@@ -15,7 +19,8 @@ export const DEFAULT_NOTIFICATION_SETTINGS = Object.freeze({
 });
 
 const settingKeys = Object.freeze([
-  'dueReminders', 'importantItems', 'criticalRealerts', 'quietHoursEnabled',
+  'dueReminders', 'importantItems', 'criticalRealerts',
+  'developerInput', 'developerApproval', 'developerReview', 'developerDeployment', 'quietHoursEnabled',
   'quietHoursStart', 'quietHoursEnd', 'timeZone', 'genericPreview'
 ]);
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/u;
@@ -44,7 +49,7 @@ export function normalizeNotificationSettings(input = {}, { defaults = DEFAULT_N
   const result = { settingsId: NOTIFICATION_SETTINGS_ID };
   for (const field of settingKeys) {
     const candidate = value[field] === undefined ? base[field] : value[field];
-    if (['dueReminders', 'importantItems', 'criticalRealerts', 'quietHoursEnabled', 'genericPreview'].includes(field)) {
+    if (['dueReminders', 'importantItems', 'criticalRealerts', 'developerInput', 'developerApproval', 'developerReview', 'developerDeployment', 'quietHoursEnabled', 'genericPreview'].includes(field)) {
       if (typeof candidate !== 'boolean') throw sourceError('invalid-request', `${field} must be a boolean.`);
     } else if (field === 'timeZone') assertTimeZone(candidate);
     else assertTime(candidate, field);

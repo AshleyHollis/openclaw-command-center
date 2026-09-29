@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,15 +8,27 @@ import { createServer } from 'node:net';
 import * as hostHarness from '../src/host-harness.mjs';
 import { build } from '../src/build.mjs';
 import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, candidateRuntimeDiff, closedCandidateSmokeFailure, summarizePackagedRuntimeDiff, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
+import { assertReleasedHostMetadata } from '../scripts/repository-checks.mjs';
 
-test('current reader accepts the authenticated performance-capture host identity', () => {
-  const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
-  assert.equal(descriptor.commit, pinnedHost.commit);
+test('released-host admission accepts only the exact current 2026.9.6 source and archive', () => {
+  assert.equal(pinnedHost.packageVersion, '2026.9.6');
+  assert.equal(pinnedHost.commit, '047e689bd7b4ea63cb1b5080a35ced8132a65092');
+  assert.equal(pinnedHost.packageDigest, 'sha256:55f9ad35c4cc4933543133a0d594f43d0910a405fe3ca13cf692fe290cc5b3b8');
+  const { schemaVersion, commit, ...historicalIntegrity } = releasePerformanceIdentity.hostReceipt;
+  const candidate = { schemaVersion, commit: pinnedHost.commit, integrity: { ...historicalIntegrity, packageDigest: pinnedHost.packageDigest },
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args };
+  assert.equal(parseHostDescriptor(JSON.stringify(candidate)).commit, pinnedHost.commit);
+  // The previous same-version host is not admitted by its old source or archive.
+  const previousCommit = '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed';
+  const previousPackageDigest = 'sha256:624cc9063a8ff71b84022d4b56a56134b295412abd3529f13eb36f6660e998b1';
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, commit: previousCommit })), error => error.category === 'invalid-commit');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, integrity: { ...candidate.integrity, packageDigest: previousPackageDigest } })), error => error.category === 'host-integrity' && error.reason === 'package-digest-mismatch');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, commit })), error => error.category === 'invalid-commit');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, integrity: historicalIntegrity })), error => error.category === 'host-integrity');
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -52,6 +64,81 @@ function hostGit({ commit = pinnedHost.commit, status = '', blob } = {}) {
   };
 }
 
+function integrityReason(expected) {
+  return error => error instanceof HarnessFailure && error.category === 'host-integrity' && error.reason === expected;
+}
+
+test('candidate smoke failure report has only closed, non-interpolated fields', () => {
+  const privateText = 'fictional-private-host/path-and-token';
+  const failure = new HarnessFailure('host-integrity', privateText, 'runtime-inventory-unsafe');
+  failure.code = privateText;
+  failure.stack = privateText;
+  failure.phase = privateText;
+  assert.deepEqual(closedCandidateSmokeFailure(failure, 'initial-host-launch'), {
+    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'initial-host-launch'
+  });
+  assert.deepEqual(closedCandidateSmokeFailure(failure, 'host-restart'), {
+    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'host-restart'
+  });
+  for (const phase of [undefined, privateText, { toString() { throw new Error(privateText); } }]) {
+    assert.deepEqual(closedCandidateSmokeFailure(failure, phase), {
+      category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'unknown'
+    });
+  }
+  for (const untrusted of [new Error(privateText), { category: 'host-integrity', reason: 'runtime-inventory-unsafe', code: privateText },
+    new HarnessFailure(privateText, privateText, privateText), new HarnessFailure('host-integrity', privateText, privateText),
+    Object.defineProperty(new HarnessFailure('host-integrity', privateText), 'category', { get() { throw new Error(privateText); } }), null]) {
+    const report = closedCandidateSmokeFailure(untrusted);
+    assert.deepEqual(Object.keys(report), ['category', 'reason', 'phase']);
+    assert.doesNotMatch(JSON.stringify(report), /fictional-private-host|path-and-token/u);
+    assert.equal(report.reason, 'unspecified');
+    assert.equal(report.phase, 'unknown');
+  }
+  assert.deepEqual(closedCandidateSmokeFailure(new HarnessFailure('host-launch', privateText)), {
+    category: 'host-launch', reason: 'unspecified', phase: 'unknown'
+  });
+});
+
+test('runtime diff caps entries and redacts hostile names and getters without disclosing targets', () => {
+  const fingerprint = { type: 'file', executable: false, contentHash: 'a'.repeat(64) };
+  const before = { entries: new Map(), truncated: false };
+  const after = { entries: new Map([
+    ['/absolute/private/secret', fingerprint],
+    ['node_modules/openclaw/secret-token.txt', fingerprint],
+    ['node_modules/openclaw/evil\nname', fingerprint],
+    ...Array.from({ length: 20 }, (_, index) => [`node_modules/openclaw/fixture-${index}`, fingerprint])
+  ]), truncated: false };
+  const diff = summarizePackagedRuntimeDiff(before, after);
+  assert.equal(diff.counts.added, 23);
+  assert.equal(diff.entries.length, 6);
+  assert.equal(diff.truncated, true);
+  assert.deepEqual(diff.entries.slice(0, 3).map(entry => entry.path), ['[redacted]', '[redacted]', '[redacted]']);
+  assert.doesNotMatch(JSON.stringify(diff), /absolute|secret-token|evil\nname|private/iu);
+  assert.ok(JSON.stringify(diff).length < 4096);
+  const removed = summarizePackagedRuntimeDiff({ entries: new Map([['node_modules/openclaw/fixture.js', fingerprint]]) }, before);
+  assert.deepEqual(removed.counts, { added: 0, removed: 1, changed: 0 });
+  assert.equal(removed.entries[0].after, null);
+  assert.deepEqual(summarizePackagedRuntimeDiff(before, { entries: new Map([[
+    'node_modules/openclaw/hostile', { get type() { throw new Error('private detail'); } }
+  ]]) }), { kind: 'candidate-runtime-diff', counts: { added: 0, removed: 0, changed: 0 }, truncated: true, entries: [] });
+  assert.equal(candidateRuntimeDiff(new HarnessFailure('host-integrity', 'forged', 'runtime-digest-mismatch')), undefined);
+});
+
+test('candidate launch refuses injected host verification options before any host work', async () => {
+  await assert.rejects(hostHarness.launchCandidateHost({ hostVerificationOptions: {} }), integrityReason('verification-bypass'));
+});
+
+test('ordinary repository check accepts only the released 2026.9.6 host tuple', () => {
+  assert.doesNotThrow(() => assertReleasedHostMetadata(canonical));
+  const previous = structuredClone(canonical);
+  previous.host.commit = '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed';
+  assert.throws(() => assertReleasedHostMetadata(previous), /released host identity/u);
+  const historical = structuredClone(canonical);
+  historical.host.range = '=2026.9.5';
+  historical.host.commit = releasePerformanceIdentity.hostReceipt.commit;
+  assert.throws(() => assertReleasedHostMetadata(historical), /released host identity/u);
+});
+
 test('packaged host binds installed build and dependencies independently of clean source', async () => {
   const fixture = await temporaryHost();
   try {
@@ -69,13 +156,46 @@ test('packaged host binds installed build and dependencies independently of clea
     const descriptor = parseHostDescriptor(raw);
     const options = { gitCommand: hostGit({ blob: fixture.blob }) };
     assert.equal((await verifyHost(descriptor, options)).checkout, installed);
-    assert.throws(() => parseHostDescriptor(JSON.stringify({ ...JSON.parse(raw), integrity: { ...integrity, packageDigest: sourceDigest } })), error => error.category === 'host-integrity');
-    await assert.rejects(verifyHost({ ...descriptor, runtimeRoot: fixture.root }, options), error => error.category === 'host-integrity');
+    assert.throws(() => parseHostDescriptor(JSON.stringify({ ...JSON.parse(raw), integrity: { ...integrity, packageDigest: sourceDigest } })), integrityReason('package-digest-mismatch'));
+    await assert.rejects(verifyHost({ ...descriptor, runtimeRoot: fixture.root }, options), integrityReason('runtime-layout-mismatch'));
     await writeFile(dependency, 'tampered');
-    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('runtime-digest-mismatch'));
     await writeFile(dependency, 'export const dependency = true;');
     await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: 'wrong', version: pinnedHost.packageVersion }));
-    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('installed-build-mismatch'));
+    await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: pinnedHost.commit, version: pinnedHost.packageVersion }));
+    await symlink('../outside-runtime', path.join(runtimeRoot, 'unsafe-link'));
+    await assert.rejects(verifyHost(descriptor, options), integrityReason('runtime-inventory-unsafe'));
+    await rm(path.join(runtimeRoot, 'unsafe-link'));
+    const link = path.join(installed, 'fixture-link');
+    await symlink('../dependency.js', link);
+    const updatedIntegrity = { ...integrity, runtimeDigest: await packagedHostDigest(runtimeRoot) };
+    await writeFile(path.join(fixture.parent, 'receipt.json'), JSON.stringify({ schemaVersion: 2, commit: pinnedHost.commit, ...updatedIntegrity }));
+    const currentDescriptor = parseHostDescriptor(hostDescriptor({ schemaVersion: 2, checkout: fixture.root, runtimeRoot,
+      executable: 'node_modules/openclaw/openclaw.mjs', integrity: updatedIntegrity }));
+    assert.equal((await verifyHost(currentDescriptor, options)).checkout, installed);
+    const before = { entries: new Map(), truncated: false };
+    await packagedHostDigest(runtimeRoot, { onEntry: entry => before.entries.set(entry.relative, entry) });
+    await writeFile(path.join(installed, 'extra.json'), '{}');
+    await writeFile(dependency, 'export const dependency = false;');
+    await chmod(path.join(installed, 'dist/build-info.json'), 0o755);
+    await rm(link);
+    await symlink('dist/build-info.json', link);
+    const after = { entries: new Map(), truncated: false };
+    await packagedHostDigest(runtimeRoot, { onEntry: entry => after.entries.set(entry.relative, entry) });
+    await assert.rejects(verifyHost(currentDescriptor, options), integrityReason('runtime-digest-mismatch'));
+    const diff = summarizePackagedRuntimeDiff(before, after);
+    assert.deepEqual(diff.counts, { added: 1, removed: 0, changed: 3 });
+    assert.equal(diff.truncated, false);
+    assert.deepEqual(diff.entries.map(entry => [entry.kind, entry.path]), [
+      ['changed', 'node_modules/dependency.js'], ['changed', 'node_modules/openclaw/dist/build-info.json'],
+      ['changed', 'node_modules/openclaw/fixture-link'], ['added', 'node_modules/openclaw/extra.json']
+    ]);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('fixture-link')).before.type, 'symlink');
+    assert.notEqual(diff.entries.find(entry => entry.path.endsWith('fixture-link')).before.contentHash,
+      diff.entries.find(entry => entry.path.endsWith('fixture-link')).after.contentHash);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('build-info.json')).before.executable, false);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('build-info.json')).after.executable, true);
   } finally {
     await rm(fixture.parent, { recursive: true, force: true });
   }
@@ -101,7 +221,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15');
+  assert.equal(pinnedHost.commit, '047e689bd7b4ea63cb1b5080a35ced8132a65092');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
@@ -246,6 +366,10 @@ test('categorizes host integrity failures and early exit', async () => {
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ commit: 'different', blob: fixture.blob }) }), (error) => error.category === 'invalid-commit');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ status: ' M src/index.mjs', blob: fixture.blob }) }), (error) => error.category === 'dirty-host-source');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: '0'.repeat(40) }) }), (error) => error.category === 'wrapper-mismatch');
+    await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: fixture.blob }), read: async (filename) => {
+      if (filename.endsWith('receipt.json')) throw new Error('fictional private filesystem path');
+      return readFile(filename);
+    } }), integrityReason('source-receipt-unavailable'));
     await assert.rejects(
       verifyHost(descriptor, {
         gitCommand: hostGit({ blob: fixture.blob }),
@@ -253,7 +377,7 @@ test('categorizes host integrity failures and early exit', async () => {
           ? JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, sourceDigest: `sha256:${'d'.repeat(64)}`, executableDigest: fixture.integrity.executableDigest, contractDigest })
           : readFile(filename)
       }),
-      (error) => error.category === 'host-integrity'
+      integrityReason('source-receipt-mismatch')
     );
     await assert.rejects(
       verifyHost(descriptor, {

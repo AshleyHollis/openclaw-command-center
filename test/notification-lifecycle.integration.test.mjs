@@ -8,9 +8,11 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 import { projectDashboard } from '../src/dashboard/service.mjs';
 
-async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
+async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z', emitterFactory = binding => binding) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-notification-lifecycle-'));
   const metadata = openCommandCenterMetadataService({ stateDir });
+  const notificationMetadata = Object.create(metadata);
+  Object.defineProperty(notificationMetadata, 'isDeveloperWorkNotificationReady', { value: () => true });
   let clock = Date.parse(initialTime);
   const episode = { episodeId: 'episode-lifecycle', sourceCapabilityId: 'monitor', sourceKind: 'operational', state: 'Active', severity: 'High', attentionSince: new Date(clock).toISOString(), evidenceFacts: {} };
   const episodes = [episode];
@@ -21,10 +23,74 @@ async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
     async emit(candidate) { candidates.push(candidate); for (const notifications of devices.values()) notifications.add(candidate.logicalOperationId); return { status: 'sent' }; },
     async clear(input) { clears.push(input); for (const notifications of devices.values()) notifications.delete(input.logicalOperationId); return { status: 'cleared', attempted: devices.size, cleared: devices.size, failed: 0, ambiguous: 0 }; }
   };
-  const service = createNotificationService({ metadata, attentionService: attention, emitter: binding, now: () => clock });
+  const service = createNotificationService({ metadata: notificationMetadata, attentionService: attention, emitter: emitterFactory(binding), now: () => clock });
   try { return await run({ metadata, service, attention, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; }, now: () => clock }); }
   finally { service.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
+
+test('awaits the published host binding before reconciling an activation', async () => {
+  await fixture(async ({ service, candidates }) => {
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.equal(await service.captureCurrentOperatorBinding(), true);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  }, undefined, binding => {
+    let durablyBound = false;
+    return {
+      async bindCurrentOperator() { durablyBound = true; return binding; },
+      async emit(candidate) { return durablyBound ? binding.emit(candidate) : { status: 'failed' }; },
+      async clear(request) { return binding.clear(request); }
+    };
+  });
+});
+
+test('a late authenticated binding cannot replace the newer operator binding', async () => {
+  const resolvers = [];
+  const staleCandidates = [];
+  await fixture(async ({ service, binding, candidates }) => {
+    const first = service.captureCurrentOperatorBinding();
+    const second = service.captureCurrentOperatorBinding();
+    assert.equal(resolvers.length, 2);
+    resolvers[1]({ async emit(candidate) { staleCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } });
+    assert.equal(await second, true);
+    resolvers[0]({ async emit(candidate) { staleCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } });
+    assert.equal(await first, false);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.equal(staleCandidates.length, 0);
+  }, undefined, binding => ({
+    bindCurrentOperator: () => new Promise(resolve => resolvers.push(resolve)),
+    emit: candidate => binding.emit(candidate),
+    clear: request => binding.clear(request)
+  }));
+});
+
+test('background reconciliation never borrows a prior request-scoped binding', async () => {
+  const scopedCandidates = [];
+  await fixture(async ({ service, candidates }) => {
+    assert.equal(await service.captureCurrentOperatorBinding(), true);
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.equal(scopedCandidates.length, 0);
+  }, undefined, () => ({
+    async bindCurrentOperator() {
+      return { async emit(candidate) { scopedCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } };
+    },
+    async emit() { return { status: 'failed' }; },
+    async clear() { return { status: 'ambiguous' }; }
+  }));
+});
+
+test('shutdown invalidates a pending operator binding', async () => {
+  let resolveBinding;
+  await fixture(async ({ service, binding }) => {
+    const pending = service.captureCurrentOperatorBinding();
+    service.close();
+    resolveBinding(binding);
+    assert.equal(await pending, false);
+  }, undefined, () => ({ bindCurrentOperator: () => new Promise(resolve => { resolveBinding = resolve; }) }));
+});
 
 test('notification lifecycle emits High activation and one active-hour repeat, then clears both devices by exact candidate identity', async () => {
   await fixture(async ({ service, episode, candidates, clears, devices, advance }) => {
@@ -95,6 +161,132 @@ test('notification settings suppress delivery without rewriting fixed policy slo
   });
 });
 
+test('Developer Work input emits once with a separate category switch and clears on resolution', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-input-required';
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '81111111-2222-4111-8111-111111111111', expectedRevision: 1, settings: { importantItems: false } });
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.match(candidates[0].preview.body, /Development work needs/);
+    advance(5 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-input']);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 1);
+  });
+});
+
+test('failure, rollback and recovery share one deployment notification activation', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    for (const [index, outcome] of ['rolled-back', 'recovered'].entries()) {
+      advance(2 * 60 * 1000);
+      const observedAt = new Date(startedAt + (index + 1) * 2 * 60 * 1000).toISOString();
+      episode.evidenceFacts = { deploymentId: 'deployment-1', outcome, outcomeObservedAt: observedAt };
+      episode.updatedAt = observedAt;
+      await service.reconcile();
+      assert.equal(candidates.length, 1);
+    }
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-deployment']);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 1);
+  });
+});
+
+test('a later rollback gets one outcome alert on the same incident and resolution clears both', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(11 * 60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: new Date(startedAt + 11 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    assert.equal(new Set(candidates.map(candidate => candidate.logicalOperationId)).size, 2);
+    assert.match(candidates[1].preview.body, /deployment outcome/u);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind).sort(), ['developer-deployment', 'developer-deployment-outcome']);
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'recovered', outcomeObservedAt: new Date(startedAt + 12 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 2);
+  });
+});
+
+test('a failed rollback alerts promptly, while a backlog already rolled back gets one activation', async () => {
+  await fixture(async ({ service, episode, candidates, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rollback-failed', outcomeObservedAt: new Date(startedAt + 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+  });
+  await fixture(async ({ service, episode, candidates }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  });
+});
+
+test('a queued rollback outcome is cancelled when recovery arrives before quiet hours end', async () => {
+  await fixture(async ({ service, episode, candidates, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(20 * 60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: new Date(startedAt + 20 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.equal(service.inspect().slots.find(slot => slot.slot_kind === 'developer-deployment-outcome').status, 'queued');
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'recovered', outcomeObservedAt: new Date(startedAt + 21 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(service.inspect().slots.find(slot => slot.slot_kind === 'developer-deployment-outcome').status, 'cancelled');
+    advance(9 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  }, '2026-08-27T21:50:00.000Z');
+});
+
+test('Routine Developer Work review stays off by default and can be enabled without raising severity', async () => {
+  await fixture(async ({ service, episode, candidates }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-review-required';
+    episode.severity = 'Routine';
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-review']);
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '82222222-2222-4222-8222-222222222222', expectedRevision: 1, settings: { developerReview: true } });
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.match(candidates[0].preview.body, /ready for review/);
+    assert.equal(episode.severity, 'Routine');
+  });
+});
+
 test('snoozing cancels repeat slots and uses the remaining High delivery allowance on return', async () => {
   await fixture(async ({ service, episode, candidates, clears, advance }) => {
     await service.reconcile();
@@ -158,6 +350,89 @@ test('restart repairs a sent High emission whose slot receipt was interrupted', 
       assert.equal(candidates.length, 2);
     } finally { restarted.close(); }
   });
+});
+
+test('restart finishes an interrupted quiet-summary cohort without a second operation', async () => {
+  await fixture(async ({ metadata, service, attention, episode, episodes, binding, candidates, clears, devices, now, advance }) => {
+    episodes.push({ ...episode, episodeId: 'episode-a' });
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '86666666-4444-4444-8444-444444444444', expectedRevision: 1, settings: { quietHoursEnd: '23:00' } });
+    await service.reconcile();
+    advance(60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    const originalId = candidates[0].logicalOperationId;
+    // inspect() retains the row order used by the quiet-summary slot loop.
+    const cohort = service.inspect().slots.filter(slot => slot.status === 'emitted');
+    assert.equal(cohort.length, 2);
+    assert.equal(new Set(cohort.map(slot => slot.episode_id)).size, 2);
+    assert.equal(cohort[0].episode_id, episodes[1].episodeId);
+    service.close();
+
+    // Interruption simulation, NOT a killed process: the host sent and CC
+    // persisted its emission, but only the first cohort slot receipt survived.
+    const db = new DatabaseSync(metadata.databasePath);
+    try {
+      db.prepare("UPDATE notification_slots SET status = 'queued', emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
+        .run(candidates[0].emissionId, cohort[0].slot_id);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'emitted' AND logical_operation_id = ?").get(originalId).count, 1);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued' AND emission_id = ? AND logical_operation_id = ?").get(candidates[0].emissionId, originalId).count, 1);
+      assert.equal(db.prepare("SELECT status FROM notification_emissions WHERE logical_operation_id = ?").get(originalId).status, 'sent');
+    } finally { db.close(); }
+
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      await restarted.reconcile();
+      assert.equal(candidates.length, 1, 'the remaining cohort must not create a second host operation');
+      const cohortIds = new Set(cohort.map(slot => slot.slot_id));
+      assert.equal(restarted.inspect().slots.filter(slot => cohortIds.has(slot.slot_id)).every(slot => slot.status === 'emitted' && slot.logical_operation_id === originalId), true);
+      episode.state = 'Action running';
+      await restarted.reconcile();
+      assert.deepEqual(clears.map(clear => clear.logicalOperationId), [originalId]);
+      assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    } finally { restarted.close(); }
+  }, '2026-08-27T22:00:00.000Z');
+});
+
+test('quiet-summary replay keeps its preassigned identity across local midnight', async () => {
+  await fixture(async ({ metadata, service, attention, episode, episodes, binding, candidates, clears, devices, now, advance }) => {
+    episodes.push({ ...episode, episodeId: 'episode-a' });
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '81111111-4444-4444-8444-444444444444', expectedRevision: 1, settings: { quietHoursEnd: '23:50', timeZone: 'UTC' } });
+    await service.reconcile();
+    advance(10 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    const original = candidates[0];
+    const cohort = service.inspect().slots.filter(slot => slot.status === 'emitted');
+    assert.equal(cohort.length, 2);
+    assert.equal(new Set(cohort.map(slot => slot.episode_id)).size, 2);
+    assert.equal(cohort.every(slot => slot.emission_id === original.emissionId && slot.logical_operation_id === original.logicalOperationId), true);
+    service.close();
+
+    // SQLite interruption simulation, not process death: the host reported sent,
+    // but CC committed only the first slot receipt after preparing both IDs.
+    const db = new DatabaseSync(metadata.databasePath);
+    try {
+      db.prepare("UPDATE notification_slots SET status = 'queued', emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
+        .run(original.emissionId, cohort[0].slot_id);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued' AND emission_id = ? AND logical_operation_id = ?").get(original.emissionId, original.logicalOperationId).count, 1);
+      assert.equal(db.prepare("SELECT status FROM notification_emissions WHERE emission_id = ?").get(original.emissionId).status, 'sent');
+    } finally { db.close(); }
+
+    advance(20 * 60 * 1000);
+    assert.equal(new Date(now()).toISOString(), '2026-08-28T00:10:00.000Z');
+    assert.ok(original.expiresAtMs > now(), 'the original candidate is still unexpired');
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      await restarted.reconcile();
+      assert.equal(candidates.length, 1, 'midnight must not create a second host operation');
+      const cohortIds = new Set(cohort.map(slot => slot.slot_id));
+      assert.equal(restarted.inspect().slots.filter(slot => cohortIds.has(slot.slot_id)).every(slot => slot.status === 'emitted' && slot.emission_id === original.emissionId && slot.logical_operation_id === original.logicalOperationId), true);
+      episode.state = 'Action running';
+      await restarted.reconcile();
+      assert.deepEqual(clears.map(clear => clear.logicalOperationId), [original.logicalOperationId]);
+      assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    } finally { restarted.close(); }
+  }, '2026-08-27T23:40:00.000Z');
 });
 
 test('repeated Snooze returns cannot exceed the High generation cap after restart', async () => {

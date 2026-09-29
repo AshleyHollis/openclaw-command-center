@@ -103,7 +103,8 @@ async function reserveGatewayEndpoint() {
   throw new Error('Could not reserve an isolated Gateway endpoint');
 }
 
-export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot, reserveEndpoint = reserveGatewayEndpoint } = {}) {
+export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot, machineIngress = false, reserveEndpoint = reserveGatewayEndpoint } = {}) {
+  if (machineIngress && !candidateRoot) throw new TypeError('Machine ingress requires an isolated candidate plugin.');
   const root = await mkdtemp(path.join(tmpRoot, 'command-center-fixture-'));
   let reservation;
   try {
@@ -119,6 +120,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
     }) : undefined;
     const trafficLog = path.join(root, 'traffic-attempts.jsonl');
     const gatewayCredential = `fictional-control-ui-${randomUUID()}`;
+    const machineCredential = machineIngress ? `fictional-machine-${randomUUID()}-${randomUUID()}` : undefined;
     // OpenClaw's normal configuration lookup is rooted below HOME. Keeping the
     // path there lets the fixed controller command load only this disposable
     // configuration without adding a command-line override.
@@ -167,12 +169,20 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
             // Keep the built-in memory owner available while suppressing its
             // unrelated scheduled dreaming setup in this disposable release test.
             'memory-core': { enabled: true, config: { dreaming: { enabled: false } } },
-            [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault }, conversationModel: 'fixture/fixture-model' } }
+            [candidate.id]: { enabled: true, config: {
+              topics: { noteRoot: paths.vault }, conversationModel: 'fixture/fixture-model',
+              ...(machineIngress ? { developerWork: {
+                principals: [{ producerId: 'fictional-dev', role: 'worker', tokenEnv: 'COMMAND_CENTER_FIXTURE_DEV_BEARER',
+                  allowedProjects: ['fictional-project'], families: ['human-request', 'request-terminal'] }],
+                trustedProxyPeers: ['127.0.0.1']
+              } } : {})
+            } }
           }
         }
       })}\n`);
     }
-    return Object.freeze({ root, paths: Object.freeze(paths), tempRoot, state, manifest, manifestPath, gateway, gatewayReservation: reservation, gatewayCredential, environment: Object.freeze({ [fixtureEnvironment]: manifestPath }) });
+    return Object.freeze({ root, paths: Object.freeze(paths), tempRoot, state, manifest, manifestPath, gateway, gatewayReservation: reservation,
+      gatewayCredential, ...(machineCredential ? { machineCredential } : {}), environment: Object.freeze({ [fixtureEnvironment]: manifestPath }) });
   } catch (error) {
     await reservation?.release().catch(() => {});
     await rm(root, { recursive: true, force: true });

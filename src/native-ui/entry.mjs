@@ -4,6 +4,7 @@ import { mountTopicNotesPanel } from './topic-notes-panel.mjs';
 import { createTopicGroupSetup } from './topic-group-setup.mjs';
 import { mountHistoryPage } from './history-page.mjs';
 import { mountAttentionPage, mountPlannerPage } from './attention-page.mjs';
+import { mountDeveloperWorkPage } from './developer-work-page.mjs';
 import { createNativeCreationForm } from './creation-form.mjs';
 import { createNativeState } from './mutations.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
@@ -172,6 +173,7 @@ export default {
     const page = host.ui.registerPage({ id: 'topics', label: 'Manage Topics', mount: (container, context) => mountTopics(container, context, state) });
     const topic = host.ui.registerPage({ id: 'topic', label: 'Topic Notes', mount: (container, context) => mountTopicPage(container, context, state) });
     const histories = host.ui.registerPage({ id: 'histories', label: 'Imported History', mount: mountHistoryPage });
+    const developerWork = host.ui.registerPage({ id: 'developer-work', label: 'Developer Work', mount: mountDeveloperWorkPage });
     const group = { id: 'workspace', label: 'Command Center' };
     const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, group, order: 11 });
     const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, group, order: 10 });
@@ -179,6 +181,6 @@ export default {
     const planner = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerPage({ id: 'planner', label: 'Planner', mount: mountPlannerPage }) : () => {};
     const attentionNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'attention', label: 'Dashboard', page: { id: 'attention' }, group, order: 8 }) : () => {};
     const plannerNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'planner', label: 'Planner', page: { id: 'planner' }, group, order: 9 }) : () => {};
-    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } plannerNavigation(); attentionNavigation(); planner(); attention(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
+    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } plannerNavigation(); attentionNavigation(); planner(); attention(); developerWork(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

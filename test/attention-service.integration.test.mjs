@@ -86,6 +86,32 @@ test('unrelated capabilities may reuse the same source-local occurrence identity
   });
 });
 
+test('Developer Work commits newer source revisions even when source clocks move backward or stay equal', async () => {
+  await withService(async ({ metadata }) => {
+    const service = createAttentionService({ metadata, now: () => '2026-09-26T01:00:00.000Z' });
+    service.registerSourceCapability({
+      sourceCapabilityId: 'developer-work.v1', revisionOrdering: 'positive-integer',
+      deriveEvidence: value => value.evidenceFacts,
+      verifyTransition: async () => true,
+      actions: []
+    });
+    const base = {
+      schemaVersion: 1, sourceCapabilityId: 'developer-work.v1', stableSubjectId: 'fictional-dev/feature-7/review-1',
+      attentionReason: 'developer-review-required', evidenceFacts: { facts: ['review-required'] }
+    };
+    const first = await service.ingest({ ...base, occurrenceId: 'event-1', occurrenceVersion: '1', occurredAt: '2026-09-26T00:05:00.000Z' });
+    const update = await service.ingest({ ...base, occurrenceId: 'event-2', occurrenceVersion: '2', occurredAt: '2026-09-26T00:04:00.000Z' });
+    assert.equal(update.episode.episodeId, first.episode.episodeId);
+    assert.equal(update.episode.revision, 2);
+    const terminal = await service.ingest({ ...base, occurrenceId: 'event-3', occurrenceVersion: '3', occurredAt: '2026-09-26T00:04:00.000Z', transitionEvidence: { state: 'resolved' } });
+    assert.equal(terminal.episode.state, 'Resolved');
+    assert.equal(terminal.activity.outcome, 'resolved');
+    const late = await service.ingest({ ...base, occurrenceId: 'late-event', occurrenceVersion: '2', occurredAt: '2026-09-26T00:06:00.000Z' });
+    assert.equal(late.ignored, true);
+    assert.equal(service.get(first.episode.episodeId).episode.state, 'Resolved');
+  });
+});
+
 test('critical evidence breaks snooze and a verified action failure returns the same episode', async () => {
   await withService(async ({ metadata }) => {
     metadata.createTopic({ topicId: 'topic-1', paraCategory: 'project', lifecycle: 'active' });
