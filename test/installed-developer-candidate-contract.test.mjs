@@ -23,6 +23,16 @@ test('fixed candidate smoke executes installed Code-to-Life browser journey befo
   assert.match(browser, /installedChromiumPath = '\/usr\/bin\/chromium'/u);
   assert.match(browser, /await requireInstalledChromium\(\)/u);
   assert.match(browser, /launchManagedBrowser\(\{ headless: true, timeout: 60_000, executablePath \}\)/u);
+  // A host plugin-page exists in the parent DOM, but installed controls live
+  // only inside the mounted, scripts-only descriptor iframe.
+  assert.match(browser, /page\.locator\('iframe\.plugin-tab-embed__frame\[title="Command Center"\]'\)/u);
+  assert.match(browser, /iframe\.getAttribute\('sandbox'\).*'allow-scripts'/u);
+  assert.match(browser, /iframe\.getAttribute\('srcdoc'\)/u);
+  assert.match(browser, /return iframe\.contentFrame\(\)/u);
+  assert.doesNotMatch(browser, /page\.locator\('openclaw-plugin-page'\)/u);
+  for (const page of ['lifePage', 'codePage', 'wrongPage', 'stalePage']) {
+    assert.match(browser, new RegExp('\\(await plugin\\(' + page + '\\)\\)\\.getByRole\\(', 'u'), page);
+  }
   assert.match(browser, /await invoke\('request_resolved'/u);
   assert.match(browser, /method: 'sessions.delete'/u);
   assert.match(browser, /openclaw-chat-pane\[aria-hidden/u);

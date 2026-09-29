@@ -15,7 +15,17 @@ export async function requireInstalledChromium(path = installedChromiumPath) {
   return path;
 }
 const unwrap = value => value?.result ?? value;
-const plugin = page => page.locator('openclaw-plugin-page');
+// The installed host mounts the descriptor document inside a scripts-only iframe.
+// Reacquire it on each page/navigation: authentication or a host remount can
+// replace the browsing context while a top-level plugin-page remains present.
+const plugin = async page => {
+  const iframe = page.locator('iframe.plugin-tab-embed__frame[title="Command Center"]');
+  await iframe.waitFor({ state: 'attached', timeout: 30_000 });
+  assert.equal(await iframe.count(), 1, 'Expected one current Command Center plugin frame');
+  assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
+  assert.ok((await iframe.getAttribute('srcdoc'))?.length > 0, 'Expected installed srcdoc plugin frame');
+  return iframe.contentFrame();
+};
 const noChat = async page => assert.equal(await page.locator('openclaw-chat-pane[aria-hidden="false"]').count(), 0);
 const uiUrl = (world, routeId) => controlUiPluginUrl({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
   pluginId: 'command-center', routeId, fragmentParameter: runtimeCapability.authentication.urlFragmentParameter });
@@ -42,7 +52,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     const attention = new URL(uiUrl(live, 'attention'));
     attention.searchParams.set('p.attentionRecord', card.attentionRecordId);
     await lifePage.goto(attention.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const link = plugin(lifePage).getByRole('link', { name: 'Open DEV Session', exact: true });
+    const link = (await plugin(lifePage)).getByRole('link', { name: 'Open DEV Session', exact: true });
     await link.waitFor({ timeout: 30_000 });
     const href = new URL(await link.getAttribute('href'));
     assert.equal(href.href, card.evidence.devHandoffUrl);
@@ -58,7 +68,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     assert.equal(new URL(codePage.url()).origin, handoff.url);
     assert.equal(new URL(codePage.url()).hash, '');
     await codePage.waitForTimeout(1200);
-    assert.equal(await plugin(codePage).getByRole('button', { name: 'Open exact Code session' }).count(), 0);
+    assert.equal(await (await plugin(codePage)).getByRole('button', { name: 'Open exact Code session' }).count(), 0);
     await noChat(codePage);
     for (const credential of ['', live.gatewayCredential]) await assert.rejects(() => requestAuthenticatedGateway({
       gatewayUrl: dev.gateway.url, credential, method: 'command-center.v1.developer-work.resolve',
@@ -70,14 +80,14 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     wrongUrl.hash = runtimeCapability.authentication.urlFragmentParameter + '=' + encodeURIComponent(live.gatewayCredential);
     await wrongPage.goto(wrongUrl.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await wrongPage.waitForTimeout(1200);
-    assert.equal(await plugin(wrongPage).getByRole('button', { name: 'Open exact Code session' }).count(), 0);
+    assert.equal(await (await plugin(wrongPage)).getByRole('button', { name: 'Open exact Code session' }).count(), 0);
     await noChat(wrongPage);
     await wrongContext.close();
     assert.ok((await dashboard()).attention.some(row => row.episodeId === card.episodeId), 'Navigation resolved Life Attention');
     const authenticated = new URL(href);
     authenticated.hash = runtimeCapability.authentication.urlFragmentParameter + '=' + encodeURIComponent(dev.gatewayCredential);
     await codePage.goto(authenticated.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const open = plugin(codePage).getByRole('button', { name: 'Open exact Code session', exact: true });
+    const open = (await plugin(codePage)).getByRole('button', { name: 'Open exact Code session', exact: true });
     await open.waitFor({ timeout: 30_000 });
     await open.click();
     await codePage.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key,
@@ -87,7 +97,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
     const stalePage = await context.newPage();
     routes.push(await configureEvidencePage(stalePage, guard, evidence));
     await stalePage.goto(authenticated.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const staleOpen = plugin(stalePage).getByRole('button', { name: 'Open exact Code session', exact: true });
+    const staleOpen = (await plugin(stalePage)).getByRole('button', { name: 'Open exact Code session', exact: true });
     await staleOpen.waitFor({ timeout: 30_000 });
     await requestAuthenticatedGateway({ gatewayUrl: dev.gateway.url, credential: dev.gatewayCredential,
       method: 'sessions.delete', params: { key: sessionKey, expectedSessionId: created.sessionId, deleteTranscript: true },
@@ -96,7 +106,7 @@ export async function installedBrowserHandoff({ live, dev, handoff, card, sessio
       method: 'command-center.v1.developer-work.resolve', params: { schemaVersion: 1, workId, requestId } }));
     assert.equal(stale.status, 'stale'); assert.equal(stale.reason, 'session-replaced');
     await staleOpen.click();
-    await plugin(stalePage).getByRole('heading', { name: 'This handoff is stale' }).waitFor({ timeout: 30_000 });
+    await (await plugin(stalePage)).getByRole('heading', { name: 'This handoff is stale' }).waitFor({ timeout: 30_000 });
     await noChat(stalePage);
     assert.ok((await dashboard()).attention.some(row => row.episodeId === card.episodeId), 'Session deletion resolved Life Attention');
     await invoke('request_resolved', { requestId, kind: 'input', expectedRequestRevision: 1 }, { code: 'answered', requestId });
