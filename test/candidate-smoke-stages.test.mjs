@@ -10,7 +10,7 @@ function recorder() {
 
 test('stage markers are ordered, fixed-enum and never serialize exception or arbitrary stage data', () => {
   const { records, stages } = recorder();
-  const sensitiveValue = 'fictional-token' + '://private/session';
+  const sensitiveValue = 'unexpected-stage-payload';
   stages.stage('initial-host-launch');
   stages.stage('initial-readiness');
   stages.stage('installed-browser');
