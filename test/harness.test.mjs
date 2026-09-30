@@ -12,11 +12,12 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputCl
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
-test('current reader accepts the authenticated performance-capture host identity', () => {
+test('current reader refuses the historical performance-capture host as its current runtime', () => {
   const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
-  assert.equal(descriptor.commit, pinnedHost.commit);
+  assert.notEqual(commit, pinnedHost.commit, 'historical performance evidence must not become current host proof');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args })),
+  error => error.category === 'invalid-commit');
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -101,7 +102,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15');
+  assert.equal(pinnedHost.commit, 'b4c7240c726ee295325296954358e580f9036b36');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });

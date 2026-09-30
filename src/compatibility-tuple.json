@@ -39,12 +39,12 @@
     }
   },
   "host": {
-    "range": "=2026.9.5",
-    "commit": "21f1ca697532a9bd9e9cc46322a598a31435de15"
+    "range": "=2026.9.7",
+    "commit": "b4c7240c726ee295325296954358e580f9036b36"
   },
   "pluginApi": {
     "package": "openclaw",
-    "range": "=2026.9.5"
+    "range": "=2026.9.7"
   },
   "commandCenterSchema": {
     "readable": { "min": 1, "max": 9 },
