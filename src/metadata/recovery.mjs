@@ -55,6 +55,17 @@ const compatibleHistoricalHostReleases = new Map([
   ['8e58ed3d14ac21b9046bf19c96c7eb86d858cdee', '=2026.9.5']
 ]);
 
+// Frozen schema-9 release family retained across the 9.7 host upgrade.
+// Never derive its package/API/protocol facts from the new canonical release.
+const historicalSchemaNineRelease = Object.freeze({
+  package: Object.freeze({ name: 'openclaw-command-center', version: '0.4.0', build: '0.4.0' }),
+  host: Object.freeze({ range: '=2026.9.5', commit: '21f1ca697532a9bd9e9cc46322a598a31435de15' }),
+  pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.9.5' }),
+  commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 9 }), migratable: Object.freeze({ min: 1, max: 8 }), writable: Object.freeze({ min: 9, max: 9 }) }),
+  capabilityBridgeProtocol: Object.freeze({ min: 1, max: 1 })
+});
+const historicalSchemaNineHostCommits = Object.freeze([historicalSchemaNineRelease.host.commit, ...compatibleHistoricalHostReleases.keys()]);
+
 const currentRelease = Object.freeze({
   package: canonical.package,
   host: canonical.host,
@@ -166,6 +177,23 @@ function releaseMatchesExceptHostCommit(actual, expected) {
   return canonicalJson({ ...actual, host: { ...actual.host, commit: expectedCommit } }) === canonicalJson(expected);
 }
 
+function committedHistoricalReleaseFamilyMatches(manifest, sourceRelease) {
+  if (manifest.state !== 'committed') return false;
+  const releaseForSchema = (schemaVersion, commit) => ({
+    ...historicalSchemaNineRelease,
+    host: { ...historicalSchemaNineRelease.host, commit },
+    commandCenterSchema: { readable: { min: 1, max: schemaVersion }, migratable: { min: 1, max: schemaVersion - 1 }, writable: { min: schemaVersion, max: schemaVersion } }
+  });
+  return historicalSchemaNineHostCommits.some((commit) => {
+    const expectedSource = manifest.snapshot.schemaVersion >= 6
+      ? releaseForSchema(manifest.snapshot.schemaVersion, commit)
+      : sourceRelease;
+    if (canonicalJson(manifest.sourceRelease) !== canonicalJson(expectedSource)) return false;
+    return [6, 7, 8, 9].some((schemaVersion) => schemaVersion >= manifest.migration.toVersion
+      && canonicalJson(manifest.targetRelease) === canonicalJson(releaseForSchema(schemaVersion, commit)));
+  });
+}
+
 function databaseFingerprint(database) {
   const candidates = ['topics', 'source_references', 'source_convention_state', 'presentation_preferences', 'attention_activity_links', 'proposal_states', 'policy_versions', 'projection_bookkeeping', 'operation_journal', 'session_state', 'activity_records'];
   const tables = candidates.filter((table) => database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table));
@@ -231,7 +259,8 @@ function validateManifestShape(manifest) {
       return manifest.sourceRelease?.host?.commit === manifest.targetRelease?.host?.commit
         && releaseMatchesExceptHostCommit(manifest.sourceRelease, currentContract.sourceRelease);
     });
-  const releaseMatches = exactReleaseMatches || committedHistoricalHostMatches;
+  const releaseMatches = exactReleaseMatches || committedHistoricalHostMatches
+    || committedHistoricalReleaseFamilyMatches(manifest, currentContract.sourceRelease);
   if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   return manifest;
 }
