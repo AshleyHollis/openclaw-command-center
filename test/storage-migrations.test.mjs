@@ -159,7 +159,9 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-$
 
 test('retained 9.5 schema-6 through schema-8 target families remain readable', async () => {
   for (const targetSchema of [6, 7, 8]) for (const commit of historicalHostCommits) await withState(async (stateDir) => {
-    await seedMigratableSchema(stateDir, targetSchema - 1);
+    // Schema-5 snapshots declare the current 5→9 recovery contract. Use the
+    // retained 4→5 snapshot for a historical schema-6 target, not a 5→9 forgery.
+    await seedMigratableSchema(stateDir, targetSchema === 6 ? 4 : targetSchema - 1);
     const migrated = open({ stateDir });
     assert.equal(migrated.getOperatingStatus().mode, 'ready');
     migrated.close();
@@ -169,7 +171,7 @@ test('retained 9.5 schema-6 through schema-8 target families remain readable', a
     const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, bytes);
     const reopened = open({ stateDir });
-    assert.equal(reopened.getOperatingStatus().mode, 'ready');
+    assert.equal(reopened.getOperatingStatus().mode, 'ready', JSON.stringify(reopened.getOperatingStatus()));
     assert.equal(reopened.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: manifest.sourceRelease }).verified, true);
     reopened.close();
     assert.deepEqual(await readFile(manifestPath), bytes);
