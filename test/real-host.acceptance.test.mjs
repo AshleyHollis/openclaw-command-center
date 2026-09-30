@@ -1375,30 +1375,33 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal((movedDetail.result ?? movedDetail).evidence[0].originalEmailUrl, 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
         assert.equal((movedDetail.result ?? movedDetail).loop.revision, loop.revision + 1, 'reader refresh must preserve the confirmed user decision');
         milestone('reader-location-applied');
-        const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
-        scenarioHost.child.kill('SIGKILL');
-        assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
-        milestone('host-killed');
-        scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
-        await waitForConsecutiveReadiness(async probeSignal => {
-          try {
-            const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart bootstrap', 10_000);
-            return response.ok && routeGrant(await response.json());
-          } catch (error) {
-            if (/fetch failed|timed out|ECONNREFUSED/iu.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`)) return false;
-            throw error;
-          }
-        }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
-        await waitForConsecutiveReadiness(async probeSignal => {
-          try {
-            const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
-            return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
-          } catch (error) {
-            if (/Gateway (?:challenge socket|connection) failed|timed out/iu.test(error?.message ?? '')) return false;
-            throw error;
-          }
-        }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
-        milestone('host-restarted');
+        const killAndReopenAccountedHost = async () => {
+          const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
+          scenarioHost.child.kill('SIGKILL');
+          assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
+          milestone('host-killed');
+          scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
+          await waitForConsecutiveReadiness(async probeSignal => {
+            try {
+              const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart bootstrap', 10_000);
+              return response.ok && routeGrant(await response.json());
+            } catch (error) {
+              if (/fetch failed|timed out|ECONNREFUSED/iu.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`)) return false;
+              throw error;
+            }
+          }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+          await waitForConsecutiveReadiness(async probeSignal => {
+            try {
+              const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+              return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+            } catch (error) {
+              if (/Gateway (?:challenge socket|connection) failed|timed out/iu.test(error?.message ?? '')) return false;
+              throw error;
+            }
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
+          milestone('host-restarted');
+        };
+        await killAndReopenAccountedHost();
         const retryPlan = fictionalAccountedEmailPlan(durableBeforeRestart.plan.retainedNoteRevision);
         const retryPlanPath = path.join(scenarioWorld.root, 'fictional-admitted-retry-plan.json');
         await writeFile(retryPlanPath, JSON.stringify(retryPlan));
@@ -1414,6 +1417,93 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: deliveryDecisionId }, signal });
         assert.equal((resumedDecisionResponse.result ?? resumedDecisionResponse).supportingNote.status, 'completed', 'the exact saved decision annotates the Note after admitted retry settles');
+        // Retain the confirmed-decision restart above. This second boundary
+        // exercises the choice's saved-word path without changing the later
+        // payment assertion/Reminder journey or enabling the maintained worker.
+        if (!workerVariant) {
+          const choiceWords = 'I chose the accepted fictional delivery window. Mark this choice resolved, and leave the invoice and reference reply alone.';
+          const choiceClarificationId = randomUUID();
+          const inspectChoiceSiblings = () => {
+            const inspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+            try {
+              const account = loadIntakeSourceAccount(inspection, { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId,
+                sourceVersion: 'email-change-key-real-host-52' });
+              return { plan: account.plan, outcomes: account.account.outcomes.filter(item => item.kind !== 'decision'),
+                loops: account.account.outcomes.filter(item => item.kind === 'obligation').map(item => inspection.getOpenLoop(item.loopId)) };
+            } finally { inspection.close(); }
+          };
+          const siblingsBeforeChoice = inspectChoiceSiblings();
+          assert.equal(siblingsBeforeChoice.loops.length, 2);
+          assert.equal(siblingsBeforeChoice.outcomes.filter(item => item.status === 'quiet').length, 1);
+          const choiceBeforeResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
+          const choiceBefore = (choiceBeforeResponse.result ?? choiceBeforeResponse).loop;
+          const choiceClarificationParams = { schemaVersion: 1, logicalOperationId: choiceClarificationId,
+            loopId: loop.loopId, expectedRevision: choiceBefore.revision, rationale: choiceWords };
+          const choiceMutation = (method, params) => requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url,
+            credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'],
+            deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method, params, signal });
+          const choiceSavedResponse = await choiceMutation('command-center.v1.open-loops.clarify', choiceClarificationParams);
+          const choiceSaved = choiceSavedResponse.result ?? choiceSavedResponse;
+          const choiceInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+          let choiceContext;
+          try { choiceContext = loadPendingClarificationContext(choiceInspection, { loopId: loop.loopId, expectedRevision: choiceSaved.loop.revision }); }
+          finally { choiceInspection.close(); }
+          assert.equal(choiceContext.status, 'pending');
+          assert.equal(choiceContext.userWords, choiceWords);
+          assert.equal(choiceContext.clarificationObservationId, choiceSaved.loop.attention.pendingClarificationId);
+          assert.deepEqual(choiceContext.source, { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId,
+            sourceVersion: 'email-change-key-real-host-52' });
+          assert.equal(choiceContext.outcomeId, pendingDecision.outcomeId);
+          assert.equal(choiceContext.processorVersion, durableBeforeRestart.plan.processorVersion);
+          assert.equal(choiceContext.retainedNoteRevision, durableBeforeRestart.plan.retainedNoteRevision);
+          const duplicateChoiceResponse = await choiceMutation('command-center.v1.open-loops.clarify', choiceClarificationParams);
+          assert.equal((duplicateChoiceResponse.result ?? duplicateChoiceResponse).disposition, 'duplicate');
+          await assert.rejects(() => choiceMutation('command-center.v1.open-loops.clarify', {
+            ...choiceClarificationParams, logicalOperationId: randomUUID() }), /stale|revision/iu);
+          // The public Gateway owner resolves the saved source fence and checks
+          // the same live operator binding; this is not a direct metadata write.
+          const choiceInterpretationId = clarificationInterpretationOperationId(choiceContext.clarificationObservationId);
+          const choiceInterpretationParams = { schemaVersion: 1, logicalOperationId: choiceInterpretationId,
+            loopId: loop.loopId, expectedRevision: choiceSaved.loop.revision,
+            clarificationObservationId: choiceContext.clarificationObservationId,
+            processorVersion: choiceContext.processorVersion, outcome: 'clear', decision: 'resolve' };
+          const choiceInterpretedResponse = await choiceMutation('command-center.v1.open-loops.interpret-clarification', choiceInterpretationParams);
+          const choiceInterpreted = choiceInterpretedResponse.result ?? choiceInterpretedResponse;
+          assert.equal(choiceInterpreted.loop.state, 'resolved');
+          assert.equal(choiceInterpreted.supportingNote.status, 'pending');
+          assert.equal(choiceInterpreted.loop.attention.pendingClarificationId, undefined);
+          assert.deepEqual(inspectChoiceSiblings(), siblingsBeforeChoice);
+          milestone('choice-saved-words-interpreted-before-crash');
+          await killAndReopenAccountedHost();
+          const choiceReopenedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
+          const choiceReopened = choiceReopenedResponse.result ?? choiceReopenedResponse;
+          assert.equal(choiceReopened.loop.state, 'resolved');
+          assert.equal(choiceReopened.loop.revision, choiceInterpreted.loop.revision);
+          assert.equal(choiceReopened.supportingNote.status, 'pending');
+          assert.ok(choiceReopened.evidence.some(item => item.sourceKind === 'user-clarification'
+            && item.observationId === choiceContext.clarificationObservationId && item.rationale === choiceWords));
+          assert.equal(choiceReopened.evidence.filter(item => item.sourceKind === 'processor-interpretation'
+            && item.interpretationOf === choiceContext.clarificationObservationId).length, 1);
+          const duplicateInterpretationResponse = await choiceMutation('command-center.v1.open-loops.interpret-clarification', choiceInterpretationParams);
+          assert.equal((duplicateInterpretationResponse.result ?? duplicateInterpretationResponse).disposition, 'duplicate');
+          await assert.rejects(() => choiceMutation('command-center.v1.open-loops.interpret-clarification', {
+            ...choiceInterpretationParams, decision: 'dismiss' }), /conflict|intent/iu);
+          await assert.rejects(() => choiceMutation('command-center.v1.open-loops.interpret-clarification', {
+            ...choiceInterpretationParams, expectedRevision: choiceBefore.revision }), /stale|revision|intent/iu);
+          await assert.rejects(() => choiceMutation('command-center.v1.open-loops.clarify', {
+            ...choiceClarificationParams, logicalOperationId: randomUUID() }), /stale|revision/iu);
+          const choiceResumedResponse = await choiceMutation('command-center.v1.open-loops.resume-follow-up', {
+            schemaVersion: 1, logicalOperationId: choiceInterpretationId });
+          assert.equal((choiceResumedResponse.result ?? choiceResumedResponse).supportingNote.status, 'completed');
+          assert.deepEqual(inspectChoiceSiblings(), siblingsBeforeChoice);
+          const choiceSettledResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
+          assert.equal((choiceSettledResponse.result ?? choiceSettledResponse).loop.revision, choiceInterpreted.loop.revision);
+          assert.equal((choiceSettledResponse.result ?? choiceSettledResponse).supportingNote.status, 'completed');
+          milestone('choice-only-follow-up-recovered-after-sigkill');
+        }
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
@@ -1660,7 +1750,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, nativeReminderCreatedAndCancelled: true, supportingNoteTargetRetained: true, supportingNoteUpdated: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, choiceSavedWordRecovery: !workerVariant, nativeReminderCreatedAndCancelled: true, supportingNoteTargetRetained: true, supportingNoteUpdated: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
