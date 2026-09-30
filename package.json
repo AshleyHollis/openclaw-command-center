@@ -14,13 +14,13 @@
   "devDependencies": {
     "dompurify": "3.4.15",
     "markdown-it": "15.0.2",
-    "openclaw": "2026.9.5",
+    "openclaw": "2026.9.7",
     "pdfjs-dist": "6.3.289",
     "playwright": "1.63.0",
     "playwright-core": "1.63.0"
   },
   "peerDependencies": {
-    "openclaw": "2026.9.5"
+    "openclaw": "2026.9.7"
   },
   "commandCenter": {
     "runtimeCapability": {
@@ -68,12 +68,12 @@
         }
       },
       "host": {
-        "range": "=2026.9.5",
-        "commit": "21f1ca697532a9bd9e9cc46322a598a31435de15"
+        "range": "=2026.9.7",
+        "commit": "b4c7240c726ee295325296954358e580f9036b36"
       },
       "pluginApi": {
         "package": "openclaw",
-        "range": "=2026.9.5"
+        "range": "=2026.9.7"
       },
       "commandCenterSchema": {
         "readable": {
@@ -100,7 +100,7 @@
       "./dist/plugin.mjs"
     ],
     "compat": {
-      "pluginApi": "=2026.9.5"
+      "pluginApi": "=2026.9.7"
     }
   }
 }
