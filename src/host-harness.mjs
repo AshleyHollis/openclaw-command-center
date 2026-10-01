@@ -17,8 +17,8 @@ if (diagnosticHostProfile && (diagnosticHostProfile !== 'conditional-cron-id-pr5
 export const pinnedHost = Object.freeze({
   // The normal profile binds the reviewed candidate; the diagnostic retains its historical tuple.
   packageVersion: diagnosticHostProfile ? '2026.9.5' : '2026.9.7',
-  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '66876dd67da51c169d7095273a6a1107f248a0a7',
-  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:0fa787df49fd5883715645be0ee1d33962a92524edbab185bfb281e7bc650489',
+  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '0d460e388a3b036d3914e18bb0f2cb47fcafb362',
+  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:240cd41e8aeb464930dee149869f6d0cea423b057d2f98d6008514ab2b9b5f90',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
