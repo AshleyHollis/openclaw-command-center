@@ -3,9 +3,19 @@ import { mkdtemp, readFile, rm, writeFile, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { setHostFilesystemIdentityReader } from '../src/sources/note-folder-identity.mjs';
+
+
 import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
+
+// Disposable folders have no NAS Btrfs witness. Supply only that fictional
+// witness; retain the actual candidate SDK staging and SQLite coordinator.
+let releaseFixtureIdentity;
+beforeEach(() => { releaseFixtureIdentity = setHostFilesystemIdentityReader(createHostFileAccessFixture().readDurableFilesystemIdentity); });
+afterEach(() => { releaseFixtureIdentity?.(); releaseFixtureIdentity = undefined; });
 
 const fixture = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url);
 

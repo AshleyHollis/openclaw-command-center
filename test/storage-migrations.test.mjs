@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import historicalRelease from './fixtures/recovery-release-2026-9-5.json' with { type: 'json' };
+import installedRelease from './fixtures/recovery-release-2026-9-7.json' with { type: 'json' };
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql, metadataSchemaV8Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
@@ -15,12 +16,12 @@ import { MIGRATION_DIGEST, V1_TO_V2_MIGRATION_DIGEST, V1_TO_V2_MIGRATION_ID, V2_
 import { ensureRecoverySnapshot, expectedRollbackRelease, verifyRollbackMaterial } from '../src/metadata/recovery.mjs';
 
 const historicalHostCommits = [historicalRelease.host.commit, '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee'];
-function historicalReleaseForSchema(schemaVersion, commit) {
-  return { ...historicalRelease, host: { ...historicalRelease.host, commit }, commandCenterSchema: { readable: { min: 1, max: schemaVersion }, migratable: { min: 1, max: schemaVersion - 1 }, writable: { min: schemaVersion, max: schemaVersion } } };
+function historicalReleaseForSchema(schemaVersion, commit, release = historicalRelease) {
+  return { ...release, host: { ...release.host, commit }, commandCenterSchema: { readable: { min: 1, max: schemaVersion }, migratable: { min: 1, max: schemaVersion - 1 }, writable: { min: schemaVersion, max: schemaVersion } } };
 }
-function retainHistoricalRelease(manifest, commit, targetSchema = 9) {
-  if (manifest.snapshot.schemaVersion >= 6) manifest.sourceRelease = historicalReleaseForSchema(manifest.snapshot.schemaVersion, commit);
-  manifest.targetRelease = historicalReleaseForSchema(targetSchema, commit);
+function retainHistoricalRelease(manifest, commit, targetSchema = 9, release = historicalRelease) {
+  if (manifest.snapshot.schemaVersion >= 6) manifest.sourceRelease = historicalReleaseForSchema(manifest.snapshot.schemaVersion, commit, release);
+  manifest.targetRelease = historicalReleaseForSchema(targetSchema, commit, release);
 }
 
 const openServices = new Set();
@@ -136,15 +137,18 @@ test('schema-5 to schema-9 preserves Session locators and quarantines unproven l
 });
 
 for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-${schemaVersion} migration manifest remains valid after a compatible host-only upgrade`, async () => {
-  for (const historicalCommit of historicalHostCommits) await withState(async (stateDir) => {
+  for (const release of [historicalRelease, installedRelease]) for (const historicalCommit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
     await seedMigratableSchema(stateDir, schemaVersion, `topic-compatible-host-upgrade-${schemaVersion}`);
     const migrated = open({ stateDir });
     assert.equal(migrated.getOperatingStatus().mode, 'ready');
     migrated.close();
 
-    const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
+    const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+    const manifestPath = path.join(recoveryDirectory, 'manifest.json');
+    const snapshotPath = path.join(recoveryDirectory, 'metadata.sqlite.snapshot');
+    const snapshotBytes = await readFile(snapshotPath);
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    retainHistoricalRelease(manifest, historicalCommit);
+    retainHistoricalRelease(manifest, historicalCommit, 9, release);
     const historicalBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, historicalBytes);
 
@@ -154,20 +158,24 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-$
     assert.equal(reopened.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: manifest.sourceRelease }).verified, true);
     reopened.close();
     assert.deepEqual(await readFile(manifestPath), historicalBytes, 'startup must preserve the exact historical recovery facts');
+    assert.deepEqual(await readFile(snapshotPath), snapshotBytes);
   });
 });
 
-test('retained 9.5 schema-6 through schema-8 target families remain readable', async () => {
-  for (const targetSchema of [6, 7, 8]) for (const commit of historicalHostCommits) await withState(async (stateDir) => {
+test('retained 9.5 and 9.7 schema-6 through schema-8 target families remain readable', async () => {
+  for (const release of [historicalRelease, installedRelease]) for (const targetSchema of [6, 7, 8]) for (const commit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
     // Schema-5 snapshots declare the current 5→9 recovery contract. Use the
     // retained 4→5 snapshot for a historical schema-6 target, not a 5→9 forgery.
     await seedMigratableSchema(stateDir, targetSchema === 6 ? 4 : targetSchema - 1);
     const migrated = open({ stateDir });
     assert.equal(migrated.getOperatingStatus().mode, 'ready');
     migrated.close();
-    const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
+    const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+    const manifestPath = path.join(recoveryDirectory, 'manifest.json');
+    const snapshotPath = path.join(recoveryDirectory, 'metadata.sqlite.snapshot');
+    const snapshotBytes = await readFile(snapshotPath);
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    retainHistoricalRelease(manifest, commit, targetSchema);
+    retainHistoricalRelease(manifest, commit, targetSchema, release);
     const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, bytes);
     const reopened = open({ stateDir });
@@ -175,6 +183,7 @@ test('retained 9.5 schema-6 through schema-8 target families remain readable', a
     assert.equal(reopened.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: manifest.sourceRelease }).verified, true);
     reopened.close();
     assert.deepEqual(await readFile(manifestPath), bytes);
+    assert.deepEqual(await readFile(snapshotPath), snapshotBytes);
   });
 });
 
@@ -201,6 +210,43 @@ test('historical release acceptance rejects prepared, mixed and tampered familie
     const snapshotPath = path.join(directory, 'metadata.sqlite.snapshot');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     retainHistoricalRelease(manifest, historicalHostCommits[0]);
+    mutate(manifest);
+    const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+    await writeFile(manifestPath, manifestBytes);
+    const databaseBytes = await readFile(databasePath);
+    const snapshotBytes = await readFile(snapshotPath);
+    const refused = open({ stateDir });
+    assert.equal(refused.getOperatingStatus().mode, 'recovery-only');
+    assert.equal(refused.getOperatingStatus().diagnostics[0].code, 'recovery-manifest-invalid');
+    refused.close();
+    assert.deepEqual(await readFile(databasePath), databaseBytes);
+    assert.deepEqual(await readFile(snapshotPath), snapshotBytes);
+    assert.deepEqual(await readFile(manifestPath), manifestBytes);
+  });
+});
+
+test('retained 9.7 recovery rejects prepared, mixed, tampered and unknown families without writes', async () => {
+  // This pairing test runs after the candidate host pin moves from installed 9.7.
+  assert.notEqual(canonical.host.commit, installedRelease.host.commit);
+  const cases = [
+    (manifest) => { manifest.state = 'prepared'; },
+    (manifest) => { manifest.sourceRelease = historicalReleaseForSchema(8, historicalHostCommits[0]); },
+    (manifest) => { manifest.targetRelease.host.commit = '0'.repeat(40); },
+    (manifest) => { manifest.targetRelease.pluginApi.range = '=2026.9.8'; },
+    (manifest) => { manifest.sourceRelease.commandCenterSchema.readable.max = 9; },
+    (manifest) => { manifest.targetRelease.package.build = 'unqualified'; },
+    (manifest) => { manifest.targetRelease.capabilityBridgeProtocol.max = 2; }
+  ];
+  for (const mutate of cases) await withState(async (stateDir) => {
+    const databasePath = await seedMigratableSchema(stateDir, 8, 'fictional-retained-9-7');
+    const migrated = open({ stateDir });
+    assert.equal(migrated.getOperatingStatus().mode, 'ready');
+    migrated.close();
+    const directory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+    const manifestPath = path.join(directory, 'manifest.json');
+    const snapshotPath = path.join(directory, 'metadata.sqlite.snapshot');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    retainHistoricalRelease(manifest, installedRelease.host.commit, 9, installedRelease);
     mutate(manifest);
     const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, manifestBytes);

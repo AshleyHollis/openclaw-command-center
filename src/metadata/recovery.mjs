@@ -66,6 +66,19 @@ const historicalSchemaNineRelease = Object.freeze({
 });
 const historicalSchemaNineHostCommits = Object.freeze([historicalSchemaNineRelease.host.commit, ...compatibleHistoricalHostReleases.keys()]);
 
+// Exact installed 9.7 family, frozen before moving the canonical host to 9.8.
+// Accept only coherent committed recovery material, never a prepared migration
+// or a tuple assembled from otherwise recognised releases.
+const installedSchemaNineRelease = Object.freeze({
+  ...historicalSchemaNineRelease,
+  host: Object.freeze({ range: '=2026.9.7', commit: '0d460e388a3b036d3914e18bb0f2cb47fcafb362' }),
+  pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.9.7' })
+});
+const committedHistoricalFamilies = Object.freeze([
+  { release: historicalSchemaNineRelease, commits: historicalSchemaNineHostCommits },
+  { release: installedSchemaNineRelease, commits: [installedSchemaNineRelease.host.commit] }
+]);
+
 const currentRelease = Object.freeze({
   package: canonical.package,
   host: canonical.host,
@@ -179,19 +192,19 @@ function releaseMatchesExceptHostCommit(actual, expected) {
 
 function committedHistoricalReleaseFamilyMatches(manifest, sourceRelease) {
   if (manifest.state !== 'committed') return false;
-  const releaseForSchema = (schemaVersion, commit) => ({
-    ...historicalSchemaNineRelease,
-    host: { ...historicalSchemaNineRelease.host, commit },
+  const releaseForSchema = (release, schemaVersion, commit) => ({
+    ...release,
+    host: { ...release.host, commit },
     commandCenterSchema: { readable: { min: 1, max: schemaVersion }, migratable: { min: 1, max: schemaVersion - 1 }, writable: { min: schemaVersion, max: schemaVersion } }
   });
-  return historicalSchemaNineHostCommits.some((commit) => {
+  return committedHistoricalFamilies.some(({ release, commits }) => commits.some((commit) => {
     const expectedSource = manifest.snapshot.schemaVersion >= 6
-      ? releaseForSchema(manifest.snapshot.schemaVersion, commit)
+      ? releaseForSchema(release, manifest.snapshot.schemaVersion, commit)
       : sourceRelease;
     if (canonicalJson(manifest.sourceRelease) !== canonicalJson(expectedSource)) return false;
     return [6, 7, 8, 9].some((schemaVersion) => schemaVersion >= manifest.migration.toVersion
-      && canonicalJson(manifest.targetRelease) === canonicalJson(releaseForSchema(schemaVersion, commit)));
-  });
+      && canonicalJson(manifest.targetRelease) === canonicalJson(releaseForSchema(release, schemaVersion, commit)));
+  }));
 }
 
 function databaseFingerprint(database) {

@@ -3,9 +3,19 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { setHostFilesystemIdentityReader } from '../src/sources/note-folder-identity.mjs';
+
+
 import { TopicRecoveryService } from '../src/topics/recovery.mjs';
+
+// Disposable folders have no NAS Btrfs witness. Supply only that fictional
+// witness; retain the actual candidate SDK staging and SQLite coordinator.
+let releaseFixtureIdentity;
+beforeEach(() => { releaseFixtureIdentity = setHostFilesystemIdentityReader(createHostFileAccessFixture().readDurableFilesystemIdentity); });
+afterEach(() => { releaseFixtureIdentity?.(); releaseFixtureIdentity = undefined; });
 
 const firstIdentity = `note-folder:1:11111111-1111-4111-8111-111111111111:${'1'.repeat(64)}`;
 const replacementIdentity = `note-folder:1:22222222-2222-4222-8222-222222222222:${'2'.repeat(64)}`;

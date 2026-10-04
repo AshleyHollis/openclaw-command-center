@@ -10,9 +10,9 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '0d460e388a3b036d3914e18bb0f2cb47fcafb362';
+const controllerIntegrationCommit = '13c9575fa34c1d8166223473f7446b9c3889ac64';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
-const controllerPackageVersion = '2026.9.7';
+const controllerPackageVersion = '2026.9.8';
 const publishedSdkVersion = controllerPackageVersion;
 
 test('release admission refuses unsupported or missing bridge declarations before activation', () => {
