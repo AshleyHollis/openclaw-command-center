@@ -27,6 +27,13 @@ export async function seedAttentionLoops(metadata, topicId, peerTopicId) {
   return loops;
 }
 
+// Lifecycle retirement removes a Topic from the real authorized Dashboard
+// projection without inventing an unsupported archived lifecycle value.
+export function setAttentionTopicAvailable(metadata, topicId, available) {
+  return metadata.updateTopic({ topicId, lifecycle: available ? 'active' : 'retired',
+    expectedRevision: metadata.getTopic(topicId).revision });
+}
+
 // Faults retain or discard authentic server replies, never fabricate payloads,
 // grants, successful mutations or scopes. The regular native owner closes all
 // sockets/browser/host and verifies traffic and sealed bytes on every outcome.
@@ -97,11 +104,11 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     assert.equal(await topic().inputValue(), peer.topicId);
     assert.equal(await topic().locator(`option[value="${peer.topicId}"]`).textContent(), 'Fictional renamed peer');
     assert.equal(await topic().evaluate(node => node === document.activeElement), true);
-    metadata.updateTopic({ topicId: peer.topicId, lifecycle: 'archived' }); await settledRefresh();
+    setAttentionTopicAvailable(metadata, peer.topicId, false); await settledRefresh();
     assert.equal(await topic().inputValue(), peer.topicId);
     assert.match(await topic().locator(`option[value="${peer.topicId}"]`).textContent(), /unavailable/iu);
     assert.equal(await topic().locator('option').filter({ hasText: 'Fictional renamed peer' }).count(), 0);
-    metadata.updateTopic({ topicId: peer.topicId, lifecycle: 'active' }); await settledRefresh(); await topic().selectOption('');
+    setAttentionTopicAvailable(metadata, peer.topicId, true); await settledRefresh(); await topic().selectOption('');
 
     // Actual host pane/CSS and hit targets at narrow and intermediate widths.
     for (const width of [640, 800, 1024]) {
@@ -200,11 +207,11 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
       loop: { ...bound, topicId: peer.topicId, revision: bound.revision + 1 } }); await settledRefresh();
     assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
     await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).fill('Fictional binding remains private');
-    metadata.updateTopic({ topicId: peer.topicId, lifecycle: 'archived' }); await settledRefresh();
-    metadata.updateTopic({ topicId: peer.topicId, lifecycle: 'active' }); await settledRefresh();
+    setAttentionTopicAvailable(metadata, peer.topicId, false); await settledRefresh();
+    setAttentionTopicAvailable(metadata, peer.topicId, true); await settledRefresh();
     assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
-    metadata.updateTopic({ topicId: fixture.topicId, lifecycle: 'archived' }); await settledRefresh();
-    metadata.updateTopic({ topicId: fixture.topicId, lifecycle: 'active' }); await settledRefresh();
+    setAttentionTopicAvailable(metadata, fixture.topicId, false); await settledRefresh();
+    setAttentionTopicAvailable(metadata, fixture.topicId, true); await settledRefresh();
     assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
 
     // Uncertain delivery is created by discarding one real successful reply.
