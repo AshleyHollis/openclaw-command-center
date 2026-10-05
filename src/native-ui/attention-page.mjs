@@ -22,6 +22,16 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  // The host retires context.signal on view/connection replacement. This map
+  // belongs only to that verified mount lifetime; it is never handed to a remount.
+  const drafts = new Map();
+  const draftNotices = new Set();
+  let authorizedTopics = new Set();
+  const draftSlot = (card, kind) => JSON.stringify(['open-loop', card.loopId, kind]);
+  const draftKey = (card, kind) => JSON.stringify(['open-loop', card.loopId, card.revision, kind]);
+  const draftBinding = card => card.topicId ?? null;
+  const draftAuthorized = card => draftBinding(card) === null || authorizedTopics.has(card.topicId);
+  const clearDrafts = () => { drafts.clear(); draftNotices.clear(); authorizedTopics.clear(); transientUiState.disclosures.clear(); transientUiState.focusKey = null; transientUiState.selection = null; transientUiState.focusLoopId = null; };
   const transientUiState = { disclosures: new Set(), focusKey: null, scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
@@ -99,15 +109,88 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
     transientUiState.boardScrollLeft = content.querySelector('.cc-planner-board')?.scrollLeft ?? 0;
     transientUiState.focusKey = focusKey(document.activeElement);
+    const active = document.activeElement;
+    transientUiState.selection = active && typeof active.selectionStart === 'number'
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const owner = active?.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    transientUiState.focusLoopId = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId;
+    transientUiState.visibleOrder = [...new Set([...content.querySelectorAll('[data-open-loop-id],[data-workspace-loop-id]')].filter(node => node.getClientRects().length && !node.closest('[hidden]')).map(node => node.dataset.openLoopId ?? node.dataset.workspaceLoopId))];
+    transientUiState.parentScroll = [];
+    for (let parent = container.parentElement; parent; parent = parent.parentElement) transientUiState.parentScroll.push([parent, parent.scrollTop, parent.scrollLeft]);
   };
-  const restoreTransientUiState = () => {
+  const restoreTransientUiState = (removedLoopId) => {
     for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
     for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
     const board = content.querySelector('.cc-planner-board'); if (board) board.scrollLeft = transientUiState.boardScrollLeft ?? 0;
     container.scrollTop = transientUiState.scrollTop;
     document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
-    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href],[tabindex]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
+    for (const [node, top, left] of transientUiState.parentScroll ?? []) if (node.isConnected) { node.scrollTop = top; node.scrollLeft = left; }
+    // A newer choice in the toolbar or another host pane wins over restoration.
+    if (document.activeElement !== document.body && !content.contains(document.activeElement)) return;
+    const controls = [...content.querySelectorAll('button,input,select,textarea,summary,a[href],[tabindex]')];
+    const usable = node => !node.disabled && node.getClientRects().length && !node.closest('[hidden]');
+    const exact = transientUiState.focusKey && controls.find(node => focusKey(node) === transientUiState.focusKey && usable(node));
+    if (exact) {
+      exact.focus({ preventScroll: true });
+      if (transientUiState.selection && typeof exact.setSelectionRange === 'function') {
+        try { exact.setSelectionRange(...transientUiState.selection); } catch { /* non-text inputs do not expose a caret */ }
+      }
+    } else if (removedLoopId && transientUiState.focusLoopId === removedLoopId) {
+      const order = transientUiState.visibleOrder ?? []; const index = order.indexOf(removedLoopId);
+      const neighbors = [...order.slice(index + 1), ...order.slice(0, index).reverse()];
+      let target;
+      for (const id of neighbors) {
+        const row = [...content.querySelectorAll('[data-open-loop-id],[data-workspace-loop-id]')].find(node => (node.dataset.openLoopId ?? node.dataset.workspaceLoopId) === id && usable(node));
+        target = row && [...row.querySelectorAll('button,summary,input,select,textarea,a[href]')].find(usable);
+        if (target) break;
+      }
+      (target ?? content.querySelector('[data-attention-empty]'))?.focus({ preventScroll: true });
+    }
   };
+
+  function validateDrafts(dashboard) {
+    authorizedTopics = new Set((dashboard.topics ?? []).map(topic => topic.topicId));
+    const loops = new Map();
+    const visit = value => {
+      if (!value || typeof value !== 'object') return;
+      if (nonBlank(value.loopId) && Number.isSafeInteger(value.revision)) {
+        const prior = loops.get(value.loopId);
+        loops.set(value.loopId, loops.has(value.loopId) && (!prior || prior.revision !== value.revision || draftBinding(prior) !== draftBinding(value)) ? null : value);
+      }
+      else for (const item of Object.values(value)) visit(item);
+    };
+    visit(dashboard.openLoops);
+    for (const slot of draftNotices) { const card = loops.get(JSON.parse(slot)[1]); if (!card || !draftAuthorized(card)) draftNotices.delete(slot); }
+    for (const [key, draft] of drafts) {
+      const card = loops.get(draft.loopId);
+      if (!card || !draftAuthorized(card) || ['resolved', 'cancelled'].includes(card.state)) { drafts.delete(key); draftNotices.delete(draft.slot); }
+      else if (card.revision !== draft.revision || draftBinding(card) !== draft.topicId) { drafts.delete(key); draftNotices.add(draft.slot); }
+    }
+  }
+
+  function bindDraft(form, card, kind, fields, pending, update = () => {}) {
+    const key = draftKey(card, kind); const slot = draftSlot(card, kind);
+    const defaults = Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.type === 'checkbox' ? node.checked : node.value]));
+    const apply = values => { for (const [name, node] of Object.entries(fields)) { if (node.type === 'checkbox') node.checked = values[name]; else node.value = values[name]; } update(); };
+    form.dataset.draftKey = key;
+    for (const [name, node] of Object.entries(fields)) node.dataset.focusIdentity = `${key}:${name}`;
+    const saved = drafts.get(key);
+    if (saved && saved.topicId === draftBinding(card) && draftAuthorized(card)) apply(saved.values);
+    let notice;
+    if (draftNotices.has(slot)) { notice = element('p', 'This item changed. Review the current source evidence and re-enter your draft.'); notice.dataset.draftReviewRequired = 'true'; form.prepend(notice); }
+    const retain = () => {
+      if (!current(pending) || !writable() || !draftAuthorized(card)) return;
+      const values = Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.type === 'checkbox' ? node.checked : node.value]));
+      drafts.set(key, { slot, loopId: card.loopId, revision: card.revision, topicId: draftBinding(card), values });
+      for (const peer of content.querySelectorAll('form[data-draft-key]')) if (peer !== form && peer.dataset.draftKey === key) peer.dispatchEvent(new CustomEvent('draft-sync', { detail: values }));
+    };
+    form.addEventListener('input', retain, { signal }); form.addEventListener('change', retain, { signal });
+    form.addEventListener('draft-sync', event => apply(event.detail), { signal });
+    const discard = element('button', 'Discard unsent draft'); discard.type = 'button';
+    discard.addEventListener('click', () => { if (!current(pending)) return; drafts.delete(key); draftNotices.delete(slot); apply(defaults); notice?.remove();
+      for (const peer of content.querySelectorAll('form[data-draft-key]')) if (peer !== form && peer.dataset.draftKey === key) peer.dispatchEvent(new CustomEvent('draft-sync', { detail: defaults }));
+    }, { signal }); form.append(discard);
+  }
 
   const formatInstant = value => {
     if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
@@ -260,7 +343,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
     const proposed = { schemaVersion: 1, ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params };
-    const prior = operations.get(key);
+    const prior = operations.get(key) ?? (method === 'command-center.v1.open-loops.decide'
+      ? [...operations.values()].find(operation => operation.method === method && operation.params?.loopId === card.loopId) : undefined);
     if (prior && ['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify', 'command-center.v1.open-loops.payment-status'].includes(method)) {
       const { logicalOperationId: _savedId, ...savedIntent } = prior.params;
       if (prior.method !== method || JSON.stringify(savedIntent) !== JSON.stringify(proposed)) {
@@ -274,8 +358,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The action outcome is not confirmed. Retry to reconcile the same operation.');
     if (!current(pending)) return false;
     operations.delete(key);
-    await load();
-    if (!signal.aborted && presented && readable()) report(success);
+    if (method === 'command-center.v1.open-loops.clarify') drafts.delete(draftKey(card, 'clarification'));
+    if (method === 'command-center.v1.open-loops.decide') drafts.delete(draftKey(card, 'decision'));
+    await load(success, card.loopId);
     return true;
   }
 
@@ -445,6 +530,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     decision.addEventListener('change', update, { signal }); applyCorrections.addEventListener('change', update, { signal }); correctDue.addEventListener('change', update, { signal }); dateOnly.addEventListener('change', update, { signal }); update();
     const save = element('button', 'Save action'); save.type = 'submit';
     form.append(decisionLabel, reviewLabel, correctionLabel, amountLabel, currencyLabel, correctDueLabel, dateOnlyLabel, dueLabel, dueDateLabel, rationaleLabel, save);
+    bindDraft(form, card, 'decision', { decision, reviewAt, applyCorrections, amount, currency, correctDue, dateOnly, dueAt, dueDate, rationale }, pending, update);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
@@ -480,6 +566,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const label = element('label', 'What needs correcting? ');
     const words = element('textarea'); words.required = true; words.maxLength = 1000; label.append(words);
     const save = element('button', 'Save clarification'); save.type = 'submit'; form.append(label, save);
+    bindDraft(form, card, 'clarification', { words }, pending);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!current(pending) || !writable() || save.disabled || !words.value.trim()) return;
@@ -1133,12 +1220,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
   }
 
-  async function load(message = '') {
-    if (content.childElementCount) captureTransientUiState();
+  async function load(message = '', removedLoopId, capture = true) {
+    if (capture && content.childElementCount) captureTransientUiState();
     const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
     if (!readable()) {
+      clearDrafts();
       const disconnected = element('section'); disconnected.className = 'cc-disconnected';
       disconnected.append(element('h2', 'Command Center is not connected'), element('p', 'Email, Chat and Note processing coverage cannot be checked yet. Connect with read access before treating this inbox as complete.'));
       content.append(disconnected); report('Connect with read access to view Attention.'); return;
@@ -1149,6 +1237,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (!current(pending)) return;
       const dashboard = unwrap(response);
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
+      validateDrafts(dashboard);
       const cards = [...dashboard.attention, ...dashboard.inProgress];
       if (!recordId && !attentionRecordId) {
         const workspace = element('div'); workspace.className = 'cc-workspace'; workspace.dataset.pageMode = pageMode;
@@ -1249,7 +1338,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
-        restoreTransientUiState();
+        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]')) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
+        restoreTransientUiState(removedLoopId);
         report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
       }
       const matches = cards.filter((card) => recordId
@@ -1268,9 +1358,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: 'topics' }); } }, { signal });
   switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
   let access = `${readable()}:${host.connection.canWrite}`;
-  const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; void load(); } });
+  const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; clearDrafts(); void load('', undefined, false); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; generation++; clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
