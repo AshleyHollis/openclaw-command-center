@@ -30,7 +30,7 @@ export const attentionStyles = `
   .cc-toolbar { display:flex; gap:.55rem; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
   .cc-command-center-page button { min-height:2.65rem; padding:.62rem .9rem; border:1px solid var(--cc-line); border-radius:.65rem; background:Canvas; color:CanvasText; font-weight:650; }
   .cc-command-center-page button:hover { border-color:var(--cc-line-strong); background:var(--cc-accent-soft); }
-  .cc-command-center-page button:disabled { cursor:not-allowed; opacity:.55; }
+  .cc-command-center-page button:disabled, .cc-command-center-page button[aria-disabled="true"] { cursor:not-allowed; opacity:.55; }
   .cc-toolbar button:last-of-type { background:var(--cc-accent); border-color:var(--cc-accent); color:white; }
   .cc-toolbar>[data-selected-document-intake] { position:relative; }
   .cc-toolbar>[data-selected-document-intake]>summary { min-height:2.65rem; display:flex; align-items:center; padding:.62rem .85rem; border:1px solid var(--cc-line); border-radius:.65rem; font-weight:650; list-style:none; }

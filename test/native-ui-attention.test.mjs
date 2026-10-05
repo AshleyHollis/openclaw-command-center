@@ -1640,3 +1640,38 @@ test('Planner Topic names stay current across keyboard selection and read access
   assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
 }));
+
+for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`asynchronous decision removal ${index} keeps keyboard focus and blocks duplicate writes`, () => fixture(async page => {
+  await mountDraftCards(page);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, index);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous completion');
+  const save = form.getByRole('button', { name: 'Save action', exact: true });
+  await save.press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.waitForTimeout(100);
+  assert.equal(await save.evaluate(node => node === document.activeElement), true, 'Pending native decision retains the keyboard focus needed by removal');
+  assert.equal(await save.getAttribute('aria-disabled'), 'true');
+  await save.press('Enter');
+  assert.equal(await page.evaluate(() => window.requests.filter(item => item.method.endsWith('open-loops.decide')).length), 1);
+  await page.evaluate(() => window.finishDecide());
+  await page.waitForFunction(id => document.querySelector('section[aria-label="Attention items"]')?.getAttribute('aria-busy') === 'false' && !document.querySelector(`[data-open-loop-id="${id}"]`), `draft-${index}`);
+  assert.equal(await page.evaluate(() => document.activeElement.closest('[data-open-loop-id]')?.dataset.openLoopId), `draft-${next}`);
+}));
+
+test('asynchronous decision completion respects a newer toolbar focus', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, 0);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous final completion');
+  await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.getByRole('button', { name: 'All Topics', exact: true }).focus();
+  await page.evaluate(() => window.finishDecide());
+  await page.locator('[data-attention-empty]').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), 'All Topics');
+}));
