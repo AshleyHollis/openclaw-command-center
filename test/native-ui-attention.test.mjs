@@ -42,7 +42,7 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: structuredClone(window.dashboardTopics ?? [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }]), intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('briefings.set-read')) { const item = window.briefingHistory.find(row => row.editionId === params.editionId); item.read = params.read; window.briefings = window.briefingHistory.filter(row => !row.read); if (window.dailyMode === 'unknown-once') { window.dailyMode = 'success'; throw new Error('The transport outcome is unknown.'); } return { result: structuredClone(item) }; }
           if (method.endsWith('routines.decide')) { window.routineOccurrences = window.routineOccurrences.filter(row => !(row.routineId === params.routineId && row.occurrenceDate === params.occurrenceDate)); return { result: { schemaVersion: 1, ...params, revision: params.expectedRevision + 1 } }; }
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
@@ -1237,6 +1237,45 @@ test('native Attention re-resolves verified Session Activity before opening nati
   assert.deepEqual(request.params, { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-source', expectedSessionId: 'fictional-session-id' });
 }));
 
+test('Planner Topic labels use the current authorized projection and preserve exact selection and focus', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = ['topic-a', 'topic-b', 'topic-missing'].map((topicId, index) => ({ loopId: `topic-label-${index}`, topicId, kind: 'general', title: `Fictional work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.dashboardTopics = [{ topicId: 'topic-a', name: 'Fictional project' }, { topicId: 'topic-b', name: 'Fictional project' }];
+    window.openLoops = { total: 3, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [], waiting: [], someday: [], board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const topic = page.locator('.cc-planner-controls').getByLabel('Topic', { exact: true });
+  await page.getByRole('button', { name: 'Refresh Planner', exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('.cc-status').textContent !== 'Loading Attention.');
+  await topic.waitFor();
+  assert.deepEqual(await topic.locator('option').evaluateAll(nodes => nodes.map(node => [node.value, node.textContent])), [['', 'All Topics'], ['topic-a', 'Fictional project (topic-a)'], ['topic-b', 'Fictional project (topic-b)'], ['topic-missing', 'Topic unavailable (topic-missing)']]);
+  await topic.selectOption('topic-b');
+  await page.getByLabel('Search', { exact: true }).fill('Fictional');
+  await page.getByLabel('Status', { exact: true }).selectOption('confirmed');
+  await page.getByRole('button', { name: 'List', exact: true }).click();
+  await topic.focus();
+  await page.evaluate(() => { window.dashboardTopics[1].name = 'Renamed fictional project'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Renamed fictional project', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
+  assert.equal(await page.getByLabel('Status', { exact: true }).inputValue(), 'confirmed');
+  assert.equal(await page.getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.evaluate(() => { window.dashboardTopics = []; window.openLoops.workspace.board.ready = window.openLoops.workspace.board.ready.filter(card => card.topicId !== 'topic-b'); [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Topic unavailable (topic-b)', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByText('Renamed fictional project', { exact: true }).count(), 0);
+  assert.equal(await page.locator('[aria-label="Planner list"] article:visible').count(), 0);
+  await topic.selectOption('');
+  assert.equal(await page.locator('[aria-label="Planner list"] article:visible').count(), 2);
+  assert.equal(await page.evaluate(() => window.requests.filter(row => !['dashboard.get', 'attention.get'].some(method => row.method.endsWith(method))).length), 0);
+}));
+
+
+
+
 test('Planner narrow mounted controls remain inside their pane', () => fixture(async page => {
   await page.evaluate(() => {
     window.cards = [];
@@ -1288,4 +1327,34 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   assert.deepEqual(await page.locator('.cc-planner-controls input,.cc-planner-controls select').evaluateAll(nodes => nodes.map(node => node.value)), ['Fictional', 'topic-fictional-renovation', 'confirmed', 'normal']);
   assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.organize'))), false);
   if (process.env.COMMAND_CENTER_NARROW_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_NARROW_SCREENSHOT });
+}));
+test('Planner Topic names stay current across keyboard selection and read access loss', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.dashboardTopics = [{ topicId: 'topic-a', name: 'Fictional alpha' }, { topicId: 'topic-b', name: 'Fictional beta' }];
+    const ready = ['topic-a', 'topic-b'].map((topicId, index) => ({ loopId: `topic-key-${index}`, topicId, kind: 'general', title: `Fictional work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1, planning: { importance: 'normal' } }));
+    window.openLoops = { total: 2, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const topic = page.locator('.cc-planner-controls').getByLabel('Topic', { exact: true });
+  await topic.waitFor(); await topic.focus();
+  await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  assert.equal(await topic.inputValue(), 'topic-b');
+  await page.getByLabel('Priority', { exact: true }).selectOption('normal');
+  await page.getByLabel('Search', { exact: true }).fill('Fictional');
+  await topic.focus();
+  await page.evaluate(() => { window.dashboardTopics[1].name = 'Fictional renamed beta'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Fictional renamed beta', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b'); assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  await page.evaluate(() => window.setAccess({ canRead: false }));
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  await page.evaluate(() => { window.dashboardTopics = []; window.setAccess({ canRead: true }); });
+  await topic.getByRole('option', { name: 'Topic unavailable (topic-b)', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
 }));
