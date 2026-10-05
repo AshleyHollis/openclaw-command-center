@@ -8,7 +8,7 @@ import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><html lang="en"><title>Fictional Attention host</title>${process.env.COMMAND_CENTER_PACKAGED_UI_CSS ? `<link rel="stylesheet" href="/host/${process.env.COMMAND_CENTER_PACKAGED_UI_CSS}">` : ''}<main id="mount" style="display:contents"></main></html>`); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><html lang="en"><title>Fictional Attention host</title>${process.env.COMMAND_CENTER_PACKAGED_UI_CSS ? `<link rel="stylesheet" href="/host/${process.env.COMMAND_CENTER_PACKAGED_UI_CSS}">` : ''}<div id="fictional-pane" style="height:100vh;overflow:auto;min-width:0"><main id="mount" style="display:contents"></main></div></html>`); return; }
     if (process.env.COMMAND_CENTER_PACKAGED_UI && /^\/host\/[a-zA-Z0-9_.-]+\.(js|css)$/u.test(req.url)) {
       try { res.setHeader('content-type', req.url.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(await readFile(path.join(process.env.COMMAND_CENTER_PACKAGED_UI, 'assets', req.url.slice(6)))); }
       catch { res.writeHead(404); res.end(); } return;
@@ -1320,7 +1320,7 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
   const before = await lanes.evaluate(node => node.scrollLeft);
   await page.evaluate(() => { window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
-  await page.getByText('Updated fictional title', { exact: true }).waitFor({ state: 'attached' });
+  await page.getByText('Updated fictional title', { exact: true }).first().waitFor({ state: 'attached' });
   assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
   assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
   assert.equal(await page.locator('[data-board-lane="ready"]').evaluate(node => node.scrollTop), 170);
