@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional Attention host</title><main id="mount"></main></html>'); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><html lang="en"><title>Fictional Attention host</title>${process.env.COMMAND_CENTER_PACKAGED_UI_CSS ? `<link rel="stylesheet" href="/host/${process.env.COMMAND_CENTER_PACKAGED_UI_CSS}">` : ''}<div id="fictional-pane" style="height:100vh;overflow:auto;min-width:0"><main id="mount" style="display:contents"></main></div></html>`); return; }
+    if (process.env.COMMAND_CENTER_PACKAGED_UI && /^\/host\/[a-zA-Z0-9_.-]+\.(js|css)$/u.test(req.url)) {
+      try { res.setHeader('content-type', req.url.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(await readFile(path.join(process.env.COMMAND_CENTER_PACKAGED_UI, 'assets', req.url.slice(6)))); }
+      catch { res.writeHead(404); res.end(); } return;
+    }
     if (!/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../src/native-ui${req.url}`, import.meta.url))); }
+    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -18,7 +23,9 @@ async function fixture(run) {
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
     const page = await browser.newPage(); page.setDefaultTimeout(3000);
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.evaluate(async () => {
+    const packagedHost = process.env.COMMAND_CENTER_PACKAGED_UI_LOADER;
+    if (packagedHost) await page.evaluate(async loader => { await import(`/host/${loader}`); }, packagedHost);
+    await page.evaluate(async ({ packagedHost }) => {
       const plugin = (await import('/entry.mjs')).default;
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
@@ -29,6 +36,7 @@ async function fixture(run) {
       window.cards = ['one', 'two'].map((id) => ({ attentionRecordId: `attention-${id}`, notificationRecordIds: [`record-${id}`], episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
+        agents: {}, components: {},
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
         navigation: { openPage: (target) => window.opened.push(target) }, sessions: { openChat: (target) => window.opened.push({ session: target }), open() { throw new Error('Attention must not open arbitrary Sessions'); } },
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
@@ -149,16 +157,26 @@ async function fixture(run) {
         } };
       const deactivate = plugin.activate(host);
       if (!pages.has('attention') || !pages.has('planner')) throw new Error('First-live activation must register Dashboard and Planner destinations.');
+      const mount = (definition) => {
+        const root = document.querySelector('#mount');
+        if (!packagedHost) { view = definition(root, context); return; }
+        const nativeView = document.createElement('openclaw-plugin-view');
+        const registration = { key: 'fictional-attention', value: { mount: definition }, host, signal: scope.signal };
+        nativeView.context = { plugins: { registrations: () => [registration], subscribe: () => () => {} } };
+        nativeView.kind = 'pages'; nativeView.contributionKey = registration.key; nativeView.props = context.props;
+        root.replaceChildren(nativeView);
+        view = { dispose: () => nativeView.remove(), update: next => { nativeView.props = next.props; nativeView.presented = next.presented; } };
+      };
       window.mountRecord = (record = 'record-one') => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: { notificationRecord: record }, signal: scope.signal, presented: true };
-        view = mountAttentionPage(document.querySelector('#mount'), context, operations);
+        mount((root, next) => mountAttentionPage(root, next, operations));
       };
       window.mountInbox = () => window.mountRecord(null);
       window.mountPlanner = (topicId) => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: topicId ? { topicId } : {}, signal: scope.signal, presented: true };
-        view = pages.get('planner').mount(document.querySelector('#mount'), context);
+        mount(pages.get('planner').mount);
       };
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
       window.setPresented = (presented) => { context = { ...context, presented }; view.update(context); };
@@ -166,7 +184,7 @@ async function fixture(run) {
       window.abortView = () => scope.abort();
       window.shutdown = () => { scope.abort(); view.dispose(); lifetime.abort(); deactivate(); return { pages: pages.size, subscribers: subscribers.size }; };
       window.mountRecord();
-    });
+    }, { packagedHost: Boolean(packagedHost) });
     await page.getByRole('heading', { name: 'Fictional one' }).waitFor();
     await run(page);
     for (const request of await page.evaluate(() => window.requests)) if (!request.method.endsWith('sessions.resolve-native')) validateBridgeRequest(request.method, request.params);
@@ -817,7 +835,7 @@ test('Dashboard shows receipt-backed document coverage separately from unknown e
   await coverage.getByText('unknown', { exact: true }).waitFor();
   await coverage.getByText(/receipt-current · Last successful/u).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.locator('#mount').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
+  assert.equal(await page.locator('.cc-command-center-page').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
 }));
 
 test('Dashboard labels admitted retry separately from a failed source scan', () => fixture(async (page) => {
@@ -1217,4 +1235,57 @@ test('native Attention re-resolves verified Session Activity before opening nati
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { session: { sessionKey: 'agent:main:fictional-activity', agentId: 'main' } });
   const request = await page.evaluate(() => window.requests.find((entry) => entry.method.endsWith('sessions.resolve-native')));
   assert.deepEqual(request.params, { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-source', expectedSessionId: 'fictional-session-id' });
+}));
+
+test('Planner narrow mounted controls remain inside their pane', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = Array.from({ length: 25 }, (_, index) => ({ loopId: `narrow-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional narrow work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: 25, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, capacity: [], board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  await page.getByText('Kanban board', { exact: true }).waitFor();
+  for (const [width, pane] of [[640, 640], [800, 800], [1024, 1024], [1440, 640], [1440, 860], [1440, 1440]]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(pane => { document.body.style.width = `${pane - 16}px`; }, pane);
+    const geometry = await page.locator('.cc-planner-controls').evaluate(node => {
+      const bounds = node.getBoundingClientRect();
+      return { width: innerWidth, container: getComputedStyle(document.querySelector('.cc-command-center-page')).containerType, columns: getComputedStyle(node).gridTemplateColumns, bounds: [bounds.left, bounds.right], controls: [...node.querySelectorAll('input,select,button')].map(input => { const box = input.getBoundingClientRect(); return { label: input.getAttribute('aria-label') ?? input.textContent ?? input.type, left: box.left, right: box.right }; }) };
+    });
+
+    assert.equal(geometry.controls.every(control => control.left >= geometry.bounds[0] && control.right <= Math.min(geometry.width, geometry.bounds[1])), true, `Controls clipped at ${width}`);
+    for (const view of ['List', 'Agenda', 'Board']) {
+      const button = page.getByRole('button', { name: view, exact: true });
+      await button.click(); assert.equal(await button.getAttribute('aria-pressed'), 'true');
+      await button.focus(); await button.press('Space'); assert.equal(await button.getAttribute('aria-pressed'), 'true');
+    }
+    const filters = page.locator('.cc-planner-controls input,.cc-planner-controls select');
+    await filters.nth(0).click(); await filters.nth(0).press('ControlOrMeta+A'); await filters.nth(0).pressSequentially('Fictional');
+    for (let index = 1; index < 4; index++) {
+      await page.keyboard.press('Tab'); assert.equal(await filters.nth(index).evaluate(node => node === document.activeElement), true);
+      await filters.nth(index).click(); await filters.nth(index).press('Home');
+      for (let step = 0; step < (index === 3 ? 3 : 1); step++) await filters.nth(index).press('ArrowDown');
+      await filters.nth(index).press('Enter');
+    }
+    for (const view of ['Board', 'List', 'Agenda']) {
+      await page.keyboard.press('Tab'); const button = page.getByRole('button', { name: view, exact: true });
+      assert.equal(await button.evaluate(node => node === document.activeElement), true); await page.keyboard.press('Space');
+    }
+    await page.getByRole('button', { name: 'Board', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 640, height: 900 });
+  await page.evaluate(() => { document.body.style.width = '624px'; });
+  const lanes = page.getByRole('region', { name: /Kanban lanes/ });
+  await lanes.focus(); await lanes.press('ArrowRight');
+  await page.waitForFunction(() => document.querySelector('.cc-planner-board').scrollLeft > 0);
+  await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
+  const before = await lanes.evaluate(node => node.scrollLeft);
+  await page.evaluate(() => { window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await page.getByText('Updated fictional title', { exact: true }).first().waitFor({ state: 'attached' });
+  assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
+  assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.locator('[data-board-lane="ready"]').evaluate(node => node.scrollTop), 170);
+  assert.deepEqual(await page.locator('.cc-planner-controls input,.cc-planner-controls select').evaluateAll(nodes => nodes.map(node => node.value)), ['Fictional', 'topic-fictional-renovation', 'confirmed', 'normal']);
+  assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.organize'))), false);
+  if (process.env.COMMAND_CENTER_NARROW_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_NARROW_SCREENSHOT });
 }));

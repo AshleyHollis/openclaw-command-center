@@ -90,6 +90,7 @@ export const attentionStyles = `
   .cc-coverage-source li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.45rem; align-items:center; margin-top:.35rem; }
   .cc-coverage-source code { font-size:.72rem; overflow-wrap:anywhere; }
   .cc-planner-board { display:grid; grid-template-columns:repeat(5,minmax(15rem,1fr)); gap:.8rem; overflow-x:auto; padding:.75rem .15rem .35rem; scrollbar-gutter:stable; }
+  .cc-planner-board:focus-visible { outline:3px solid var(--cc-accent); outline-offset:3px; }
   .cc-planner-lane { min-width:0; min-height:16rem; max-height:68vh; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--cc-line); border-radius:.85rem; padding:.7rem; background:color-mix(in srgb, Canvas 94%, CanvasText 6%); scrollbar-gutter:stable; }
   .cc-planner-lane>h3 { position:sticky; top:0; z-index:1; margin:0; padding:.45rem; border-radius:.5rem; background:var(--cc-panel); font-size:.85rem; }
   .cc-planner-controls { display:grid; grid-template-columns:minmax(12rem,2fr) repeat(3,minmax(8rem,1fr)) auto; gap:.65rem; align-items:end; padding:1rem; border:1px solid var(--cc-line); border-radius:.9rem; background:var(--cc-panel); box-shadow:var(--cc-shadow); }
