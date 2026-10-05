@@ -926,14 +926,23 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (planner) {
         const controls = element('section'); controls.className = 'cc-planner-controls'; controls.setAttribute('aria-label', 'Planner controls');
         const searchLabel = element('label', 'Search'); const search = element('input'); search.type = 'search'; search.placeholder = 'Search work'; search.value = transientUiState.planner.search; searchLabel.append(search);
-        const topicLabel = element('label', 'Topic'); const topic = element('select'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
+        const topicLabel = element('label', 'Topic'); const topic = element('select'); topic.dataset.focusIdentity = 'planner-topic'; topic.setAttribute('aria-label', 'Topic'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
         const completeBoard = Object.values(workspace.board ?? {}).flatMap(openLoopsArray);
-        for (const topicId of [...new Set(completeBoard.map(card => card.topicId).filter(nonBlank))].sort()) { const option = element('option', topicId); option.value = topicId; topic.append(option); }
-        topic.value = targets.topicId ?? transientUiState.planner.topic ?? ''; topicLabel.append(topic);
-        const stateLabel = element('label', 'Status'); const state = element('select');
+        const selectedTopic = targets.topicId ?? transientUiState.planner.topic ?? '';
+        const topicIds = [...new Set([...completeBoard.map(card => card.topicId), selectedTopic].filter(nonBlank))].sort();
+        // Labels come only from this response's authorized projection, never a name cache.
+        const names = new Map((targets.topics ?? []).filter(item => nonBlank(item.topicId) && nonBlank(item.name)).map(item => [item.topicId, item.name]));
+        for (const topicId of topicIds) {
+          const name = names.get(topicId);
+          const duplicate = name && topicIds.some(id => id !== topicId && names.get(id) === name);
+          const option = element('option', name ? duplicate ? `${name} (${topicId})` : name : `Topic unavailable (${topicId})`);
+          option.value = topicId; topic.append(option);
+        }
+        topic.value = selectedTopic; topicLabel.append(topic);
+        const stateLabel = element('label', 'Status'); const state = element('select'); state.setAttribute('aria-label', 'Status');
         for (const [value, label] of [['', 'All statuses'], ['confirmed', 'Confirmed'], ['monitoring', 'Monitoring'], ['waiting', 'Waiting'], ['decision-needed', 'Decision needed'], ['suggested', 'Suggestions'], ['resolved', 'Resolved']]) { const option = element('option', label); option.value = value; state.append(option); } stateLabel.append(state);
         state.value = transientUiState.planner.state;
-        const priorityLabel = element('label', 'Priority'); const importance = element('select');
+        const priorityLabel = element('label', 'Priority'); const importance = element('select'); importance.setAttribute('aria-label', 'Priority');
         for (const [value, label] of [['', 'All priorities'], ['critical', 'Critical'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']]) { const option = element('option', label); option.value = value; importance.append(option); } priorityLabel.append(importance);
         importance.value = transientUiState.planner.importance;
         const views = element('div'); views.className = 'cc-view-switcher'; views.setAttribute('aria-label', 'Planner view');
