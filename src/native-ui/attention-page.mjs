@@ -26,6 +26,29 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   // belongs only to that verified mount lifetime; it is never handed to a remount.
   const drafts = new Map();
   const draftNotices = new Set();
+  // Bound only this mount's wait for a decision/clarification acknowledgement.
+  // Timeout does not cancel the write or discard its immutable recovery intent.
+  const responseWaiters = new Set();
+  const retireResponseWaiters = () => { for (const cancel of [...responseWaiters]) cancel(); };
+  const requestSubmittedOpenLoop = operation => {
+    if (!['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify'].includes(operation.method)) return host.request(operation.method, operation.params);
+    return new Promise((resolve, reject) => {
+      let settled = false; let timer;
+      const settle = (complete, value) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); responseWaiters.delete(cancel); complete(value);
+      };
+      const cancel = () => settle(reject, new DOMException('The verified Attention wait ended.', 'AbortError'));
+      if (signal.aborted) { cancel(); return; }
+      responseWaiters.add(cancel);
+      timer = setTimeout(() => settle(reject, new Error('The action outcome is unknown. Retry the unchanged action to reconcile the same operation.')), 30_000);
+      // Both handlers stay attached after timeout/retirement. Late replies do
+      // not change UI or recovery state; an explicit unchanged retry reconciles
+      // with the owner, then the existing load reads its authoritative state.
+      try { Promise.resolve(host.request(operation.method, operation.params)).then(value => settle(resolve, value), error => settle(reject, error)); }
+      catch (error) { settle(reject, error); }
+    });
+  };
   let authorizedTopics = new Set();
   // Retain only how much inventory the user opened, never private card snapshots.
   let inventoryPageCount = 0;
@@ -356,7 +379,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     const operation = prior ?? { method, params: { logicalOperationId: crypto.randomUUID(), ...proposed } };
     operations.set(key, operation);
-    const envelope = await host.request(operation.method, operation.params);
+    const envelope = await requestSubmittedOpenLoop(operation);
     const response = unwrap(envelope);
     if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The action outcome is not confirmed. Retry to reconcile the same operation.');
     if (!current(pending)) return false;
@@ -1242,7 +1265,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   async function load(message = '', removedLoopId, capture = true) {
     if (capture && content.childElementCount) captureTransientUiState();
-    const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
+    const pending = ++generation; retireResponseWaiters(); selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
     if (!readable()) {
@@ -1392,12 +1415,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     finally { if (current(pending)) setBusy(false); }
   }
   refresh.addEventListener('click', () => void load(), { signal });
-  topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: 'topics' }); } }, { signal });
-  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
+  topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: 'topics' }); } }, { signal });
+  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
   let access = `${readable()}:${host.connection.canWrite}`;
   const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; clearDrafts(); void load('', undefined, false); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
