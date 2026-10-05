@@ -63,7 +63,8 @@ function managedChromiumOptions(options) {
   const stabilityArgs = process.env.COMMAND_CENTER_BROWSER_DISABLE_GPU_COMPOSITING === '1'
     ? ['--disable-gpu', '--disable-gpu-compositing']
     : [];
-  return { ...options, args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
+  return { ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
+    ...options, args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
 }
 
 export async function launchManagedBrowser(options) {
