@@ -87,6 +87,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   };
   const focusKey = node => {
     if (!node || !container.contains(node)) return null;
+    if (node.dataset.focusIdentity) return node.dataset.focusIdentity;
     const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
     const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
     return `${identity}|${node.getAttribute('aria-label') ?? node.closest('label')?.firstChild?.textContent?.trim() ?? ''}|${node.name ?? ''}|${node.textContent?.trim() ?? ''}`;
