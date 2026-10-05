@@ -9,6 +9,11 @@ const unwrap = (response) => response?.result ?? response;
 export function mountAttentionPage(container, context, operations = new Map(), pageMode = 'dashboard') {
   const host = context.host;
   const document = container.ownerDocument;
+  // Native host mount roots use display:contents and cannot be size containers.
+  // Own the page box so our existing container queries see the actual pane.
+  const mountRoot = container;
+  container = document.createElement('div');
+  mountRoot.replaceChildren(container);
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let presented = context.presented;
@@ -17,6 +22,41 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  // The host retires context.signal on view/connection replacement. This map
+  // belongs only to that verified mount lifetime; it is never handed to a remount.
+  const drafts = new Map();
+  const draftNotices = new Set();
+  // Bound only this mount's wait for a decision/clarification acknowledgement.
+  // Timeout does not cancel the write or discard its immutable recovery intent.
+  const responseWaiters = new Set();
+  const retireResponseWaiters = () => { for (const cancel of [...responseWaiters]) cancel(); };
+  const requestSubmittedOpenLoop = operation => {
+    if (!['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify'].includes(operation.method)) return host.request(operation.method, operation.params);
+    return new Promise((resolve, reject) => {
+      let settled = false; let timer;
+      const settle = (complete, value) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); responseWaiters.delete(cancel); complete(value);
+      };
+      const cancel = () => settle(reject, new DOMException('The verified Attention wait ended.', 'AbortError'));
+      if (signal.aborted) { cancel(); return; }
+      responseWaiters.add(cancel);
+      timer = setTimeout(() => settle(reject, new Error('The action outcome is unknown. Retry the unchanged action to reconcile the same operation.')), 30_000);
+      // Both handlers stay attached after timeout/retirement. Late replies do
+      // not change UI or recovery state; an explicit unchanged retry reconciles
+      // with the owner, then the existing load reads its authoritative state.
+      try { Promise.resolve(host.request(operation.method, operation.params)).then(value => settle(resolve, value), error => settle(reject, error)); }
+      catch (error) { settle(reject, error); }
+    });
+  };
+  let authorizedTopics = new Set();
+  // Retain only how much inventory the user opened, never private card snapshots.
+  let inventoryPageCount = 0;
+  const draftSlot = (card, kind) => JSON.stringify(['open-loop', card.loopId, kind]);
+  const draftKey = (card, kind) => JSON.stringify(['open-loop', card.loopId, card.revision, kind]);
+  const draftBinding = card => card.topicId ?? null;
+  const draftAuthorized = card => draftBinding(card) === null || authorizedTopics.has(card.topicId);
+  const clearDrafts = () => { drafts.clear(); draftNotices.clear(); authorizedTopics.clear(); inventoryPageCount = 0; transientUiState.disclosures.clear(); transientUiState.focusKey = null; transientUiState.selection = null; transientUiState.focusLoopId = null; };
   const transientUiState = { disclosures: new Set(), focusKey: null, scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
@@ -82,6 +122,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   };
   const focusKey = node => {
     if (!node || !container.contains(node)) return null;
+    if (node.dataset.focusIdentity) return node.dataset.focusIdentity;
     const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
     const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
     return `${identity}|${node.getAttribute('aria-label') ?? node.closest('label')?.firstChild?.textContent?.trim() ?? ''}|${node.name ?? ''}|${node.textContent?.trim() ?? ''}`;
@@ -91,15 +132,91 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     transientUiState.scrollTop = container.scrollTop;
     transientUiState.windowScrollY = document.defaultView?.scrollY ?? 0;
     transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
+    transientUiState.boardScrollLeft = content.querySelector('.cc-planner-board')?.scrollLeft ?? 0;
     transientUiState.focusKey = focusKey(document.activeElement);
+    const active = document.activeElement;
+    transientUiState.selection = active && typeof active.selectionStart === 'number'
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const owner = active?.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    transientUiState.focusLoopId = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId;
+    transientUiState.visibleOrder = [...new Set([...content.querySelectorAll('[data-open-loop-id],[data-workspace-loop-id]')].filter(node => node.getClientRects().length && !node.closest('[hidden]')).map(node => node.dataset.openLoopId ?? node.dataset.workspaceLoopId))];
+    transientUiState.parentScroll = [];
+    for (let parent = container.parentElement; parent; parent = parent.parentElement) transientUiState.parentScroll.push([parent, parent.scrollTop, parent.scrollLeft]);
   };
-  const restoreTransientUiState = () => {
+  const restoreTransientUiState = (removedLoopId) => {
     for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
     for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
+    const board = content.querySelector('.cc-planner-board'); if (board) board.scrollLeft = transientUiState.boardScrollLeft ?? 0;
     container.scrollTop = transientUiState.scrollTop;
     document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
-    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
+    for (const [node, top, left] of transientUiState.parentScroll ?? []) if (node.isConnected) { node.scrollTop = top; node.scrollLeft = left; }
+    // A newer choice in the toolbar or another host pane wins over restoration.
+    if (document.activeElement !== document.body && !content.contains(document.activeElement)) return;
+    const controls = [...content.querySelectorAll('button,input,select,textarea,summary,a[href],[tabindex]')];
+    const usable = node => !node.disabled && node.getClientRects().length && !node.closest('[hidden]');
+    const exact = transientUiState.focusKey && controls.find(node => focusKey(node) === transientUiState.focusKey && usable(node));
+    if (exact) {
+      exact.focus({ preventScroll: true });
+      if (transientUiState.selection && typeof exact.setSelectionRange === 'function') {
+        try { exact.setSelectionRange(...transientUiState.selection); } catch { /* non-text inputs do not expose a caret */ }
+      }
+    } else if (removedLoopId && transientUiState.focusLoopId === removedLoopId) {
+      const order = transientUiState.visibleOrder ?? []; const index = order.indexOf(removedLoopId);
+      const neighbors = [...order.slice(index + 1), ...order.slice(0, index).reverse()];
+      let target;
+      for (const id of neighbors) {
+        const row = [...content.querySelectorAll('[data-open-loop-id],[data-workspace-loop-id]')].find(node => (node.dataset.openLoopId ?? node.dataset.workspaceLoopId) === id && usable(node));
+        target = row && [...row.querySelectorAll('button,summary,input,select,textarea,a[href]')].find(usable);
+        if (target) break;
+      }
+      (target ?? content.querySelector('[data-attention-empty]'))?.focus({ preventScroll: true });
+    }
   };
+
+  function validateDrafts(dashboard, inventoryPages = []) {
+    authorizedTopics = new Set((dashboard.topics ?? []).map(topic => topic.topicId));
+    const loops = new Map();
+    const visit = value => {
+      if (!value || typeof value !== 'object') return;
+      if (nonBlank(value.loopId) && Number.isSafeInteger(value.revision)) {
+        const prior = loops.get(value.loopId);
+        loops.set(value.loopId, loops.has(value.loopId) && (!prior || prior.revision !== value.revision || draftBinding(prior) !== draftBinding(value)) ? null : value);
+      }
+      else for (const item of Object.values(value)) visit(item);
+    };
+    visit(dashboard.openLoops);
+    for (const page of inventoryPages) visit(page.loops);
+    for (const slot of draftNotices) { const card = loops.get(JSON.parse(slot)[1]); if (!card || !draftAuthorized(card)) draftNotices.delete(slot); }
+    for (const [key, draft] of drafts) {
+      const card = loops.get(draft.loopId);
+      if (!card || !draftAuthorized(card) || ['resolved', 'cancelled'].includes(card.state)) { drafts.delete(key); draftNotices.delete(draft.slot); }
+      else if (card.revision !== draft.revision || draftBinding(card) !== draft.topicId) { drafts.delete(key); draftNotices.add(draft.slot); }
+    }
+  }
+
+  function bindDraft(form, card, kind, fields, pending, update = () => {}) {
+    const key = draftKey(card, kind); const slot = draftSlot(card, kind);
+    const defaults = Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.type === 'checkbox' ? node.checked : node.value]));
+    const apply = values => { for (const [name, node] of Object.entries(fields)) { if (node.type === 'checkbox') node.checked = values[name]; else node.value = values[name]; } update(); };
+    form.dataset.draftKey = key;
+    for (const [name, node] of Object.entries(fields)) node.dataset.focusIdentity = `${key}:${form.dataset.focusProjection}:${name}`;
+    const saved = drafts.get(key);
+    if (saved && saved.topicId === draftBinding(card) && draftAuthorized(card)) apply(saved.values);
+    let notice;
+    if (draftNotices.has(slot)) { notice = element('p', 'This item changed. Review the current source evidence and re-enter your draft.'); notice.dataset.draftReviewRequired = 'true'; form.prepend(notice); }
+    const retain = () => {
+      if (!current(pending) || !writable() || !draftAuthorized(card)) return;
+      const values = Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.type === 'checkbox' ? node.checked : node.value]));
+      drafts.set(key, { slot, loopId: card.loopId, revision: card.revision, topicId: draftBinding(card), values });
+      for (const peer of content.querySelectorAll('form[data-draft-key]')) if (peer !== form && peer.dataset.draftKey === key) peer.dispatchEvent(new CustomEvent('draft-sync', { detail: values }));
+    };
+    form.addEventListener('input', retain, { signal }); form.addEventListener('change', retain, { signal });
+    form.addEventListener('draft-sync', event => apply(event.detail), { signal });
+    const discard = element('button', 'Discard unsent draft'); discard.type = 'button';
+    discard.addEventListener('click', () => { if (!current(pending)) return; drafts.delete(key); draftNotices.delete(slot); apply(defaults); notice?.remove();
+      for (const peer of content.querySelectorAll('form[data-draft-key]')) if (peer !== form && peer.dataset.draftKey === key) peer.dispatchEvent(new CustomEvent('draft-sync', { detail: defaults }));
+    }, { signal }); form.append(discard);
+  }
 
   const formatInstant = value => {
     if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
@@ -252,7 +369,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
     const proposed = { schemaVersion: 1, ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params };
-    const prior = operations.get(key);
+    const prior = operations.get(key) ?? (method === 'command-center.v1.open-loops.decide'
+      ? [...operations.values()].find(operation => operation.method === method && operation.params?.loopId === card.loopId) : undefined);
     if (prior && ['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify', 'command-center.v1.open-loops.payment-status'].includes(method)) {
       const { logicalOperationId: _savedId, ...savedIntent } = prior.params;
       if (prior.method !== method || JSON.stringify(savedIntent) !== JSON.stringify(proposed)) {
@@ -261,13 +379,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     const operation = prior ?? { method, params: { logicalOperationId: crypto.randomUUID(), ...proposed } };
     operations.set(key, operation);
-    const envelope = await host.request(operation.method, operation.params);
+    const envelope = await requestSubmittedOpenLoop(operation);
     const response = unwrap(envelope);
     if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The action outcome is not confirmed. Retry to reconcile the same operation.');
     if (!current(pending)) return false;
     operations.delete(key);
-    await load();
-    if (!signal.aborted && presented && readable()) report(success);
+    if (method === 'command-center.v1.open-loops.clarify') drafts.delete(draftKey(card, 'clarification'));
+    if (method === 'command-center.v1.open-loops.decide') drafts.delete(draftKey(card, 'decision'));
+    await load(success, card.loopId);
     return true;
   }
 
@@ -406,7 +525,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!writable() || ['resolved', 'cancelled'].includes(card.state)) return;
     const disclosure = element('details'); disclosure.dataset.openLoopDecisions = 'true';
     disclosure.append(element('summary', card.state === 'suggested' ? 'Review suggestion' : 'Defer or resolve'));
-    const form = element('form');
+    const form = element('form'); form.dataset.focusProjection = row.dataset.openLoopProjection ?? 'inventory';
     const decisionLabel = element('label', 'Action '); const decision = element('select');
     const choices = card.state === 'suggested'
       ? [['confirm', 'Confirm this obligation'], ['dismiss', 'Dismiss this suggestion']]
@@ -437,10 +556,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     decision.addEventListener('change', update, { signal }); applyCorrections.addEventListener('change', update, { signal }); correctDue.addEventListener('change', update, { signal }); dateOnly.addEventListener('change', update, { signal }); update();
     const save = element('button', 'Save action'); save.type = 'submit';
     form.append(decisionLabel, reviewLabel, correctionLabel, amountLabel, currencyLabel, correctDueLabel, dateOnlyLabel, dueLabel, dueDateLabel, rationaleLabel, save);
+    bindDraft(form, card, 'decision', { decision, reviewAt, applyCorrections, amount, currency, correctDue, dateOnly, dueAt, dueDate, rationale }, pending, update);
     form.addEventListener('submit', async event => {
       event.preventDefault();
-      if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
-      save.disabled = true;
+      if (!current(pending) || !writable() || save.getAttribute('aria-disabled') === 'true' || !rationale.value.trim()) return;
+      // Native disabled buttons blur during an asynchronous reply. Keep this
+      // control focusable so the existing verified removal handoff can run.
+      save.setAttribute('aria-disabled', 'true');
       try {
         const review = decision.value === 'defer' ? new Date(reviewAt.value).toISOString() : undefined;
         const correcting = decision.value === 'correct-date' || decision.value === 'confirm' && applyCorrections.checked && correctDue.checked;
@@ -458,7 +580,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
         });
       } catch (error) { if (current(pending)) report(error?.message || 'Action outcome is unknown. Retry to reconcile the same operation.'); }
-      finally { if (current(pending)) save.disabled = false; }
+      finally { if (current(pending)) save.removeAttribute('aria-disabled'); }
     }, { signal });
     disclosure.append(form); row.append(disclosure);
   }
@@ -467,11 +589,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!writable()) return;
     const disclosure = element('details'); disclosure.dataset.openLoopClarification = 'true';
     disclosure.append(element('summary', 'Clarify this item'));
-    const form = element('form');
+    const form = element('form'); form.dataset.focusProjection = row.dataset.openLoopProjection ?? 'inventory';
     form.append(element('p', 'Save your exact words for this item. Existing accepted details and reminders stay in place until you make a specific correction. This does not mark a payment or task complete or create a rule for other items.'));
     const label = element('label', 'What needs correcting? ');
     const words = element('textarea'); words.required = true; words.maxLength = 1000; label.append(words);
     const save = element('button', 'Save clarification'); save.type = 'submit'; form.append(label, save);
+    bindDraft(form, card, 'clarification', { words }, pending);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!current(pending) || !writable() || save.disabled || !words.value.trim()) return;
@@ -828,14 +951,23 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (planner) {
         const controls = element('section'); controls.className = 'cc-planner-controls'; controls.setAttribute('aria-label', 'Planner controls');
         const searchLabel = element('label', 'Search'); const search = element('input'); search.type = 'search'; search.placeholder = 'Search work'; search.value = transientUiState.planner.search; searchLabel.append(search);
-        const topicLabel = element('label', 'Topic'); const topic = element('select'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
+        const topicLabel = element('label', 'Topic'); const topic = element('select'); topic.dataset.focusIdentity = 'planner-topic'; topic.setAttribute('aria-label', 'Topic'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
         const completeBoard = Object.values(workspace.board ?? {}).flatMap(openLoopsArray);
-        for (const topicId of [...new Set(completeBoard.map(card => card.topicId).filter(nonBlank))].sort()) { const option = element('option', topicId); option.value = topicId; topic.append(option); }
-        topic.value = targets.topicId ?? transientUiState.planner.topic ?? ''; topicLabel.append(topic);
-        const stateLabel = element('label', 'Status'); const state = element('select');
+        const selectedTopic = targets.topicId ?? transientUiState.planner.topic ?? '';
+        const topicIds = [...new Set([...completeBoard.map(card => card.topicId), selectedTopic].filter(nonBlank))].sort();
+        // Labels come only from this response's authorized projection, never a name cache.
+        const names = new Map((targets.topics ?? []).filter(item => nonBlank(item.topicId) && nonBlank(item.name)).map(item => [item.topicId, item.name]));
+        for (const topicId of topicIds) {
+          const name = names.get(topicId);
+          const duplicate = name && topicIds.some(id => id !== topicId && names.get(id) === name);
+          const option = element('option', name ? duplicate ? `${name} (${topicId})` : name : `Topic unavailable (${topicId})`);
+          option.value = topicId; topic.append(option);
+        }
+        topic.value = selectedTopic; topicLabel.append(topic);
+        const stateLabel = element('label', 'Status'); const state = element('select'); state.setAttribute('aria-label', 'Status');
         for (const [value, label] of [['', 'All statuses'], ['confirmed', 'Confirmed'], ['monitoring', 'Monitoring'], ['waiting', 'Waiting'], ['decision-needed', 'Decision needed'], ['suggested', 'Suggestions'], ['resolved', 'Resolved']]) { const option = element('option', label); option.value = value; state.append(option); } stateLabel.append(state);
         state.value = transientUiState.planner.state;
-        const priorityLabel = element('label', 'Priority'); const importance = element('select');
+        const priorityLabel = element('label', 'Priority'); const importance = element('select'); importance.setAttribute('aria-label', 'Priority');
         for (const [value, label] of [['', 'All priorities'], ['critical', 'Critical'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']]) { const option = element('option', label); option.value = value; importance.append(option); } priorityLabel.append(importance);
         importance.value = transientUiState.planner.importance;
         const views = element('div'); views.className = 'cc-view-switcher'; views.setAttribute('aria-label', 'Planner view');
@@ -844,7 +976,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const agendaView = element('button', 'Agenda'); agendaView.type = 'button'; agendaView.setAttribute('aria-pressed', 'false');
         views.append(boardView, listView, agendaView); controls.append(searchLabel, topicLabel, stateLabel, priorityLabel, views); primary.append(controls);
         const board = element('details'); board.open = true; board.dataset.topicBoard = 'true'; board.append(element('summary', 'Kanban board'));
-        const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.setAttribute('aria-label', 'Kanban lanes');
+        const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.dataset.focusIdentity = 'planner-lanes'; lanes.setAttribute('role', 'region'); lanes.setAttribute('aria-label', 'Kanban lanes — scroll horizontally for more lanes'); lanes.tabIndex = 0;
+        board.append(element('p', 'Scroll horizontally to reach all five lanes. Focus the lanes and use the arrow keys.'));
         for (const [key, label] of [['ready', 'Ready'], ['doing', 'Doing'], ['waiting', 'Waiting'], ['done', 'Done'], ['suggestions', 'Suggestions']]) {
           const cards = workspace.board?.[key] ?? [];
           const lane = element('section'); lane.className = 'cc-planner-lane'; lane.dataset.boardLane = key; lane.append(element('h3', `${label} (${cards.length})`));
@@ -893,7 +1026,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else destination.append(element('h3', label));
       for (const card of cards) {
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
-        const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.loopKind = card.kind ?? 'general';
+        const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.openLoopProjection = label; row.dataset.loopKind = card.kind ?? 'general';
         row.append(element('h4', card.title));
         const topicName = targets.topics?.find(topic => topic.topicId === card.topicId)?.name ?? card.topicId;
         const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
@@ -992,12 +1125,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
     const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
     const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
-    more.addEventListener('click', async () => {
-      if (!current(pending) || more.disabled) return;
-      more.disabled = true;
-      try {
-        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
-        if (!current(pending) || !Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+    const appendInventoryPage = page => {
         for (const loop of page.loops) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = loop.loopId; row.dataset.loopKind = loop.kind ?? 'general';
@@ -1024,9 +1152,20 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         cursor = page.nextCursor ?? cursor;
         if (page.hasMore && nonBlank(page.nextCursor)) { more.textContent = 'Load more open loops'; more.disabled = false; }
         else more.remove();
+    };
+    more.addEventListener('click', async () => {
+      if (!current(pending) || more.disabled) return;
+      more.disabled = true;
+      try {
+        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
+        if (!current(pending)) return;
+        if (!Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+        inventoryPageCount++;
+        appendInventoryPage(page);
       } catch (error) { if (current(pending)) { more.disabled = false; report(error?.message || 'The open-loop inventory is unavailable.'); } }
     }, { signal });
     inventory.append(inventoryRows, more); content.append(inventory);
+    for (const page of targets.inventoryPages ?? []) appendInventoryPage(page);
   }
 
   function render(episode) {
@@ -1124,12 +1263,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
   }
 
-  async function load(message = '') {
-    if (content.childElementCount) captureTransientUiState();
-    const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
+  async function load(message = '', removedLoopId, capture = true) {
+    if (capture && content.childElementCount) captureTransientUiState();
+    const pending = ++generation; retireResponseWaiters(); selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
     if (!readable()) {
+      clearDrafts();
       const disconnected = element('section'); disconnected.className = 'cc-disconnected';
       disconnected.append(element('h2', 'Command Center is not connected'), element('p', 'Email, Chat and Note processing coverage cannot be checked yet. Connect with read access before treating this inbox as complete.'));
       content.append(disconnected); report('Connect with read access to view Attention.'); return;
@@ -1140,6 +1280,24 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (!current(pending)) return;
       const dashboard = unwrap(response);
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
+      const inventoryPages = [];
+      let inventoryWarning = '';
+      let inventoryOffset = 0; let inventoryCursor;
+      // Re-read the same bounded pages through the authorized owner before
+      // admitting inventory drafts or restoring their mounted controls.
+      try {
+        for (let index = 0; index < inventoryPageCount; index++) {
+          const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset: inventoryOffset, limit: 20, ...(inventoryCursor === undefined ? {} : { cursor: inventoryCursor }) }));
+          if (!current(pending)) return;
+          if (!Array.isArray(page?.loops) || page.offset !== inventoryOffset) throw new Error('The open-loop inventory changed.');
+          inventoryPages.push(page);
+          if (!page.hasMore || !nonBlank(page.nextCursor)) break;
+          inventoryOffset = page.nextOffset ?? inventoryOffset + page.loops.length;
+          inventoryCursor = page.nextCursor;
+        }
+      } catch { if (!current(pending)) return; inventoryPages.length = 0; inventoryWarning = 'The open-loop inventory is unavailable. Unsent inventory drafts were cleared; load the inventory again to continue.'; }
+      inventoryPageCount = inventoryPages.length;
+      validateDrafts(dashboard, inventoryPages);
       const cards = [...dashboard.attention, ...dashboard.inProgress];
       if (!recordId && !attentionRecordId) {
         const workspace = element('div'); workspace.className = 'cc-workspace'; workspace.dataset.pageMode = pageMode;
@@ -1236,12 +1394,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { attentionRecord: internalRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics });
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics, inventoryPages });
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
-        restoreTransientUiState();
-        report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
+        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]')) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
+        restoreTransientUiState(removedLoopId);
+        report([message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.'), inventoryWarning].filter(Boolean).join(' ')); return;
       }
       const matches = cards.filter((card) => recordId
         ? card.notificationRecordIds?.includes(recordId)
@@ -1256,12 +1415,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     finally { if (current(pending)) setBusy(false); }
   }
   refresh.addEventListener('click', () => void load(), { signal });
-  topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: 'topics' }); } }, { signal });
-  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
+  topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: 'topics' }); } }, { signal });
+  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
   let access = `${readable()}:${host.connection.canWrite}`;
-  const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; void load(); } });
+  const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; clearDrafts(); void load('', undefined, false); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; container.classList.remove('cc-command-center-page'); container.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();

@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional Attention host</title><main id="mount"></main></html>'); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><html lang="en"><title>Fictional Attention host</title>${process.env.COMMAND_CENTER_PACKAGED_UI_CSS ? `<link rel="stylesheet" href="/host/${process.env.COMMAND_CENTER_PACKAGED_UI_CSS}">` : ''}<div id="fictional-pane" style="height:100vh;overflow:auto;min-width:0"><main id="mount" style="display:contents"></main></div></html>`); return; }
+    if (process.env.COMMAND_CENTER_PACKAGED_UI && /^\/host\/[a-zA-Z0-9_.-]+\.(js|css)$/u.test(req.url)) {
+      try { res.setHeader('content-type', req.url.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(await readFile(path.join(process.env.COMMAND_CENTER_PACKAGED_UI, 'assets', req.url.slice(6)))); }
+      catch { res.writeHead(404); res.end(); } return;
+    }
     if (!/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../src/native-ui${req.url}`, import.meta.url))); }
+    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(process.env.COMMAND_CENTER_PLUGIN_UI ? path.join(process.env.COMMAND_CENTER_PLUGIN_UI, req.url.slice(1)) : new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -18,7 +23,9 @@ async function fixture(run) {
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
     const page = await browser.newPage(); page.setDefaultTimeout(3000);
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.evaluate(async () => {
+    const packagedHost = process.env.COMMAND_CENTER_PACKAGED_UI_LOADER;
+    if (packagedHost) await page.evaluate(async loader => { await import(`/host/${loader}`); }, packagedHost);
+    await page.evaluate(async ({ packagedHost }) => {
       const plugin = (await import('/entry.mjs')).default;
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
@@ -29,12 +36,13 @@ async function fixture(run) {
       window.cards = ['one', 'two'].map((id) => ({ attentionRecordId: `attention-${id}`, notificationRecordIds: [`record-${id}`], episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
+        agents: {}, components: {},
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
         navigation: { openPage: (target) => window.opened.push(target) }, sessions: { openChat: (target) => window.opened.push({ session: target }), open() { throw new Error('Attention must not open arbitrary Sessions'); } },
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: structuredClone(window.dashboardTopics ?? [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }]), intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('briefings.set-read')) { const item = window.briefingHistory.find(row => row.editionId === params.editionId); item.read = params.read; window.briefings = window.briefingHistory.filter(row => !row.read); if (window.dailyMode === 'unknown-once') { window.dailyMode = 'success'; throw new Error('The transport outcome is unknown.'); } return { result: structuredClone(item) }; }
           if (method.endsWith('routines.decide')) { window.routineOccurrences = window.routineOccurrences.filter(row => !(row.routineId === params.routineId && row.occurrenceDate === params.occurrenceDate)); return { result: { schemaVersion: 1, ...params, revision: params.expectedRevision + 1 } }; }
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
@@ -72,9 +80,12 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, disposition: 'duplicate', loop: { loopId: entry[0] }, reminder: { status: 'applied', action: 'create', referenceId: 'fictional-reminder' } } };
           }
           if (method.endsWith('open-loops.list')) {
+            if (window.inventoryReadMode === 'unavailable') throw new Error('Fictional inventory access unavailable.');
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
             const nextOffset = params.offset + loops.length < window.allOpenLoops.length ? params.offset + loops.length : null;
-            return { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            const result = { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            if (window.delayInventory) { window.delayInventory = false; await new Promise(resolve => { window.finishInventory = resolve; }); }
+            return result;
           }
           if (method.endsWith('open-loops.organize')) {
             const collections = [window.openLoops.workspace?.today?.mandatory, window.openLoops.workspace?.today?.planned, window.openLoops.workspace?.capacity, window.openLoops.workspace?.review?.batch, ...Object.values(window.openLoops.workspace?.board ?? {})].filter(Array.isArray);
@@ -97,11 +108,15 @@ async function fixture(run) {
                 sourceSystem: 'command-center', sourceKind: 'user-clarification', sourceVersion: 'v1',
                 occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z',
                 historicalBaseline: false, rationale: params.rationale, status: 'submitted' }] });
+            if (window.delayClarify) { window.delayClarify = false; await new Promise((resolve, reject) => { window.finishClarify = error => error ? reject(new Error(error)) : resolve(); }); }
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.decide')) {
+            if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
+            if (window.removeDecided) { window.openLoops.highlighted = window.openLoops.highlighted.filter(item => item.loopId !== card.loopId); window.openLoops.total = window.openLoops.highlighted.length; window.openLoops.attentionTotal = window.openLoops.total; }
+            if (window.delayDecide) { window.delayDecide = false; await new Promise((resolve, reject) => { window.finishDecide = error => error ? reject(new Error(error)) : resolve(); }); }
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.renovation-decision-revise')) {
@@ -149,24 +164,42 @@ async function fixture(run) {
         } };
       const deactivate = plugin.activate(host);
       if (!pages.has('attention') || !pages.has('planner')) throw new Error('First-live activation must register Dashboard and Planner destinations.');
+      const mount = (definition) => {
+        const root = document.querySelector('#mount');
+        if (!packagedHost) { view = definition(root, context); return; }
+        const nativeView = document.createElement('openclaw-plugin-view');
+        const registration = { key: 'fictional-attention', value: { mount: definition }, host, signal: scope.signal };
+        nativeView.context = { plugins: { registrations: () => [registration], subscribe: () => () => {} } };
+        nativeView.kind = 'pages'; nativeView.contributionKey = registration.key; nativeView.props = context.props;
+        root.replaceChildren(nativeView);
+        view = { dispose: () => nativeView.remove(), update: next => { nativeView.props = next.props; nativeView.presented = next.presented; } };
+      };
       window.mountRecord = (record = 'record-one') => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: { notificationRecord: record }, signal: scope.signal, presented: true };
-        view = mountAttentionPage(document.querySelector('#mount'), context, operations);
+        mount((root, next) => mountAttentionPage(root, next, operations));
       };
       window.mountInbox = () => window.mountRecord(null);
       window.mountPlanner = (topicId) => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: topicId ? { topicId } : {}, signal: scope.signal, presented: true };
-        view = pages.get('planner').mount(document.querySelector('#mount'), context);
+        mount(pages.get('planner').mount);
       };
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
       window.setPresented = (presented) => { context = { ...context, presented }; view.update(context); };
       window.setAccess = (value) => { host.connection = { ...host.connection, ...value }; for (const fn of subscribers) fn(); };
+      window.blockDashboard = () => {
+        const request = host.request;
+        host.request = async (method, params) => {
+          const response = await request(method, params);
+          if (method.endsWith('dashboard.get')) { host.request = request; await new Promise(resolve => { window.finishDashboard = resolve; }); }
+          return response;
+        };
+      };
       window.abortView = () => scope.abort();
       window.shutdown = () => { scope.abort(); view.dispose(); lifetime.abort(); deactivate(); return { pages: pages.size, subscribers: subscribers.size }; };
       window.mountRecord();
-    });
+    }, { packagedHost: Boolean(packagedHost) });
     await page.getByRole('heading', { name: 'Fictional one' }).waitFor();
     await run(page);
     for (const request of await page.evaluate(() => window.requests)) if (!request.method.endsWith('sessions.resolve-native')) validateBridgeRequest(request.method, request.params);
@@ -817,7 +850,7 @@ test('Dashboard shows receipt-backed document coverage separately from unknown e
   await coverage.getByText('unknown', { exact: true }).waitFor();
   await coverage.getByText(/receipt-current · Last successful/u).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.locator('#mount').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
+  assert.equal(await page.locator('.cc-command-center-page').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
 }));
 
 test('Dashboard labels admitted retry separately from a failed source scan', () => fixture(async (page) => {
@@ -1217,4 +1250,489 @@ test('native Attention re-resolves verified Session Activity before opening nati
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { session: { sessionKey: 'agent:main:fictional-activity', agentId: 'main' } });
   const request = await page.evaluate(() => window.requests.find((entry) => entry.method.endsWith('sessions.resolve-native')));
   assert.deepEqual(request.params, { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-source', expectedSessionId: 'fictional-session-id' });
+}));
+
+test('Planner Topic labels use the current authorized projection and preserve exact selection and focus', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = ['topic-a', 'topic-b', 'topic-missing'].map((topicId, index) => ({ loopId: `topic-label-${index}`, topicId, kind: 'general', title: `Fictional work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.dashboardTopics = [{ topicId: 'topic-a', name: 'Fictional project' }, { topicId: 'topic-b', name: 'Fictional project' }];
+    window.openLoops = { total: 3, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [], waiting: [], someday: [], board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const topic = page.locator('.cc-planner-controls').getByLabel('Topic', { exact: true });
+  await page.getByRole('button', { name: 'Refresh Planner', exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('.cc-status').textContent !== 'Loading Attention.');
+  await topic.waitFor();
+  assert.deepEqual(await topic.locator('option').evaluateAll(nodes => nodes.map(node => [node.value, node.textContent])), [['', 'All Topics'], ['topic-a', 'Fictional project (topic-a)'], ['topic-b', 'Fictional project (topic-b)'], ['topic-missing', 'Topic unavailable (topic-missing)']]);
+  await topic.selectOption('topic-b');
+  await page.getByLabel('Search', { exact: true }).fill('Fictional');
+  await page.getByLabel('Status', { exact: true }).selectOption('confirmed');
+  await page.getByRole('button', { name: 'List', exact: true }).click();
+  await topic.focus();
+  await page.evaluate(() => { window.dashboardTopics[1].name = 'Renamed fictional project'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Renamed fictional project', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
+  assert.equal(await page.getByLabel('Status', { exact: true }).inputValue(), 'confirmed');
+  assert.equal(await page.getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.evaluate(() => { window.dashboardTopics = []; window.openLoops.workspace.board.ready = window.openLoops.workspace.board.ready.filter(card => card.topicId !== 'topic-b'); [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Topic unavailable (topic-b)', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByText('Renamed fictional project', { exact: true }).count(), 0);
+  assert.equal(await page.locator('[aria-label="Planner list"] article:visible').count(), 0);
+  await topic.selectOption('');
+  assert.equal(await page.locator('[aria-label="Planner list"] article:visible').count(), 2);
+  assert.equal(await page.evaluate(() => window.requests.filter(row => !['dashboard.get', 'attention.get'].some(method => row.method.endsWith(method))).length), 0);
+}));
+
+
+
+
+test('Planner narrow mounted controls remain inside their pane', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = Array.from({ length: 25 }, (_, index) => ({ loopId: `narrow-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional narrow work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: 25, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, capacity: [], board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  await page.getByText('Kanban board', { exact: true }).waitFor();
+  for (const [width, pane] of [[640, 640], [800, 800], [1024, 1024], [1440, 640], [1440, 860], [1440, 1440]]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(pane => { document.body.style.width = `${pane - 16}px`; }, pane);
+    const geometry = await page.locator('.cc-planner-controls').evaluate(node => {
+      const bounds = node.getBoundingClientRect();
+      return { width: innerWidth, container: getComputedStyle(document.querySelector('.cc-command-center-page')).containerType, columns: getComputedStyle(node).gridTemplateColumns, bounds: [bounds.left, bounds.right], controls: [...node.querySelectorAll('input,select,button')].map(input => { const box = input.getBoundingClientRect(); return { label: input.getAttribute('aria-label') ?? input.textContent ?? input.type, left: box.left, right: box.right }; }) };
+    });
+
+    assert.equal(geometry.controls.every(control => control.left >= geometry.bounds[0] && control.right <= Math.min(geometry.width, geometry.bounds[1])), true, `Controls clipped at ${width}`);
+    for (const view of ['List', 'Agenda', 'Board']) {
+      const button = page.getByRole('button', { name: view, exact: true });
+      await button.click(); assert.equal(await button.getAttribute('aria-pressed'), 'true');
+      await button.focus(); await button.press('Space'); assert.equal(await button.getAttribute('aria-pressed'), 'true');
+    }
+    const filters = page.locator('.cc-planner-controls input,.cc-planner-controls select');
+    await filters.nth(0).click(); await filters.nth(0).press('ControlOrMeta+A'); await filters.nth(0).pressSequentially('Fictional');
+    for (let index = 1; index < 4; index++) {
+      await page.keyboard.press('Tab'); assert.equal(await filters.nth(index).evaluate(node => node === document.activeElement), true);
+      await filters.nth(index).click(); await filters.nth(index).press('Home');
+      for (let step = 0; step < (index === 3 ? 3 : 1); step++) await filters.nth(index).press('ArrowDown');
+      await filters.nth(index).press('Enter');
+    }
+    for (const view of ['Board', 'List', 'Agenda']) {
+      await page.keyboard.press('Tab'); const button = page.getByRole('button', { name: view, exact: true });
+      assert.equal(await button.evaluate(node => node === document.activeElement), true); await page.keyboard.press('Space');
+    }
+    await page.getByRole('button', { name: 'Board', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 640, height: 900 });
+  await page.evaluate(() => { document.body.style.width = '624px'; });
+  const lanes = page.getByRole('region', { name: /Kanban lanes/ });
+  await lanes.focus(); await lanes.press('ArrowRight');
+  await page.waitForFunction(() => document.querySelector('.cc-planner-board').scrollLeft > 0);
+  await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
+  // Read the position in the refresh task; native arrow scrolling may still
+  // animate between separate browser round trips.
+  const before = await page.evaluate(() => { const position = document.querySelector('.cc-planner-board').scrollLeft; window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); return position; });
+  await page.getByText('Updated fictional title', { exact: true }).first().waitFor({ state: 'attached' });
+  assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
+  assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.locator('[data-board-lane="ready"]').evaluate(node => node.scrollTop), 170);
+  assert.deepEqual(await page.locator('.cc-planner-controls input,.cc-planner-controls select').evaluateAll(nodes => nodes.map(node => node.value)), ['Fictional', 'topic-fictional-renovation', 'confirmed', 'normal']);
+  assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.organize'))), false);
+  if (process.env.COMMAND_CENTER_NARROW_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_NARROW_SCREENSHOT });
+}));
+
+async function mountDraftCards(page, count = 3) {
+  await page.evaluate(count => {
+    window.cards = [];
+    const highlighted = Array.from({ length: count }, (_, index) => ({ loopId: `draft-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional draft item ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: count, attentionTotal: count, highlighted, comingUpTotal: 0, waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
+    window.mountInbox();
+  }, count);
+  await page.locator('[data-open-loop-id="draft-0"]').first().waitFor();
+}
+const refreshDraftCards = async page => {
+  await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click());
+  await page.locator('[data-open-loop-id="draft-0"]').first().waitFor();
+};
+const clarification = (page, index) => page.locator(`[data-open-loop-id="draft-${index}"] details[data-open-loop-clarification]`);
+const decisionDraft = (page, index) => page.locator(`[data-open-loop-id="draft-${index}"] details[data-open-loop-decisions]`);
+
+test('Attention keeps independent exact in-mount drafts, hidden decision fields and caret without writes', () => fixture(async page => {
+  await mountDraftCards(page);
+  await clarification(page, 0).getByText('Clarify this item', { exact: true }).click();
+  await clarification(page, 0).getByLabel('What needs correcting?').fill('  Exact fictional words.  ');
+  await decisionDraft(page, 1).getByText('Defer or resolve', { exact: true }).click();
+  await decisionDraft(page, 1).getByLabel('Review time', { exact: true }).fill('2026-10-12T14:20');
+  await decisionDraft(page, 1).getByLabel('Rationale').fill('Separate fictional rationale');
+  await decisionDraft(page, 1).getByLabel('Action', { exact: false }).selectOption('correct-date');
+  await decisionDraft(page, 1).getByLabel('Calendar date only').check();
+  await decisionDraft(page, 1).getByLabel('Corrected calendar date').fill('2026-10-13');
+  const words = clarification(page, 0).getByLabel('What needs correcting?');
+  await words.focus(); await words.evaluate(node => node.setSelectionRange(3, 9, 'backward'));
+  for (let index = 0; index < 2; index++) {
+    await refreshDraftCards(page);
+    assert.equal(await words.inputValue(), '  Exact fictional words.  ');
+    assert.deepEqual(await words.evaluate(node => [node === document.activeElement, node.selectionStart, node.selectionEnd, node.selectionDirection]), [true, 3, 9, 'backward']);
+    assert.equal(await decisionDraft(page, 1).getByLabel('Rationale').inputValue(), 'Separate fictional rationale');
+    assert.equal(await decisionDraft(page, 1).getByLabel('Corrected calendar date').inputValue(), '2026-10-13');
+  }
+  await decisionDraft(page, 1).getByLabel('Action', { exact: false }).selectOption('defer');
+  assert.equal(await decisionDraft(page, 1).getByLabel('Review time', { exact: true }).inputValue(), '2026-10-12T14:20');
+  await page.evaluate(() => { window.setPresented(false); window.setPresented(true); });
+  await words.waitFor(); assert.equal(await words.inputValue(), '  Exact fictional words.  ');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention discards drafts on revision, Topic binding, scope and remount boundaries and ignores stale reads', () => fixture(async page => {
+  await mountDraftCards(page);
+  for (const index of [0, 1]) { await clarification(page, index).getByText('Clarify this item', { exact: true }).click(); await clarification(page, index).getByLabel('What needs correcting?').fill(`Fictional private draft ${index}`); }
+  await page.evaluate(() => { window.openLoops.highlighted[0].revision++; });
+  await refreshDraftCards(page);
+  assert.equal(await clarification(page, 0).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 0).getByText('This item changed.', { exact: false }).waitFor();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), 'Fictional private draft 1');
+  await clarification(page, 0).getByLabel('What needs correcting?').fill('Draft on current revision');
+  await page.evaluate(() => { window.openLoops.highlighted[0].topicId = 'another-fictional-topic'; window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }, { topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]; });
+  await refreshDraftCards(page);
+  assert.equal(await clarification(page, 0).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 0).getByText('This item changed.', { exact: false }).waitFor();
+  await page.evaluate(() => { window.blockDashboard(); [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.waitForFunction(() => typeof window.finishDashboard === 'function');
+  await page.evaluate(() => { window.setAccess({ canRead: false }); window.finishDashboard(); });
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  assert.equal(await page.locator('textarea').count(), 0);
+  await page.evaluate(() => window.setAccess({ canRead: true }));
+  await clarification(page, 1).getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 1).getByLabel('What needs correcting?').fill('Must not cross a remount');
+  await page.evaluate(() => window.mountInbox());
+  await clarification(page, 1).getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention discard leaves an unknown operation immutable and retry never acquires a new revision', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoopActionMode = 'unknown'; });
+  const form = clarification(page, 0);
+  await form.getByText('Clarify this item', { exact: true }).click();
+  await form.getByLabel('What needs correcting?').fill('Original fictional submitted words');
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('The transport outcome is unknown.', { exact: true }).waitFor();
+  const original = await page.evaluate(() => window.requests.find(row => row.method.endsWith('open-loops.clarify')));
+  await form.getByRole('button', { name: 'Discard unsent draft', exact: true }).click();
+  await form.getByLabel('What needs correcting?').fill('Changed words');
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).length), 1);
+  await form.getByLabel('What needs correcting?').fill(original.params.rationale);
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).at(-1)), original);
+  await page.evaluate(() => { window.openLoops.highlighted[0].revision++; });
+  await refreshDraftCards(page);
+  await form.getByLabel('What needs correcting?').fill(original.params.rationale);
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).length), 2);
+}));
+
+for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`Attention removal ${index} focuses the surviving ordered neighbor`, () => fixture(async page => {
+  await mountDraftCards(page);
+  await page.evaluate(() => { window.removeDecided = true; });
+  const form = decisionDraft(page, index);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional completion');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.locator(`[data-open-loop-id="draft-${index}"]`).waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => document.activeElement.closest('[data-open-loop-id]')?.dataset.openLoopId), `draft-${next}`);
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 1);
+}));
+
+test('Attention final removal focuses the empty heading while a newer toolbar choice wins pending removal', () => fixture(async page => {
+  for (const moveFocus of [false, true]) {
+    await mountDraftCards(page, 1);
+    await page.evaluate(moveFocus => { window.removeDecided = true; window.delayDecide = moveFocus; }, moveFocus);
+    const form = decisionDraft(page, 0);
+    await form.getByText('Defer or resolve', { exact: true }).click();
+    await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+    await form.getByLabel('Rationale').fill('Fictional final completion');
+    await form.getByRole('button', { name: 'Save action', exact: true }).click();
+    if (moveFocus) { await page.waitForFunction(() => typeof window.finishDecide === 'function'); await page.getByRole('button', { name: 'All Topics', exact: true }).focus(); await page.evaluate(() => window.finishDecide()); }
+    await page.locator('[data-attention-empty]').waitFor();
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), moveFocus ? 'All Topics' : 'No actionable items remain');
+  }
+}));
+
+test('Attention shares one draft across duplicate projections and clears missing or revoked bindings', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoops.stageReviews = [{ stage: { id: 'fictional-stage' }, items: [structuredClone(window.openLoops.highlighted[0])] }]; });
+  await refreshDraftCards(page);
+  const forms = clarification(page, 0);
+  assert.equal(await forms.count(), 2);
+  for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
+  await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
+  assert.equal(await forms.nth(1).getByLabel('What needs correcting?').inputValue(), 'One exact fictional draft');
+  await forms.nth(1).getByLabel('What needs correcting?').focus();
+  await refreshDraftCards(page);
+  assert.equal(await forms.nth(1).getByLabel('What needs correcting?').evaluate(node => node === document.activeElement), true);
+  await page.evaluate(() => window.setAccess({ canWrite: false }));
+  await forms.first().waitFor({ state: 'detached' });
+  await page.evaluate(() => window.setAccess({ canWrite: true }));
+  await forms.first().waitFor({ state: 'attached' });
+  for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
+  await forms.nth(1).getByRole('button', { name: 'Discard unsent draft', exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  await forms.first().getByLabel('What needs correcting?').fill('Must be removed on read loss');
+  await page.evaluate(() => { window.dashboardTopics = []; });
+  await refreshDraftCards(page);
+  for (const form of await forms.all()) assert.equal(await form.getByLabel('What needs correcting?').inputValue(), '');
+  await page.evaluate(() => { window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }]; });
+  await refreshDraftCards(page);
+  await forms.first().getByLabel('What needs correcting?').fill('Must not return after target loss');
+  await page.evaluate(() => { window.openLoops.highlighted = []; window.openLoops.stageReviews = []; window.openLoops.total = 0; window.openLoops.attentionTotal = 0; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.locator('[data-attention-empty]').waitFor();
+  await page.evaluate(() => { window.openLoops.highlighted = [{ loopId: 'draft-0', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Returned fictional item', state: 'confirmed', revision: 1, evidenceCount: 1 }]; window.openLoops.total = 1; window.openLoops.attentionTotal = 1; });
+  await refreshDraftCards(page);
+  await forms.first().getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention changing an uncertain decision choice cannot create another operation', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoopActionMode = 'unknown'; });
+  const form = decisionDraft(page, 0);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Original fictional decision');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.getByRole('status').getByText('The transport outcome is unknown.', { exact: true }).waitFor();
+  const original = await page.evaluate(() => window.requests.find(row => row.method.endsWith('open-loops.decide')));
+  await form.getByLabel('Action', { exact: false }).selectOption('defer');
+  await form.getByLabel('Review time', { exact: true }).fill('2026-10-15T12:00');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 1);
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).at(-1)), original);
+}));
+
+test('Attention retains suggestion corrections including hidden checkboxes and values', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { Object.assign(window.openLoops.highlighted[0], { state: 'suggested', kind: 'payment', amount: 1200, currency: 'AUD' }); });
+  await refreshDraftCards(page);
+  const form = decisionDraft(page, 0);
+  await form.getByText('Review suggestion', { exact: true }).click();
+  await form.getByLabel('Correct extracted fields', { exact: true }).check();
+  await form.getByLabel('Corrected amount', { exact: true }).fill('24.50');
+  await form.getByLabel('Corrected ISO code', { exact: true }).fill('USD');
+  await form.getByLabel('Correct due date', { exact: true }).check();
+  await form.getByLabel('Calendar date only', { exact: true }).check();
+  await form.getByLabel('Corrected calendar date', { exact: true }).fill('2026-10-14');
+  await form.getByLabel('Rationale', { exact: true }).fill('Fictional correction rationale');
+  await form.getByLabel('Action', { exact: false }).selectOption('dismiss');
+  await refreshDraftCards(page);
+  await form.getByLabel('Action', { exact: false }).selectOption('confirm');
+  assert.equal(await form.getByLabel('Correct extracted fields', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected amount', { exact: true }).inputValue(), '24.50');
+  assert.equal(await form.getByLabel('Corrected ISO code', { exact: true }).inputValue(), 'USD');
+  assert.equal(await form.getByLabel('Correct due date', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Calendar date only', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected calendar date', { exact: true }).inputValue(), '2026-10-14');
+  assert.equal(await form.getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional correction rationale');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 0);
+}));
+
+test('Attention re-verifies inventory-only drafts on refresh and clears unavailable or stale inventory', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.allOpenLoops = Array.from({ length: 21 }, (_, index) => ({ loopId: `inventory-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional inventory item ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: 21, attentionTotal: 0, highlighted: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  const words = index => page.locator(`details[data-open-loop-inventory] [data-open-loop-id="inventory-${index}"] details[data-open-loop-clarification]`).getByLabel('What needs correcting?');
+  for (const index of [0, 20]) {
+    await page.locator(`[data-open-loop-id="inventory-${index}"]`).getByText('Clarify this item', { exact: true }).click();
+    await words(index).fill(`Private fictional inventory draft ${index}`);
+  }
+  await words(20).focus(); await words(20).evaluate(node => node.setSelectionRange(4, 9, 'backward'));
+  const refresh = async () => {
+    await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click());
+    await page.locator('details[data-open-loop-inventory] article').nth(20).waitFor();
+  };
+  await refresh();
+  assert.equal(await words(0).inputValue(), 'Private fictional inventory draft 0');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  assert.deepEqual(await words(20).evaluate(node => [node === document.activeElement, node.selectionStart, node.selectionEnd, node.selectionDirection]), [true, 4, 9, 'backward']);
+  await page.evaluate(() => window.allOpenLoops[0].revision++);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  await words(0).fill('Cannot cross contradictory projections');
+  await page.evaluate(() => window.openLoops.highlighted = [{ ...window.allOpenLoops[0], revision: 99 }]);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  await page.evaluate(() => { window.openLoops.highlighted = []; window.allOpenLoops[20].topicId = 'another-fictional-topic'; window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }, { topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]; });
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Cannot cross revoked Topic');
+  await page.evaluate(() => window.dashboardTopics = []);
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await page.evaluate(() => window.dashboardTopics = [{ topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]);
+  await refresh(); await words(20).fill('Cleared when inventory cannot be verified');
+  await page.evaluate(() => window.inventoryReadMode = 'unavailable');
+  await page.getByRole('button', { name: 'Refresh Dashboard' }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).waitFor();
+  assert.equal(await page.locator('details[data-open-loop-inventory] article').count(), 0);
+  await page.getByText('Unsent inventory drafts were cleared', { exact: false }).waitFor();
+  await page.evaluate(() => window.inventoryReadMode = 'success');
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Must not return after stale read');
+  await page.evaluate(() => { window.delayInventory = true; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.waitForFunction(() => typeof window.finishInventory === 'function');
+  await page.evaluate(() => { window.setAccess({ canRead: false }); window.finishInventory(); });
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  await page.evaluate(() => window.setAccess({ canRead: true }));
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+test('Planner Topic names stay current across keyboard selection and read access loss', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.dashboardTopics = [{ topicId: 'topic-a', name: 'Fictional alpha' }, { topicId: 'topic-b', name: 'Fictional beta' }];
+    const ready = ['topic-a', 'topic-b'].map((topicId, index) => ({ loopId: `topic-key-${index}`, topicId, kind: 'general', title: `Fictional work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1, planning: { importance: 'normal' } }));
+    window.openLoops = { total: 2, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const topic = page.locator('.cc-planner-controls').getByLabel('Topic', { exact: true });
+  await topic.waitFor(); await topic.focus();
+  await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  assert.equal(await topic.inputValue(), 'topic-b');
+  await page.getByLabel('Priority', { exact: true }).selectOption('normal');
+  await page.getByLabel('Search', { exact: true }).fill('Fictional');
+  await topic.focus();
+  await page.evaluate(() => { window.dashboardTopics[1].name = 'Fictional renamed beta'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Fictional renamed beta', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b'); assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  await page.evaluate(() => window.setAccess({ canRead: false }));
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  await page.evaluate(() => { window.dashboardTopics = []; window.setAccess({ canRead: true }); });
+  await topic.getByRole('option', { name: 'Topic unavailable (topic-b)', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
+}));
+
+for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`asynchronous decision removal ${index} keeps keyboard focus and blocks duplicate writes`, () => fixture(async page => {
+  await mountDraftCards(page);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, index);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous completion');
+  const save = form.getByRole('button', { name: 'Save action', exact: true });
+  await save.press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.waitForTimeout(100);
+  assert.equal(await save.evaluate(node => node === document.activeElement), true, 'Pending native decision retains the keyboard focus needed by removal');
+  assert.equal(await save.getAttribute('aria-disabled'), 'true');
+  await save.press('Enter');
+  assert.equal(await page.evaluate(() => window.requests.filter(item => item.method.endsWith('open-loops.decide')).length), 1);
+  await page.evaluate(() => window.finishDecide());
+  await page.waitForFunction(id => document.querySelector('section[aria-label="Attention items"]')?.getAttribute('aria-busy') === 'false' && !document.querySelector(`[data-open-loop-id="${id}"]`), `draft-${index}`);
+  assert.equal(await page.evaluate(() => document.activeElement.closest('[data-open-loop-id]')?.dataset.openLoopId), `draft-${next}`);
+}));
+
+test('asynchronous decision completion respects a newer toolbar focus', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, 0);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous final completion');
+  await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.getByRole('button', { name: 'All Topics', exact: true }).focus();
+  await page.evaluate(() => window.finishDecide());
+  await page.locator('[data-attention-empty]').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), 'All Topics');
+}));
+
+async function startNeverSettlingCardRequest(page, kind) {
+  await mountDraftCards(page, 1); if (!await page.evaluate(() => window.cardClockInstalled)) { await page.clock.install(); await page.evaluate(() => { window.cardClockInstalled = true; }); }
+  await page.evaluate(kind => { window.removeDecided = false; window[kind === 'decision' ? 'delayDecide' : 'delayClarify'] = true; }, kind);
+  const form = kind === 'decision' ? decisionDraft(page, 0) : clarification(page, 0);
+  await form.locator(':scope > summary').click();
+  if (kind === 'decision') await form.locator('select').selectOption('resolve');
+  const words = form.getByLabel(kind === 'decision' ? 'Rationale' : 'What needs correcting?', { exact: true });
+  await words.fill('Fictional exact original intent');
+  const save = form.getByRole('button', { name: kind === 'decision' ? 'Save action' : 'Save clarification', exact: true });
+  await save.click();
+  await page.waitForFunction(kind => typeof window[kind === 'decision' ? 'finishDecide' : 'finishClarify'] === 'function', kind);
+  return { form, words, save, method: `command-center.v1.open-loops.${kind === 'decision' ? 'decide' : 'clarify'}` };
+}
+
+for (const kind of ['decision', 'clarification']) test(`bounded ${kind} wait preserves immutable retry after a never-settling transport`, () => fixture(async page => {
+  const { words, save, method } = await startNeverSettlingCardRequest(page, kind);
+  const first = await page.evaluate(method => window.requests.find(item => item.method === method), method);
+  await page.clock.fastForward(30_001);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  assert.equal(await save.isEnabled(), true); assert.notEqual(await save.getAttribute('aria-disabled'), 'true');
+  await words.fill('Fictional changed intent'); await save.click();
+  assert.equal(await page.evaluate(method => window.requests.filter(item => item.method === method).length, method), 1);
+  await words.fill('Fictional exact original intent'); await save.click();
+  await page.waitForFunction(method => window.requests.filter(item => item.method === method).length === 2, method);
+  const retry = await page.evaluate(method => window.requests.filter(item => item.method === method)[1], method);
+  assert.deepEqual(retry.params, first.params);
+}));
+
+for (const lateError of [false, true]) test(`bounded decision ignores authentic late ${lateError ? 'rejection' : 'success'} before explicit retry`, () => fixture(async page => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const { save, method } = await startNeverSettlingCardRequest(page, 'decision');
+  const beforeReads = await page.evaluate(() => window.requests.filter(item => item.method.endsWith('dashboard.get')).length);
+  await page.clock.fastForward(30_001);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  await page.evaluate(error => window.finishDecide(error ? 'Fictional late rejection' : undefined), lateError);
+  await page.waitForTimeout(30);
+  assert.equal(await page.evaluate(() => window.requests.filter(item => item.method.endsWith('dashboard.get')).length), beforeReads);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  await save.click();
+  await page.waitForFunction(before => window.requests.filter(item => item.method.endsWith('dashboard.get')).length > before, beforeReads);
+  const sent = await page.evaluate(method => window.requests.filter(item => item.method === method), method);
+  assert.equal(sent.length, 2); assert.deepEqual(sent[1].params, sent[0].params); assert.deepEqual(errors, []);
+}));
+
+for (const boundary of ['abort', 'permission', 'hidden']) test(`bounded wait disposes its timer at ${boundary} without touching recovery or writing`, () => fixture(async page => {
+  await page.clock.install(); await page.evaluate(() => { window.cardClockInstalled = true; });
+  await page.evaluate(() => {
+    const set = window.setTimeout; const clear = window.clearTimeout; window.cardWaitTimers = new Set();
+    window.setTimeout = (callback, delay, ...args) => { let id; id = set(() => { window.cardWaitTimers.delete(id); callback(...args); }, delay); if (delay === 30_000) window.cardWaitTimers.add(id); return id; };
+    window.clearTimeout = id => { window.cardWaitTimers.delete(id); clear(id); };
+  });
+  const { method } = await startNeverSettlingCardRequest(page, 'decision');
+  assert.equal(await page.evaluate(() => window.cardWaitTimers.size), 1);
+  await page.evaluate(boundary => { if (boundary === 'abort') window.abortView(); else if (boundary === 'permission') window.setAccess({ canRead: false, canWrite: false }); else window.setPresented(false); }, boundary);
+  assert.equal(await page.evaluate(() => window.cardWaitTimers.size), 0);
+  await page.clock.fastForward(30_001); await page.evaluate(() => window.finishDecide()); await page.waitForTimeout(20);
+  assert.equal(await page.evaluate(method => window.requests.filter(item => item.method === method).length, method), 1);
+  assert.equal(await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).count(), 0);
 }));
