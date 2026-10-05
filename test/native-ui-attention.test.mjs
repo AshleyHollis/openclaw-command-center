@@ -114,6 +114,7 @@ async function fixture(run) {
                 sourceSystem: 'command-center', sourceKind: 'user-clarification', sourceVersion: 'v1',
                 occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z',
                 historicalBaseline: false, rationale: params.rationale, status: 'submitted' }] });
+            if (window.delayClarify) { window.delayClarify = false; await new Promise((resolve, reject) => { window.finishClarify = error => error ? reject(new Error(error)) : resolve(); }); }
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.decide')) {
@@ -121,7 +122,7 @@ async function fixture(run) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
             if (window.removeDecided) { window.openLoops.highlighted = window.openLoops.highlighted.filter(item => item.loopId !== card.loopId); window.openLoops.total = window.openLoops.highlighted.length; window.openLoops.attentionTotal = window.openLoops.total; }
-            if (window.delayDecide) { window.delayDecide = false; await new Promise(resolve => { window.finishDecide = resolve; }); }
+            if (window.delayDecide) { window.delayDecide = false; await new Promise((resolve, reject) => { window.finishDecide = error => error ? reject(new Error(error)) : resolve(); }); }
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.renovation-decision-revise')) {
@@ -1679,7 +1680,6 @@ test('installed Planner keyboard sequence selects exact filters after native poi
 test('complete installed Attention journey with real bounded owner projections', { timeout: 120_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cc-attention-complete-'));
   const metadata = openCommandCenterMetadataService({ stateDir: path.join(root, '.openclaw') });
-  const timers = new Set();
   try {
     const topicId = '44444444-4444-4444-8444-444444444444'; const peerId = '55555555-5555-4555-8555-555555555555';
     const name = 'Fictional duplicate';
@@ -1695,10 +1695,10 @@ test('complete installed Attention journey with real bounded owner projections',
         else if (method.endsWith('open-loops.decide')) value = { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId,
           result: metadata.recordOpenLoopDecision({ ...params, actorId: 'fictional-component-operator', updatedAt: new Date().toISOString() }) };
         else throw new Error(`Unexpected complete-journey request ${method}`);
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => { timers.delete(timer); reject(new Error('The transport outcome is unknown.')); }, 30_000);
-          timers.add(timer);
-          const deliver = () => { clearTimeout(timer); timers.delete(timer); received.add(id); resolve(value); };
+        return new Promise(resolve => {
+          // The actual browser Gateway has no default RPC timeout. Only the
+          // product's bounded wait may release its pending form.
+          const deliver = () => { received.add(id); resolve(value); };
           if (probe.response({ type: 'res', id, ok: true }, deliver)) deliver();
         });
       });
@@ -1712,7 +1712,7 @@ test('complete installed Attention journey with real bounded owner projections',
       assert.equal(result.emptyStateFocus, true); assert.equal(result.immutableRetry, true);
       assert.equal(probe.writes.length, 9, 'Only confirmation, exact retry and seven explicit fictional removals write');
     });
-  } finally { for (const timer of timers) clearTimeout(timer); metadata.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { metadata.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`asynchronous decision removal ${index} keeps keyboard focus and blocks duplicate writes`, () => fixture(async page => {
@@ -1748,4 +1748,64 @@ test('asynchronous decision completion respects a newer toolbar focus', () => fi
   await page.evaluate(() => window.finishDecide());
   await page.locator('[data-attention-empty]').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement.textContent), 'All Topics');
+}));
+
+async function startNeverSettlingCardRequest(page, kind) {
+  await mountDraftCards(page, 1); if (!await page.evaluate(() => window.cardClockInstalled)) { await page.clock.install(); await page.evaluate(() => { window.cardClockInstalled = true; }); }
+  await page.evaluate(kind => { window.removeDecided = false; window[kind === 'decision' ? 'delayDecide' : 'delayClarify'] = true; }, kind);
+  const form = kind === 'decision' ? decisionDraft(page, 0) : clarification(page, 0);
+  await form.locator(':scope > summary').click();
+  if (kind === 'decision') await form.locator('select').selectOption('resolve');
+  const words = form.getByLabel(kind === 'decision' ? 'Rationale' : 'What needs correcting?', { exact: true });
+  await words.fill('Fictional exact original intent');
+  const save = form.getByRole('button', { name: kind === 'decision' ? 'Save action' : 'Save clarification', exact: true });
+  await save.click();
+  await page.waitForFunction(kind => typeof window[kind === 'decision' ? 'finishDecide' : 'finishClarify'] === 'function', kind);
+  return { form, words, save, method: `command-center.v1.open-loops.${kind === 'decision' ? 'decide' : 'clarify'}` };
+}
+
+for (const kind of ['decision', 'clarification']) test(`bounded ${kind} wait preserves immutable retry after a never-settling transport`, () => fixture(async page => {
+  const { words, save, method } = await startNeverSettlingCardRequest(page, kind);
+  const first = await page.evaluate(method => window.requests.find(item => item.method === method), method);
+  await page.clock.fastForward(30_001);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  assert.equal(await save.isEnabled(), true); assert.notEqual(await save.getAttribute('aria-disabled'), 'true');
+  await words.fill('Fictional changed intent'); await save.click();
+  assert.equal(await page.evaluate(method => window.requests.filter(item => item.method === method).length, method), 1);
+  await words.fill('Fictional exact original intent'); await save.click();
+  await page.waitForFunction(method => window.requests.filter(item => item.method === method).length === 2, method);
+  const retry = await page.evaluate(method => window.requests.filter(item => item.method === method)[1], method);
+  assert.deepEqual(retry.params, first.params);
+}));
+
+for (const lateError of [false, true]) test(`bounded decision ignores authentic late ${lateError ? 'rejection' : 'success'} before explicit retry`, () => fixture(async page => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const { save, method } = await startNeverSettlingCardRequest(page, 'decision');
+  const beforeReads = await page.evaluate(() => window.requests.filter(item => item.method.endsWith('dashboard.get')).length);
+  await page.clock.fastForward(30_001);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  await page.evaluate(error => window.finishDecide(error ? 'Fictional late rejection' : undefined), lateError);
+  await page.waitForTimeout(30);
+  assert.equal(await page.evaluate(() => window.requests.filter(item => item.method.endsWith('dashboard.get')).length), beforeReads);
+  await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).waitFor();
+  await save.click();
+  await page.waitForFunction(before => window.requests.filter(item => item.method.endsWith('dashboard.get')).length > before, beforeReads);
+  const sent = await page.evaluate(method => window.requests.filter(item => item.method === method), method);
+  assert.equal(sent.length, 2); assert.deepEqual(sent[1].params, sent[0].params); assert.deepEqual(errors, []);
+}));
+
+for (const boundary of ['abort', 'permission', 'hidden']) test(`bounded wait disposes its timer at ${boundary} without touching recovery or writing`, () => fixture(async page => {
+  await page.clock.install(); await page.evaluate(() => { window.cardClockInstalled = true; });
+  await page.evaluate(() => {
+    const set = window.setTimeout; const clear = window.clearTimeout; window.cardWaitTimers = new Set();
+    window.setTimeout = (callback, delay, ...args) => { let id; id = set(() => { window.cardWaitTimers.delete(id); callback(...args); }, delay); if (delay === 30_000) window.cardWaitTimers.add(id); return id; };
+    window.clearTimeout = id => { window.cardWaitTimers.delete(id); clear(id); };
+  });
+  const { method } = await startNeverSettlingCardRequest(page, 'decision');
+  assert.equal(await page.evaluate(() => window.cardWaitTimers.size), 1);
+  await page.evaluate(boundary => { if (boundary === 'abort') window.abortView(); else if (boundary === 'permission') window.setAccess({ canRead: false, canWrite: false }); else window.setPresented(false); }, boundary);
+  assert.equal(await page.evaluate(() => window.cardWaitTimers.size), 0);
+  await page.clock.fastForward(30_001); await page.evaluate(() => window.finishDecide()); await page.waitForTimeout(20);
+  assert.equal(await page.evaluate(method => window.requests.filter(item => item.method === method).length, method), 1);
+  assert.equal(await page.getByRole('status').filter({ hasText: 'outcome is unknown' }).count(), 0);
 }));

@@ -38,7 +38,7 @@ export function setAttentionTopicAvailable(metadata, topicId, available) {
 // grants, successful mutations or scopes. The regular native owner closes all
 // sockets/browser/host and verifies traffic and sealed bytes on every outcome.
 export function attentionTransportProbe() {
-  const pending = new Map(); const writes = []; let holdDashboard = false; let held; let discardDecision = false;
+  const pending = new Map(); const writes = []; let holdDashboard = false; let held; let discardDecision = false; let holdDecision = false; let heldDecision;
   return {
     writes,
     request(message) {
@@ -52,12 +52,15 @@ export function attentionTransportProbe() {
       if (holdDashboard && request.method === 'command-center.v1.dashboard.get') {
         holdDashboard = false; held = { deliver, id: message.id }; return false;
       }
+      if (holdDecision && request.method === 'command-center.v1.open-loops.decide') { holdDecision = false; heldDecision = { deliver, id: message.id }; return false; }
       if (discardDecision && request.method === 'command-center.v1.open-loops.decide') { discardDecision = false; return false; }
       return true;
     },
     holdNextDashboard() { assert.equal(held, undefined); holdDashboard = true; },
     hasHeldDashboard() { return !!held; },
     releaseDashboard() { assert.ok(held); const reply = held; held = undefined; reply.deliver(); return reply.id; },
+    holdNextDecision() { assert.equal(heldDecision, undefined); holdDecision = true; },
+    releaseDecision() { assert.ok(heldDecision); const reply = heldDecision; heldDecision = undefined; reply.deliver(); return reply.id; },
     discardNextDecision() { discardDecision = true; }
   };
 }
@@ -173,17 +176,24 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     setAttentionTopicAvailable(metadata, fixture.topicId, true); await settledRefresh();
     assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), '');
 
-    // Uncertain delivery is created by discarding one real successful reply.
+    // Uncertain delivery withholds one real successful reply past the UI wait.
     // A changed choice must not submit; exact retry reaches the real journal.
     const suggestion = await openDraft(5, 'decision');
     await suggestion.getByLabel('Rationale', { exact: true }).fill('Fictional immutable confirmation');
-    probe.discardNextDecision(); await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
+    probe.holdNextDecision(); await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).waitFor({ state: 'visible' });
     await page.waitForFunction(id => (() => { const button = document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`); return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true'; })(), loops[5].loopId, { timeout: 60_000 });
     const sent = probe.writes.at(-1); assert.equal(sent.method, 'command-center.v1.open-loops.decide');
     await suggestion.locator('select').selectOption('dismiss');
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
     assert.equal(probe.writes.length, 1);
+    const unknownStatus = await native.getByRole('status').first().textContent();
+    const lateReply = probe.releaseDecision();
+    for (let attempt = 0; !received.has(lateReply) && attempt < 500; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
+    assert.equal(received.has(lateReply), true, 'The authentic late decision reply must reach the browser');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await native.getByRole('status').first().textContent(), unknownStatus, 'A late reply cannot claim success or discard recovery');
+    assert.equal(probe.writes.length, 1, 'Late delivery never automatically retries');
     await suggestion.locator('select').selectOption('confirm');
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
     await page.waitForFunction(id => (() => { const button = document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`); return !button || !button.disabled && button.getAttribute('aria-disabled') !== 'true'; })(), loops[5].loopId);
