@@ -8,7 +8,7 @@ import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional Attention host</title><main id="mount" style="display:contents"></main></html>'); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><html lang="en"><title>Fictional Attention host</title>${process.env.COMMAND_CENTER_PACKAGED_UI_CSS ? `<link rel="stylesheet" href="/host/${process.env.COMMAND_CENTER_PACKAGED_UI_CSS}">` : ''}<main id="mount" style="display:contents"></main></html>`); return; }
     if (process.env.COMMAND_CENTER_PACKAGED_UI && /^\/host\/[a-zA-Z0-9_.-]+\.(js|css)$/u.test(req.url)) {
       try { res.setHeader('content-type', req.url.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(await readFile(path.join(process.env.COMMAND_CENTER_PACKAGED_UI, 'assets', req.url.slice(6)))); }
       catch { res.writeHead(404); res.end(); } return;
@@ -1298,9 +1298,19 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
       await button.click(); assert.equal(await button.getAttribute('aria-pressed'), 'true');
       await button.focus(); await button.press('Space'); assert.equal(await button.getAttribute('aria-pressed'), 'true');
     }
-    for (const control of await page.locator('.cc-planner-controls input,.cc-planner-controls select').all()) {
-      await control.focus(); assert.equal(await control.evaluate(node => node === document.activeElement), true);
+    const filters = page.locator('.cc-planner-controls input,.cc-planner-controls select');
+    await filters.nth(0).click(); await filters.nth(0).press('ControlOrMeta+A'); await filters.nth(0).pressSequentially('Fictional');
+    for (let index = 1; index < 4; index++) {
+      await page.keyboard.press('Tab'); assert.equal(await filters.nth(index).evaluate(node => node === document.activeElement), true);
+      await filters.nth(index).click(); await filters.nth(index).press('Home');
+      for (let step = 0; step < (index === 3 ? 3 : 1); step++) await filters.nth(index).press('ArrowDown');
+      await filters.nth(index).press('Enter');
     }
+    for (const view of ['Board', 'List', 'Agenda']) {
+      await page.keyboard.press('Tab'); const button = page.getByRole('button', { name: view, exact: true });
+      assert.equal(await button.evaluate(node => node === document.activeElement), true); await page.keyboard.press('Space');
+    }
+    await page.getByRole('button', { name: 'Board', exact: true }).click();
   }
   await page.setViewportSize({ width: 640, height: 900 });
   await page.evaluate(() => { document.body.style.width = '624px'; });
@@ -1309,11 +1319,12 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   await page.waitForFunction(() => document.querySelector('.cc-planner-board').scrollLeft > 0);
   await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
   const before = await lanes.evaluate(node => node.scrollLeft);
-  await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click());
-  await lanes.waitFor();
+  await page.evaluate(() => { window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await page.getByText('Updated fictional title', { exact: true }).waitFor({ state: 'attached' });
   assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
   assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
   assert.equal(await page.locator('[data-board-lane="ready"]').evaluate(node => node.scrollTop), 170);
+  assert.deepEqual(await page.locator('.cc-planner-controls input,.cc-planner-controls select').evaluateAll(nodes => nodes.map(node => node.value)), ['Fictional', 'topic-fictional-renovation', 'confirmed', 'normal']);
   assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.organize'))), false);
   if (process.env.COMMAND_CENTER_NARROW_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_NARROW_SCREENSHOT });
 }));
