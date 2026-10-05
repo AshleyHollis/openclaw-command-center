@@ -536,8 +536,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     bindDraft(form, card, 'decision', { decision, reviewAt, applyCorrections, amount, currency, correctDue, dateOnly, dueAt, dueDate, rationale }, pending, update);
     form.addEventListener('submit', async event => {
       event.preventDefault();
-      if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
-      save.disabled = true;
+      if (!current(pending) || !writable() || save.getAttribute('aria-disabled') === 'true' || !rationale.value.trim()) return;
+      // Native disabled buttons blur during an asynchronous reply. Keep this
+      // control focusable so the existing verified removal handoff can run.
+      save.setAttribute('aria-disabled', 'true');
       try {
         const review = decision.value === 'defer' ? new Date(reviewAt.value).toISOString() : undefined;
         const correcting = decision.value === 'correct-date' || decision.value === 'confirm' && applyCorrections.checked && correctDue.checked;
@@ -555,7 +557,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
         });
       } catch (error) { if (current(pending)) report(error?.message || 'Action outcome is unknown. Retry to reconcile the same operation.'); }
-      finally { if (current(pending)) save.disabled = false; }
+      finally { if (current(pending)) save.removeAttribute('aria-disabled'); }
     }, { signal });
     disclosure.append(form); row.append(disclosure);
   }
