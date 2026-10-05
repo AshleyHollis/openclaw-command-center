@@ -1609,3 +1609,33 @@ test('Attention re-verifies inventory-only drafts on refresh and clears unavaila
   assert.equal(await words(20).inputValue(), '');
   assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
 }));
+test('Planner Topic names stay current across keyboard selection and read access loss', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.dashboardTopics = [{ topicId: 'topic-a', name: 'Fictional alpha' }, { topicId: 'topic-b', name: 'Fictional beta' }];
+    const ready = ['topic-a', 'topic-b'].map((topicId, index) => ({ loopId: `topic-key-${index}`, topicId, kind: 'general', title: `Fictional work ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1, planning: { importance: 'normal' } }));
+    window.openLoops = { total: 2, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] }, board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const topic = page.locator('.cc-planner-controls').getByLabel('Topic', { exact: true });
+  await topic.waitFor(); await topic.focus();
+  await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  assert.equal(await topic.inputValue(), 'topic-b');
+  await page.getByLabel('Priority', { exact: true }).selectOption('normal');
+  await page.getByLabel('Search', { exact: true }).fill('Fictional');
+  await topic.focus();
+  await page.evaluate(() => { window.dashboardTopics[1].name = 'Fictional renamed beta'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  await topic.getByRole('option', { name: 'Fictional renamed beta', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b'); assert.equal(await topic.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  await page.evaluate(() => window.setAccess({ canRead: false }));
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  await page.evaluate(() => { window.dashboardTopics = []; window.setAccess({ canRead: true }); });
+  await topic.getByRole('option', { name: 'Topic unavailable (topic-b)', exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await topic.inputValue(), 'topic-b');
+  assert.equal(await page.getByLabel('Priority', { exact: true }).inputValue(), 'normal');
+  assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
+  assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
+}));
