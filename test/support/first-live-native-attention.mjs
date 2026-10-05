@@ -62,17 +62,18 @@ export function attentionTransportProbe() {
   };
 }
 
-export async function exerciseNativeAttentionStates({ page, world, fixture, peer, loops, probe, signal }) {
+export async function exerciseNativeAttentionStates({ page, world, fixture, peer, loops, probe, signal, nativeSelector = 'openclaw-plugin-page', enterPlanner, remount, responseObservations }) {
   const metadata = openCommandCenterMetadataService({ stateDir: path.join(world.root, '.openclaw') });
-  const native = page.locator('openclaw-plugin-page');
+  const native = page.locator(nativeSelector);
   const refresh = () => native.getByRole('button', { name: 'Refresh Planner', exact: true });
   const row = index => native.locator(`[data-open-loop-id="${loops[index].loopId}"]`).first();
   const openDraft = async (index, kind) => {
     const suggestions = native.locator('[data-open-loop-group="Suggestions"]');
-    if (index === 5 && await suggestions.count() && !await suggestions.evaluate(node => node.open)) await suggestions.locator('summary').click();
-    const card = row(index); await card.waitFor({ state: 'visible' });
+    if (index === 5 && await suggestions.count() && !await suggestions.evaluate(node => node.open)) await suggestions.locator(':scope > summary').click();
+    const card = row(index);
+    assert.equal(await card.isVisible(), true, `Draft card ${loops[index].loopId} must be mounted in the ordinary projection`);
     const details = card.locator(kind === 'clarification' ? '[data-open-loop-clarification]' : '[data-open-loop-decisions]');
-    if (!await details.evaluate(node => node.open)) await details.locator('summary').click();
+    if (!await details.evaluate(node => node.open)) await details.locator(':scope > summary').click();
     return details;
   };
   const settledRefresh = async () => {
@@ -82,14 +83,15 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
   const topic = () => native.getByRole('combobox', { name: 'Topic', exact: true }).first();
   const originalLoops = metadata.listOpenLoops();
   const originalActions = metadata.listOpenLoopUserActionReceiptsPage({ limit: 50 }).actions;
-  const received = new Set();
+  const received = responseObservations ?? new Set();
   const observeSocket = socket => socket.on('framereceived', ({ payload }) => {
     let message; try { message = JSON.parse(String(payload)); } catch { return; }
     if (message?.type === 'res' && received.size < 256) received.add(message.id);
   });
   page.on('websocket', observeSocket);
   try {
-    await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'planner',
+    if (enterPlanner) await enterPlanner();
+    else await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'planner',
       fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await native.getByRole('heading', { name: 'Planner', exact: true }).waitFor();
     await topic().locator(`option[value="${fixture.topicId}"]`).waitFor({ state: 'attached' });
@@ -112,25 +114,32 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
 
     await exerciseAttentionPlannerControls({ page, native, topicId: fixture.topicId, peerLoopId: loops[6].loopId, settledRefresh });
 
-    const first = await openDraft(3, 'clarification'); const second = await openDraft(4, 'decision');
+    const mountedDraftIndices = async () => {
+      const ids = await native.locator('[data-open-loop-id]').evaluateAll(nodes => [...new Set(nodes.filter(node => node.getClientRects().length && !node.closest('[hidden]') && node.querySelector('[data-open-loop-decisions]')).map(node => node.dataset.openLoopId))]);
+      return ids.map(id => loops.findIndex(loop => loop.loopId === id)).filter(index => index >= 0);
+    };
+    const initialDrafts = (await mountedDraftIndices()).filter(index => metadata.getOpenLoop(loops[index].loopId).topicId === fixture.topicId);
+    assert.ok(initialDrafts.length >= 2, `Two ordinary cards bound to the first Topic must be mounted; found ${JSON.stringify(initialDrafts)}`);
+    const [firstDraftIndex, secondDraftIndex] = initialDrafts;
+    const first = await openDraft(firstDraftIndex, 'clarification'); const second = await openDraft(secondDraftIndex, 'decision');
     await first.getByLabel('What needs correcting?').fill('  Fictional unsent clarification  ');
-    await second.getByLabel('Action', { exact: false }).selectOption('resolve');
-    await second.getByLabel('Action', { exact: false }).selectOption('defer');
+    await second.locator('select').selectOption('resolve');
+    await second.locator('select').selectOption('defer');
     const futureReview = new Date(Date.now() + 86_400_000).toISOString().slice(0, 16);
-    await second.getByLabel('Review time', { exact: false }).fill(futureReview);
-    await second.getByLabel('Action', { exact: false }).selectOption('resolve');
-    await second.getByLabel('Rationale', { exact: false }).fill('Fictional independent unsent decision');
+    await second.getByLabel('Review time', { exact: true }).fill(futureReview);
+    await second.locator('select').selectOption('resolve');
+    await second.getByLabel('Rationale', { exact: true }).fill('Fictional independent unsent decision');
     await first.getByLabel('What needs correcting?').focus();
     await first.getByLabel('What needs correcting?').evaluate(node => node.setSelectionRange(2, 12, 'backward'));
     // Refresh by DOM activation keeps current textarea focus, as in the native
     // owner receiving an external refresh while the user is still editing.
     await page.evaluate(() => [...document.querySelectorAll('button')].find(node => node.textContent === 'Refresh Planner').click());
     await page.waitForFunction(() => document.activeElement?.tagName === 'TEXTAREA' && document.activeElement.selectionStart === 2);
-    assert.equal(await (await openDraft(3, 'clarification')).getByLabel('What needs correcting?').inputValue(), '  Fictional unsent clarification  ');
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), 'Fictional independent unsent decision');
-    await (await openDraft(4, 'decision')).getByLabel('Action', { exact: false }).selectOption('defer');
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Review time', { exact: false }).inputValue(), futureReview);
-    await (await openDraft(4, 'decision')).getByLabel('Action', { exact: false }).selectOption('resolve');
+    assert.equal(await (await openDraft(firstDraftIndex, 'clarification')).getByLabel('What needs correcting?').inputValue(), '  Fictional unsent clarification  ');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional independent unsent decision');
+    await (await openDraft(secondDraftIndex, 'decision')).locator('select').selectOption('defer');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Review time', { exact: true }).inputValue(), futureReview);
+    await (await openDraft(secondDraftIndex, 'decision')).locator('select').selectOption('resolve');
     assert.deepEqual(metadata.listOpenLoops(), originalLoops);
     assert.deepEqual(metadata.listOpenLoopUserActionReceiptsPage({ limit: 50 }).actions, originalActions);
     assert.equal(probe.writes.length, 0, 'Editing, filtering, views and refresh must issue zero mutations');
@@ -139,7 +148,7 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     probe.holdNextDashboard(); await refresh().click();
     for (let attempt = 0; !probe.hasHeldDashboard() && attempt < 500; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
     assert.equal(probe.hasHeldDashboard(), true);
-    const prior = metadata.getOpenLoop(loops[3].loopId);
+    const prior = metadata.getOpenLoop(loops[firstDraftIndex].loopId);
     metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: prior.revision,
       loop: { ...prior, title: 'Fictional newer revision', revision: prior.revision + 1 } });
     // Explicitly exercise the existing native refresh event during a pending
@@ -149,35 +158,35 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     for (let attempt = 0; !received.has(oldReply) && attempt < 500; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
     assert.equal(received.has(oldReply), true, 'The stale genuine response must actually reach the browser');
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await row(3).getByRole('heading', { name: 'Fictional newer revision', exact: true }).count(), 1);
-    assert.equal(await (await openDraft(3, 'clarification')).getByLabel('What needs correcting?').inputValue(), '');
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), 'Fictional independent unsent decision');
-    const bound = metadata.getOpenLoop(loops[4].loopId);
+    assert.equal(await row(firstDraftIndex).getByRole('heading', { name: 'Fictional newer revision', exact: true }).count(), 1);
+    assert.equal(await (await openDraft(firstDraftIndex, 'clarification')).getByLabel('What needs correcting?').inputValue(), '');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional independent unsent decision');
+    const bound = metadata.getOpenLoop(loops[secondDraftIndex].loopId);
     metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: bound.revision,
       loop: { ...bound, topicId: peer.topicId, revision: bound.revision + 1 } }); await settledRefresh();
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
-    await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).fill('Fictional binding remains private');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), '');
+    await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).fill('Fictional binding remains private');
     setAttentionTopicAvailable(metadata, peer.topicId, false); await settledRefresh();
     setAttentionTopicAvailable(metadata, peer.topicId, true); await settledRefresh();
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), '');
     setAttentionTopicAvailable(metadata, fixture.topicId, false); await settledRefresh();
     setAttentionTopicAvailable(metadata, fixture.topicId, true); await settledRefresh();
-    assert.equal(await (await openDraft(4, 'decision')).getByLabel('Rationale', { exact: false }).inputValue(), '');
+    assert.equal(await (await openDraft(secondDraftIndex, 'decision')).getByLabel('Rationale', { exact: true }).inputValue(), '');
 
     // Uncertain delivery is created by discarding one real successful reply.
     // A changed choice must not submit; exact retry reaches the real journal.
     const suggestion = await openDraft(5, 'decision');
-    await suggestion.getByLabel('Rationale', { exact: false }).fill('Fictional immutable confirmation');
+    await suggestion.getByLabel('Rationale', { exact: true }).fill('Fictional immutable confirmation');
     probe.discardNextDecision(); await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).waitFor({ state: 'visible' });
-    await page.waitForFunction(id => !document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`).disabled, loops[5].loopId, { timeout: 60_000 });
+    await page.waitForFunction(id => (() => { const button = document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`); return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true'; })(), loops[5].loopId, { timeout: 60_000 });
     const sent = probe.writes.at(-1); assert.equal(sent.method, 'command-center.v1.open-loops.decide');
-    await suggestion.getByLabel('Action', { exact: false }).selectOption('dismiss');
+    await suggestion.locator('select').selectOption('dismiss');
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
     assert.equal(probe.writes.length, 1);
-    await suggestion.getByLabel('Action', { exact: false }).selectOption('confirm');
+    await suggestion.locator('select').selectOption('confirm');
     await suggestion.getByRole('button', { name: 'Save action', exact: true }).click();
-    await page.waitForFunction(id => !document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`)?.disabled, loops[5].loopId);
+    await page.waitForFunction(id => (() => { const button = document.querySelector(`[data-open-loop-id="${CSS.escape(id)}"] [data-open-loop-decisions] button`); return !button || !button.disabled && button.getAttribute('aria-disabled') !== 'true'; })(), loops[5].loopId);
     assert.equal(probe.writes.length, 2); assert.deepEqual(probe.writes[1].params, sent.params);
     assert.equal(metadata.listOpenLoopUserActionReceiptsPage({ limit: 50 }).actions.filter(item => item.logicalOperationId === sent.params.logicalOperationId).length, 1);
 
@@ -185,21 +194,33 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     // visible card, never a hidden projection. All writes are fictional.
     await native.getByRole('button', { name: 'Open Dashboard', exact: true }).click();
     await native.getByRole('heading', { name: 'Command Center', exact: true }).waitFor();
-    await (await openDraft(4, 'clarification')).getByLabel('What needs correcting?').fill('Must clear across actual remount');
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    await native.locator('[data-open-loop-id] [data-open-loop-decisions]').first().waitFor({ state: 'visible', timeout: 10_000 });
+    const remountDraftIndex = (await mountedDraftIndices())[0]; assert.ok(Number.isInteger(remountDraftIndex));
+    await (await openDraft(remountDraftIndex, 'clarification')).getByLabel('What needs correcting?').fill('Must clear across actual remount');
+    if (remount) await remount(); else await page.reload({ waitUntil: 'domcontentloaded' });
     await native.getByRole('heading', { name: 'Command Center', exact: true }).waitFor();
-    assert.equal(await (await openDraft(4, 'clarification')).getByLabel('What needs correcting?').inputValue(), '');
-    const positions = ['first', 'middle', 'last', 'first', 'first', 'first', 'first'];
+    await row(remountDraftIndex).waitFor({ state: 'visible', timeout: 10_000 });
+    assert.equal(await (await openDraft(remountDraftIndex, 'clarification')).getByLabel('What needs correcting?').inputValue(), '');
+    const positions = ['first', 'middle', 'first', 'first', 'last', 'first', 'first'];
     for (const position of positions) {
       const before = await native.locator('[data-open-loop-id],[data-workspace-loop-id]').evaluateAll(nodes => [...new Set(nodes.filter(node => node.getClientRects().length && !node.closest('[hidden]')).map(node => node.dataset.openLoopId ?? node.dataset.workspaceLoopId))]);
       assert.ok(before.length > 0);
-      const at = position === 'last' ? before.length - 1 : position === 'middle' ? Math.floor(before.length / 2) : 0;
-      const index = loops.findIndex(loop => loop.loopId === before[at]); assert.ok(index >= 0);
-      const form = await openDraft(index, 'decision'); await form.getByLabel('Action', { exact: false }).selectOption('resolve');
-      await form.getByLabel('Rationale', { exact: false }).fill('Fictional explicit removal');
-      await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter'); await page.waitForFunction(id => [...document.querySelectorAll(`[data-open-loop-id="${CSS.escape(id)}"],[data-workspace-loop-id="${CSS.escape(id)}"]`)].every(node => !node.getClientRects().length || node.closest('[hidden]')), loops[index].loopId);
+      const eligible = await mountedDraftIndices(); assert.ok(eligible.length > 0, 'A surviving ordinary decision form must be mounted');
+      const index = eligible[position === 'last' ? eligible.length - 1 : position === 'middle' ? Math.floor(eligible.length / 2) : 0];
+      const at = before.indexOf(loops[index].loopId); assert.ok(at >= 0);
+      if (position === 'last') assert.equal(at, before.length - 1, 'Last removal must exercise the full visible order previous-neighbor fallback');
+      const form = await openDraft(index, 'decision'); await form.locator('select').selectOption('resolve');
+      await form.getByLabel('Rationale', { exact: true }).fill('Fictional explicit removal');
+      await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter');
+      await page.waitForFunction(id => {
+        const content = document.querySelector('section[aria-label="Attention items"]');
+        return content?.getAttribute('aria-busy') === 'false'
+          && !!content.querySelector('[data-open-loop-id],[data-workspace-loop-id],[data-attention-empty]')
+          && [...content.querySelectorAll(`[data-open-loop-id="${CSS.escape(id)}"],[data-workspace-loop-id="${CSS.escape(id)}"]`)].every(node => !node.getClientRects().length || node.closest('[hidden]'));
+      }, loops[index].loopId, { timeout: 10_000 });
       const expected = before[at + 1] ?? before[at - 1];
-      if (expected) assert.equal(await page.evaluate(() => (() => { const owner = document.activeElement?.closest('[data-open-loop-id],[data-workspace-loop-id]'); return owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId; })()), expected);
+      if (expected) assert.equal(await page.evaluate(() => (() => { const owner = document.activeElement?.closest('[data-open-loop-id],[data-workspace-loop-id]'); return owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId; })()), expected,
+        JSON.stringify({ position, before, removed: loops[index].loopId, active: await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 100)) }));
       else assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H2');
     }
     assert.ok(metadata.listOpenLoops().every(loop => loop.state === 'resolved'));

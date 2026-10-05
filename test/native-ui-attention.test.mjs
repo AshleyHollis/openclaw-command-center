@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { projectDashboard } from '../src/dashboard/service.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import test from 'node:test';
 import { chromium } from 'playwright';
-import { exerciseAttentionPlannerControls } from './support/first-live-native-attention.mjs';
+import { exerciseAttentionPlannerControls, exerciseNativeAttentionStates, seedAttentionLoops, attentionTransportProbe } from './support/first-live-native-attention.mjs';
 import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
@@ -39,10 +43,11 @@ async function fixture(run) {
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
         agents: {}, components: {},
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
-        navigation: { openPage: (target) => window.opened.push(target) }, sessions: { openChat: (target) => window.opened.push({ session: target }), open() { throw new Error('Attention must not open arbitrary Sessions'); } },
+        navigation: { openPage: (target) => { window.opened.push(target); window.attentionJourneyNavigation?.(target); } }, sessions: { openChat: (target) => window.opened.push({ session: target }), open() { throw new Error('Attention must not open arbitrary Sessions'); } },
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
+          if (window.attentionOwnerRequest) return window.attentionOwnerRequest(method, params);
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: structuredClone(window.dashboardTopics ?? [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }]), intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('briefings.set-read')) { const item = window.briefingHistory.find(row => row.editionId === params.editionId); item.read = params.read; window.briefings = window.briefingHistory.filter(row => !row.read); if (window.dailyMode === 'unknown-once') { window.dailyMode = 'success'; throw new Error('The transport outcome is unknown.'); } return { result: structuredClone(item) }; }
           if (method.endsWith('routines.decide')) { window.routineOccurrences = window.routineOccurrences.filter(row => !(row.routineId === params.routineId && row.occurrenceDate === params.occurrenceDate)); return { result: { schemaVersion: 1, ...params, revision: params.expectedRevision + 1 } }; }
@@ -1666,4 +1671,81 @@ test('installed Planner keyboard sequence selects exact filters after native poi
   };
   await exerciseAttentionPlannerControls({ page, native, topicId, peerLoopId, settledRefresh });
   assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.decide'))), false);
+}));
+
+// Exercise the entire installed fixture against the same bounded real-owner
+// projections before spending another NAS rehearsal. The component adapter is
+// explicit: this is not evidence of an installed Gateway pass.
+test('complete installed Attention journey with real bounded owner projections', { timeout: 120_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'cc-attention-complete-'));
+  const metadata = openCommandCenterMetadataService({ stateDir: path.join(root, '.openclaw') });
+  const timers = new Set();
+  try {
+    const topicId = '44444444-4444-4444-8444-444444444444'; const peerId = '55555555-5555-4555-8555-555555555555';
+    const name = 'Fictional duplicate';
+    for (const id of [topicId, peerId]) metadata.createTopic({ topicId: id, name, paraCategory: 'area', lifecycle: 'active' });
+    const loops = await seedAttentionLoops(metadata, topicId, peerId);
+    const probe = attentionTransportProbe(); const received = new Set();
+    await fixture(async page => {
+      await page.exposeFunction('attentionOwnerRequest', async (method, params) => {
+        const id = randomUUID(); probe.request({ type: 'req', id, method, params });
+        let value;
+        if (method.endsWith('dashboard.get')) value = { result: await projectDashboard({ metadata }) };
+        else if (method.endsWith('open-loops.list')) value = { result: metadata.listOpenLoopsPage(params) };
+        else if (method.endsWith('open-loops.decide')) value = { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId,
+          result: metadata.recordOpenLoopDecision({ ...params, actorId: 'fictional-component-operator', updatedAt: new Date().toISOString() }) };
+        else throw new Error(`Unexpected complete-journey request ${method}`);
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => { timers.delete(timer); reject(new Error('The transport outcome is unknown.')); }, 30_000);
+          timers.add(timer);
+          const deliver = () => { clearTimeout(timer); timers.delete(timer); received.add(id); resolve(value); };
+          if (probe.response({ type: 'res', id, ok: true }, deliver)) deliver();
+        });
+      });
+      await page.evaluate(() => { window.attentionJourneyNavigation = target => {
+        if (target.id === 'attention') window.mountInbox(); else if (target.id === 'planner') window.mountPlanner();
+        else throw new Error(`Unexpected native navigation ${JSON.stringify(target)}`);
+      }; });
+      const result = await exerciseNativeAttentionStates({ page, world: { root }, fixture: { topicId, name }, peer: { topicId: peerId }, loops, probe,
+        signal: new AbortController().signal, nativeSelector: '#mount', responseObservations: received,
+        enterPlanner: () => page.evaluate(() => window.mountPlanner()), remount: () => page.evaluate(() => window.mountInbox()) });
+      assert.equal(result.emptyStateFocus, true); assert.equal(result.immutableRetry, true);
+      assert.equal(probe.writes.length, 9, 'Only confirmation, exact retry and seven explicit fictional removals write');
+    });
+  } finally { for (const timer of timers) clearTimeout(timer); metadata.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`asynchronous decision removal ${index} keeps keyboard focus and blocks duplicate writes`, () => fixture(async page => {
+  await mountDraftCards(page);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, index);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous completion');
+  const save = form.getByRole('button', { name: 'Save action', exact: true });
+  await save.press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.waitForTimeout(100);
+  assert.equal(await save.evaluate(node => node === document.activeElement), true, 'Pending native decision retains the keyboard focus needed by removal');
+  assert.equal(await save.getAttribute('aria-disabled'), 'true');
+  await save.press('Enter');
+  assert.equal(await page.evaluate(() => window.requests.filter(item => item.method.endsWith('open-loops.decide')).length), 1);
+  await page.evaluate(() => window.finishDecide());
+  await page.waitForFunction(id => document.querySelector('section[aria-label="Attention items"]')?.getAttribute('aria-busy') === 'false' && !document.querySelector(`[data-open-loop-id="${id}"]`), `draft-${index}`);
+  assert.equal(await page.evaluate(() => document.activeElement.closest('[data-open-loop-id]')?.dataset.openLoopId), `draft-${next}`);
+}));
+
+test('asynchronous decision completion respects a newer toolbar focus', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.removeDecided = true; window.delayDecide = true; });
+  const form = decisionDraft(page, 0);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.locator('select').selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional asynchronous final completion');
+  await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter');
+  await page.waitForFunction(() => typeof window.finishDecide === 'function');
+  await page.getByRole('button', { name: 'All Topics', exact: true }).focus();
+  await page.evaluate(() => window.finishDecide());
+  await page.locator('[data-attention-empty]').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), 'All Topics');
 }));
