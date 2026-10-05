@@ -27,11 +27,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   const drafts = new Map();
   const draftNotices = new Set();
   let authorizedTopics = new Set();
+  // Retain only how much inventory the user opened, never private card snapshots.
+  let inventoryPageCount = 0;
   const draftSlot = (card, kind) => JSON.stringify(['open-loop', card.loopId, kind]);
   const draftKey = (card, kind) => JSON.stringify(['open-loop', card.loopId, card.revision, kind]);
   const draftBinding = card => card.topicId ?? null;
   const draftAuthorized = card => draftBinding(card) === null || authorizedTopics.has(card.topicId);
-  const clearDrafts = () => { drafts.clear(); draftNotices.clear(); authorizedTopics.clear(); transientUiState.disclosures.clear(); transientUiState.focusKey = null; transientUiState.selection = null; transientUiState.focusLoopId = null; };
+  const clearDrafts = () => { drafts.clear(); draftNotices.clear(); authorizedTopics.clear(); inventoryPageCount = 0; transientUiState.disclosures.clear(); transientUiState.focusKey = null; transientUiState.selection = null; transientUiState.focusLoopId = null; };
   const transientUiState = { disclosures: new Set(), focusKey: null, scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
@@ -148,7 +150,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
   };
 
-  function validateDrafts(dashboard) {
+  function validateDrafts(dashboard, inventoryPages = []) {
     authorizedTopics = new Set((dashboard.topics ?? []).map(topic => topic.topicId));
     const loops = new Map();
     const visit = value => {
@@ -160,6 +162,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else for (const item of Object.values(value)) visit(item);
     };
     visit(dashboard.openLoops);
+    for (const page of inventoryPages) visit(page.loops);
     for (const slot of draftNotices) { const card = loops.get(JSON.parse(slot)[1]); if (!card || !draftAuthorized(card)) draftNotices.delete(slot); }
     for (const [key, draft] of drafts) {
       const card = loops.get(draft.loopId);
@@ -1097,12 +1100,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
     const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
     const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
-    more.addEventListener('click', async () => {
-      if (!current(pending) || more.disabled) return;
-      more.disabled = true;
-      try {
-        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
-        if (!current(pending) || !Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+    const appendInventoryPage = page => {
         for (const loop of page.loops) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = loop.loopId; row.dataset.loopKind = loop.kind ?? 'general';
@@ -1129,9 +1127,20 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         cursor = page.nextCursor ?? cursor;
         if (page.hasMore && nonBlank(page.nextCursor)) { more.textContent = 'Load more open loops'; more.disabled = false; }
         else more.remove();
+    };
+    more.addEventListener('click', async () => {
+      if (!current(pending) || more.disabled) return;
+      more.disabled = true;
+      try {
+        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
+        if (!current(pending)) return;
+        if (!Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+        inventoryPageCount++;
+        appendInventoryPage(page);
       } catch (error) { if (current(pending)) { more.disabled = false; report(error?.message || 'The open-loop inventory is unavailable.'); } }
     }, { signal });
     inventory.append(inventoryRows, more); content.append(inventory);
+    for (const page of targets.inventoryPages ?? []) appendInventoryPage(page);
   }
 
   function render(episode) {
@@ -1246,7 +1255,24 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (!current(pending)) return;
       const dashboard = unwrap(response);
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
-      validateDrafts(dashboard);
+      const inventoryPages = [];
+      let inventoryWarning = '';
+      let inventoryOffset = 0; let inventoryCursor;
+      // Re-read the same bounded pages through the authorized owner before
+      // admitting inventory drafts or restoring their mounted controls.
+      try {
+        for (let index = 0; index < inventoryPageCount; index++) {
+          const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset: inventoryOffset, limit: 20, ...(inventoryCursor === undefined ? {} : { cursor: inventoryCursor }) }));
+          if (!current(pending)) return;
+          if (!Array.isArray(page?.loops) || page.offset !== inventoryOffset) throw new Error('The open-loop inventory changed.');
+          inventoryPages.push(page);
+          if (!page.hasMore || !nonBlank(page.nextCursor)) break;
+          inventoryOffset = page.nextOffset ?? inventoryOffset + page.loops.length;
+          inventoryCursor = page.nextCursor;
+        }
+      } catch { if (!current(pending)) return; inventoryPages.length = 0; inventoryWarning = 'The open-loop inventory is unavailable. Unsent inventory drafts were cleared; load the inventory again to continue.'; }
+      inventoryPageCount = inventoryPages.length;
+      validateDrafts(dashboard, inventoryPages);
       const cards = [...dashboard.attention, ...dashboard.inProgress];
       if (!recordId && !attentionRecordId) {
         const workspace = element('div'); workspace.className = 'cc-workspace'; workspace.dataset.pageMode = pageMode;
@@ -1343,13 +1369,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { attentionRecord: internalRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics });
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics, inventoryPages });
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
         if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]')) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
         restoreTransientUiState(removedLoopId);
-        report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
+        report([message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.'), inventoryWarning].filter(Boolean).join(' ')); return;
       }
       const matches = cards.filter((card) => recordId
         ? card.notificationRecordIds?.includes(recordId)
