@@ -14,7 +14,7 @@ async function fixture(run) {
       catch { res.writeHead(404); res.end(); } return;
     }
     if (!/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
+    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(process.env.COMMAND_CENTER_PLUGIN_UI ? path.join(process.env.COMMAND_CENTER_PLUGIN_UI, req.url.slice(1)) : new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -80,9 +80,12 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, disposition: 'duplicate', loop: { loopId: entry[0] }, reminder: { status: 'applied', action: 'create', referenceId: 'fictional-reminder' } } };
           }
           if (method.endsWith('open-loops.list')) {
+            if (window.inventoryReadMode === 'unavailable') throw new Error('Fictional inventory access unavailable.');
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
             const nextOffset = params.offset + loops.length < window.allOpenLoops.length ? params.offset + loops.length : null;
-            return { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            const result = { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            if (window.delayInventory) { window.delayInventory = false; await new Promise(resolve => { window.finishInventory = resolve; }); }
+            return result;
           }
           if (method.endsWith('open-loops.organize')) {
             const collections = [window.openLoops.workspace?.today?.mandatory, window.openLoops.workspace?.today?.planned, window.openLoops.workspace?.capacity, window.openLoops.workspace?.review?.batch, ...Object.values(window.openLoops.workspace?.board ?? {})].filter(Array.isArray);
@@ -1505,4 +1508,65 @@ test('Attention retains suggestion corrections including hidden checkboxes and v
   assert.equal(await form.getByLabel('Corrected calendar date', { exact: true }).inputValue(), '2026-10-14');
   assert.equal(await form.getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional correction rationale');
   assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 0);
+}));
+
+test('Attention re-verifies inventory-only drafts on refresh and clears unavailable or stale inventory', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.allOpenLoops = Array.from({ length: 21 }, (_, index) => ({ loopId: `inventory-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional inventory item ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: 21, attentionTotal: 0, highlighted: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  const words = index => page.locator(`details[data-open-loop-inventory] [data-open-loop-id="inventory-${index}"] details[data-open-loop-clarification]`).getByLabel('What needs correcting?');
+  for (const index of [0, 20]) {
+    await page.locator(`[data-open-loop-id="inventory-${index}"]`).getByText('Clarify this item', { exact: true }).click();
+    await words(index).fill(`Private fictional inventory draft ${index}`);
+  }
+  await words(20).focus(); await words(20).evaluate(node => node.setSelectionRange(4, 9, 'backward'));
+  const refresh = async () => {
+    await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click());
+    await page.locator('details[data-open-loop-inventory] article').nth(20).waitFor();
+  };
+  await refresh();
+  assert.equal(await words(0).inputValue(), 'Private fictional inventory draft 0');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  assert.deepEqual(await words(20).evaluate(node => [node === document.activeElement, node.selectionStart, node.selectionEnd, node.selectionDirection]), [true, 4, 9, 'backward']);
+  await page.evaluate(() => window.allOpenLoops[0].revision++);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  await words(0).fill('Cannot cross contradictory projections');
+  await page.evaluate(() => window.openLoops.highlighted = [{ ...window.allOpenLoops[0], revision: 99 }]);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  await page.evaluate(() => { window.openLoops.highlighted = []; window.allOpenLoops[20].topicId = 'another-fictional-topic'; window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }, { topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]; });
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Cannot cross revoked Topic');
+  await page.evaluate(() => window.dashboardTopics = []);
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await page.evaluate(() => window.dashboardTopics = [{ topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]);
+  await refresh(); await words(20).fill('Cleared when inventory cannot be verified');
+  await page.evaluate(() => window.inventoryReadMode = 'unavailable');
+  await page.getByRole('button', { name: 'Refresh Dashboard' }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).waitFor();
+  assert.equal(await page.locator('details[data-open-loop-inventory] article').count(), 0);
+  await page.getByText('Unsent inventory drafts were cleared', { exact: false }).waitFor();
+  await page.evaluate(() => window.inventoryReadMode = 'success');
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Must not return after stale read');
+  await page.evaluate(() => { window.delayInventory = true; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.waitForFunction(() => typeof window.finishInventory === 'function');
+  await page.evaluate(() => { window.setAccess({ canRead: false }); window.finishInventory(); });
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  await page.evaluate(() => window.setAccess({ canRead: true }));
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
 }));
