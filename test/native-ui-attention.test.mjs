@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
+import { exerciseAttentionPlannerControls } from './support/first-live-native-attention.mjs';
 import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
 async function fixture(run) {
@@ -1639,4 +1640,30 @@ test('Planner Topic names stay current across keyboard selection and read access
   assert.equal(await page.getByLabel('Search', { exact: true }).inputValue(), 'Fictional');
   assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
+}));
+
+
+test('installed Planner keyboard sequence selects exact filters after native pointer exercises', () => fixture(async page => {
+  const topicId = '44444444-4444-4444-8444-444444444444';
+  const peerTopicId = '55555555-5555-4555-8555-555555555555';
+  const peerLoopId = 'fictional-peer-loop';
+  await page.evaluate(({ topicId, peerTopicId, peerLoopId }) => {
+    window.cards = [];
+    const ready = [topicId, peerTopicId].map((topicId, index) => ({ loopId: index ? peerLoopId : 'fictional-first-loop',
+      kind: 'general', topicId, title: 'Fictional installed work', state: 'confirmed', revision: 1, evidenceCount: 1,
+      planning: { importance: 'critical' } }));
+    window.dashboardTopics = ready.map(card => ({ topicId: card.topicId, name: 'Fictional duplicate', paraCategory: 'area' }));
+    window.openLoops = { total: 2, attentionTotal: 0, highlighted: [], workspace: { today: { mandatory: [], planned: [] },
+      capacity: [], board: { ready }, review: { batch: [] }, agenda: [] } };
+    window.mountPlanner();
+  }, { topicId, peerTopicId, peerLoopId });
+  const native = page.locator('#mount');
+  await native.locator('.cc-planner-controls').waitFor();
+  await native.getByRole('combobox', { name: 'Topic', exact: true }).selectOption(peerTopicId);
+  const settledRefresh = async () => {
+    await native.getByRole('button', { name: 'Refresh Planner', exact: true }).evaluate(node => node.click());
+    await native.locator('.cc-planner-controls').waitFor();
+  };
+  await exerciseAttentionPlannerControls({ page, native, topicId, peerLoopId, settledRefresh });
+  assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.decide'))), false);
 }));

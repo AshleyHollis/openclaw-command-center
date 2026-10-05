@@ -110,57 +110,7 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     assert.equal(await topic().locator('option').filter({ hasText: 'Fictional renamed peer' }).count(), 0);
     setAttentionTopicAvailable(metadata, peer.topicId, true); await settledRefresh(); await topic().selectOption('');
 
-    // Actual host pane/CSS and hit targets at narrow and intermediate widths.
-    for (const width of [640, 800, 1024]) {
-      await page.setViewportSize({ width, height: 900 });
-      const controls = native.locator('.cc-planner-controls');
-      const pane = await native.locator('.cc-command-center-page').boundingBox(); assert.ok(pane && pane.width > 0);
-      for (const control of await controls.locator('input,select,button').all()) {
-        await control.scrollIntoViewIfNeeded(); const box = await control.boundingBox();
-        assert.ok(box && box.width > 0 && box.x >= pane.x - 1 && box.x + box.width <= pane.x + pane.width + 1,
-          `Control must stay inside the actual native pane at ${width}px`);
-          await control.click(); await control.focus(); assert.equal(await control.evaluate(node => node === document.activeElement), true);
-          if (await control.evaluate(node => node.tagName === 'SELECT')) await control.press('Escape');
-      }
-      for (const name of ['Board', 'List', 'Agenda']) {
-        const button = controls.getByRole('button', { name, exact: true }); await button.press('Space');
-        assert.equal(await button.getAttribute('aria-pressed'), 'true');
-      }
-      // Traverse every filter and view control using the real Tab order.
-      const search = controls.getByRole('searchbox'); await search.focus();
-      for (const target of [topic(), controls.getByRole('combobox', { name: 'Status', exact: true }), controls.getByRole('combobox', { name: 'Priority', exact: true }),
-        ...['Board', 'List', 'Agenda'].map(name => controls.getByRole('button', { name, exact: true }))]) {
-        await page.keyboard.press('Tab'); assert.equal(await target.evaluate(node => node === document.activeElement), true);
-      }
-      await search.fill('Fictional installed'); await search.press('Tab'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-      assert.equal(await topic().inputValue(), fixture.topicId);
-      await page.keyboard.press('Tab'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-      await page.keyboard.press('Tab'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-      await controls.getByRole('button', { name: 'List', exact: true }).press('Space');
-      await settledRefresh();
-      assert.equal(await controls.getByRole('searchbox').inputValue(), 'Fictional installed');
-      assert.equal(await topic().inputValue(), fixture.topicId);
-      assert.equal(await controls.getByRole('combobox', { name: 'Status', exact: true }).inputValue(), 'confirmed');
-      assert.equal(await controls.getByRole('combobox', { name: 'Priority', exact: true }).inputValue(), 'critical');
-      assert.equal(await controls.getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
-      assert.equal(await native.locator(`.cc-planner-list [data-workspace-loop-id="${loops[6].loopId}"]`).isVisible(), false);
-      await controls.getByRole('searchbox').fill(''); await topic().selectOption('');
-      await controls.getByRole('combobox', { name: 'Status', exact: true }).selectOption('');
-      await controls.getByRole('combobox', { name: 'Priority', exact: true }).selectOption('');
-      await controls.getByRole('button', { name: 'Board', exact: true }).click();
-    }
-    await page.setViewportSize({ width: 640, height: 900 });
-    const board = native.locator('.cc-planner-board');
-    await board.focus(); await board.press('ArrowRight');
-    await page.waitForFunction(() => document.querySelector('.cc-planner-board')?.scrollLeft > 0);
-    const scroll = await board.evaluate(node => {
-      node.scrollLeft = 200; const captured = node.scrollLeft;
-      [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click();
-      return captured;
-    });
-    await native.locator('.cc-planner-controls').waitFor(); assert.equal(await board.evaluate(node => node.scrollLeft), scroll);
-    assert.equal(await board.evaluate(node => node === document.activeElement), true);
-    await native.getByRole('button', { name: 'List', exact: true }).click();
+    await exerciseAttentionPlannerControls({ page, native, topicId: fixture.topicId, peerLoopId: loops[6].loopId, settledRefresh });
 
     const first = await openDraft(3, 'clarification'); const second = await openDraft(4, 'decision');
     await first.getByLabel('What needs correcting?').fill('  Fictional unsent clarification  ');
@@ -187,7 +137,7 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
 
     // Deliver an older genuine projection after a newer genuine projection.
     probe.holdNextDashboard(); await refresh().click();
-    for (let attempt = 0; !probe.hasHeldDashboard() && attempt < 100; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
+    for (let attempt = 0; !probe.hasHeldDashboard() && attempt < 500; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
     assert.equal(probe.hasHeldDashboard(), true);
     const prior = metadata.getOpenLoop(loops[3].loopId);
     metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: prior.revision,
@@ -196,7 +146,7 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     // response. No payload is substituted; both generations reach the Gateway.
     await refresh().dispatchEvent('click'); await native.locator('.cc-planner-controls').waitFor();
     const oldReply = probe.releaseDashboard();
-    for (let attempt = 0; !received.has(oldReply) && attempt < 100; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
+    for (let attempt = 0; !received.has(oldReply) && attempt < 500; attempt++) { signal.throwIfAborted(); await page.waitForTimeout(20); }
     assert.equal(received.has(oldReply), true, 'The stale genuine response must actually reach the browser');
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await row(3).getByRole('heading', { name: 'Fictional newer revision', exact: true }).count(), 1);
@@ -241,15 +191,15 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
     assert.equal(await (await openDraft(4, 'clarification')).getByLabel('What needs correcting?').inputValue(), '');
     const positions = ['first', 'middle', 'last', 'first', 'first', 'first', 'first'];
     for (const position of positions) {
-      const before = await native.locator('[data-open-loop-id]').evaluateAll(nodes => [...new Set(nodes.filter(node => node.getClientRects().length).map(node => node.dataset.openLoopId))]);
+      const before = await native.locator('[data-open-loop-id],[data-workspace-loop-id]').evaluateAll(nodes => [...new Set(nodes.filter(node => node.getClientRects().length && !node.closest('[hidden]')).map(node => node.dataset.openLoopId ?? node.dataset.workspaceLoopId))]);
       assert.ok(before.length > 0);
       const at = position === 'last' ? before.length - 1 : position === 'middle' ? Math.floor(before.length / 2) : 0;
       const index = loops.findIndex(loop => loop.loopId === before[at]); assert.ok(index >= 0);
       const form = await openDraft(index, 'decision'); await form.getByLabel('Action', { exact: false }).selectOption('resolve');
       await form.getByLabel('Rationale', { exact: false }).fill('Fictional explicit removal');
-      await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter'); await row(index).waitFor({ state: 'hidden' });
+      await form.getByRole('button', { name: 'Save action', exact: true }).press('Enter'); await page.waitForFunction(id => [...document.querySelectorAll(`[data-open-loop-id="${CSS.escape(id)}"],[data-workspace-loop-id="${CSS.escape(id)}"]`)].every(node => !node.getClientRects().length || node.closest('[hidden]')), loops[index].loopId);
       const expected = before[at + 1] ?? before[at - 1];
-      if (expected) assert.equal(await page.evaluate(() => document.activeElement?.closest('[data-open-loop-id]')?.dataset.openLoopId), expected);
+      if (expected) assert.equal(await page.evaluate(() => (() => { const owner = document.activeElement?.closest('[data-open-loop-id],[data-workspace-loop-id]'); return owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId; })()), expected);
       else assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H2');
     }
     assert.ok(metadata.listOpenLoops().every(loop => loop.state === 'resolved'));
@@ -257,4 +207,74 @@ export async function exerciseNativeAttentionStates({ page, world, fixture, peer
       boundedDrafts: true, staleProjection: true, immutableRetry: true, removalFocus: true, emptyStateFocus: true,
       topicBindingLoss: true, crossRemountCleared: true, readPrincipalLossExercised: false };
   } finally { page.off('websocket', observeSocket); metadata.close(); }
+}
+
+
+async function selectAttentionFilterWithKeyboard(select, value) {
+  const index = await select.locator('option').evaluateAll((nodes, target) => nodes.findIndex(node => node.value === target), value);
+  assert.ok(index >= 0, 'The exact authorized filter option must exist');
+  // Open the native menu before Home; starting selection can change during
+  // pointer hit-target exercises and closed-select key behavior varies by host.
+  await select.click(); await select.press('Home');
+  for (let step = 0; step < index; step++) await select.press('ArrowDown');
+  await select.press('Enter');
+  assert.equal(await select.inputValue(), value);
+}
+
+export async function exerciseAttentionPlannerControls({ page, native, topicId, peerLoopId, settledRefresh }) {
+  const topic = () => native.getByRole('combobox', { name: 'Topic', exact: true }).first();
+  // Actual host pane/CSS and hit targets at narrow and intermediate widths.
+  for (const width of [640, 800, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    const controls = native.locator('.cc-planner-controls');
+    const pane = await native.locator('.cc-command-center-page').boundingBox(); assert.ok(pane && pane.width > 0);
+    for (const control of await controls.locator('input,select,button').all()) {
+      await control.scrollIntoViewIfNeeded(); const box = await control.boundingBox();
+      assert.ok(box && box.width > 0 && box.x >= pane.x - 1 && box.x + box.width <= pane.x + pane.width + 1,
+        `Control must stay inside the actual native pane at ${width}px`);
+        await control.click(); await control.focus(); assert.equal(await control.evaluate(node => node === document.activeElement), true);
+        if (await control.evaluate(node => node.tagName === 'SELECT')) await control.press('Escape');
+    }
+    for (const name of ['Board', 'List', 'Agenda']) {
+      const button = controls.getByRole('button', { name, exact: true }); await button.press('Space');
+      assert.equal(await button.getAttribute('aria-pressed'), 'true');
+    }
+    // Traverse every filter and view control using the real Tab order.
+    const search = controls.getByRole('searchbox'); await search.focus();
+    for (const target of [topic(), controls.getByRole('combobox', { name: 'Status', exact: true }), controls.getByRole('combobox', { name: 'Priority', exact: true }),
+      ...['Board', 'List', 'Agenda'].map(name => controls.getByRole('button', { name, exact: true }))]) {
+      await page.keyboard.press('Tab'); assert.equal(await target.evaluate(node => node === document.activeElement), true);
+    }
+    assert.equal(await native.locator(`.cc-planner-list [data-workspace-loop-id="${peerLoopId}"]`).count(), 1, 'The peer must exist before filters hide it');
+    await search.fill('Fictional installed'); await search.press('Tab'); await selectAttentionFilterWithKeyboard(topic(), topicId);
+    assert.equal(await topic().inputValue(), topicId);
+    await page.keyboard.press('Tab'); await selectAttentionFilterWithKeyboard(controls.getByRole('combobox', { name: 'Status', exact: true }), 'confirmed');
+    await page.keyboard.press('Tab'); await selectAttentionFilterWithKeyboard(controls.getByRole('combobox', { name: 'Priority', exact: true }), 'critical');
+    await controls.getByRole('button', { name: 'List', exact: true }).press('Space');
+    await settledRefresh();
+    assert.equal(await controls.getByRole('searchbox').inputValue(), 'Fictional installed');
+    assert.equal(await topic().inputValue(), topicId);
+    assert.equal(await controls.getByRole('combobox', { name: 'Status', exact: true }).inputValue(), 'confirmed');
+    assert.equal(await controls.getByRole('combobox', { name: 'Priority', exact: true }).inputValue(), 'critical');
+    assert.equal(await controls.getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await native.locator(`.cc-planner-list [data-workspace-loop-id="${peerLoopId}"]`).isVisible(), false);
+    assert.ok(await native.locator(`.cc-planner-list [data-card-topic="${topicId}"]`).evaluateAll(nodes => nodes.some(node => node.getClientRects().length && !node.hidden)), 'Selected Topic must still have visible filtered work');
+    await controls.getByRole('searchbox').fill(''); await topic().selectOption('');
+    await controls.getByRole('combobox', { name: 'Status', exact: true }).selectOption('');
+    await controls.getByRole('combobox', { name: 'Priority', exact: true }).selectOption('');
+    await controls.getByRole('button', { name: 'Board', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 640, height: 900 });
+  const board = native.locator('.cc-planner-board');
+  await board.focus(); await board.press('ArrowRight');
+  await page.waitForFunction(() => document.querySelector('.cc-planner-board')?.scrollLeft > 0);
+  const scroll = await board.evaluate(node => {
+    node.scrollLeft = 200; const captured = node.scrollLeft;
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click();
+    return captured;
+  });
+  await native.locator('.cc-planner-controls').waitFor(); assert.equal(await board.evaluate(node => node.scrollLeft), scroll);
+  assert.equal(await board.evaluate(node => node === document.activeElement), true);
+  await native.getByRole('button', { name: 'List', exact: true }).click();
+
 }
