@@ -1332,8 +1332,9 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   await lanes.focus(); await lanes.press('ArrowRight');
   await page.waitForFunction(() => document.querySelector('.cc-planner-board').scrollLeft > 0);
   await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
-  const before = await lanes.evaluate(node => node.scrollLeft);
-  await page.evaluate(() => { window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  // Read the position in the refresh task; native arrow scrolling may still
+  // animate between separate browser round trips.
+  const before = await page.evaluate(() => { const position = document.querySelector('.cc-planner-board').scrollLeft; window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); return position; });
   await page.getByText('Updated fictional title', { exact: true }).first().waitFor({ state: 'attached' });
   assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
   assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
