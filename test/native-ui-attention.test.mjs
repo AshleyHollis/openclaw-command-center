@@ -14,7 +14,7 @@ async function fixture(run) {
       catch { res.writeHead(404); res.end(); } return;
     }
     if (!/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
+    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(process.env.COMMAND_CENTER_PLUGIN_UI ? path.join(process.env.COMMAND_CENTER_PLUGIN_UI, req.url.slice(1)) : new URL(`../${process.env.COMMAND_CENTER_BUILT_UI ? 'dist' : 'src'}/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -80,9 +80,12 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, disposition: 'duplicate', loop: { loopId: entry[0] }, reminder: { status: 'applied', action: 'create', referenceId: 'fictional-reminder' } } };
           }
           if (method.endsWith('open-loops.list')) {
+            if (window.inventoryReadMode === 'unavailable') throw new Error('Fictional inventory access unavailable.');
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
             const nextOffset = params.offset + loops.length < window.allOpenLoops.length ? params.offset + loops.length : null;
-            return { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            const result = { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+            if (window.delayInventory) { window.delayInventory = false; await new Promise(resolve => { window.finishInventory = resolve; }); }
+            return result;
           }
           if (method.endsWith('open-loops.organize')) {
             const collections = [window.openLoops.workspace?.today?.mandatory, window.openLoops.workspace?.today?.planned, window.openLoops.workspace?.capacity, window.openLoops.workspace?.review?.batch, ...Object.values(window.openLoops.workspace?.board ?? {})].filter(Array.isArray);
@@ -108,8 +111,11 @@ async function fixture(run) {
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.decide')) {
+            if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
+            if (window.removeDecided) { window.openLoops.highlighted = window.openLoops.highlighted.filter(item => item.loopId !== card.loopId); window.openLoops.total = window.openLoops.highlighted.length; window.openLoops.attentionTotal = window.openLoops.total; }
+            if (window.delayDecide) { window.delayDecide = false; await new Promise(resolve => { window.finishDecide = resolve; }); }
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.renovation-decision-revise')) {
@@ -181,6 +187,14 @@ async function fixture(run) {
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
       window.setPresented = (presented) => { context = { ...context, presented }; view.update(context); };
       window.setAccess = (value) => { host.connection = { ...host.connection, ...value }; for (const fn of subscribers) fn(); };
+      window.blockDashboard = () => {
+        const request = host.request;
+        host.request = async (method, params) => {
+          const response = await request(method, params);
+          if (method.endsWith('dashboard.get')) { host.request = request; await new Promise(resolve => { window.finishDashboard = resolve; }); }
+          return response;
+        };
+      };
       window.abortView = () => scope.abort();
       window.shutdown = () => { scope.abort(); view.dispose(); lifetime.abort(); deactivate(); return { pages: pages.size, subscribers: subscribers.size }; };
       window.mountRecord();
@@ -1318,8 +1332,9 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   await lanes.focus(); await lanes.press('ArrowRight');
   await page.waitForFunction(() => document.querySelector('.cc-planner-board').scrollLeft > 0);
   await page.evaluate(() => { document.querySelector('.cc-planner-board').scrollLeft = 280; document.querySelector('[data-board-lane="ready"]').scrollTop = 170; });
-  const before = await lanes.evaluate(node => node.scrollLeft);
-  await page.evaluate(() => { window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); });
+  // Read the position in the refresh task; native arrow scrolling may still
+  // animate between separate browser round trips.
+  const before = await page.evaluate(() => { const position = document.querySelector('.cc-planner-board').scrollLeft; window.openLoops.workspace.board.ready[0].title = 'Updated fictional title'; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click(); return position; });
   await page.getByText('Updated fictional title', { exact: true }).first().waitFor({ state: 'attached' });
   assert.equal(await lanes.evaluate(node => node.scrollLeft), before);
   assert.equal(await lanes.evaluate(node => node === document.activeElement), true);
@@ -1327,6 +1342,273 @@ test('Planner narrow mounted controls remain inside their pane', () => fixture(a
   assert.deepEqual(await page.locator('.cc-planner-controls input,.cc-planner-controls select').evaluateAll(nodes => nodes.map(node => node.value)), ['Fictional', 'topic-fictional-renovation', 'confirmed', 'normal']);
   assert.equal(await page.evaluate(() => window.requests.some(row => row.method.endsWith('open-loops.organize'))), false);
   if (process.env.COMMAND_CENTER_NARROW_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_NARROW_SCREENSHOT });
+}));
+
+async function mountDraftCards(page, count = 3) {
+  await page.evaluate(count => {
+    window.cards = [];
+    const highlighted = Array.from({ length: count }, (_, index) => ({ loopId: `draft-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional draft item ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: count, attentionTotal: count, highlighted, comingUpTotal: 0, waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
+    window.mountInbox();
+  }, count);
+  await page.locator('[data-open-loop-id="draft-0"]').first().waitFor();
+}
+const refreshDraftCards = async page => {
+  await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click());
+  await page.locator('[data-open-loop-id="draft-0"]').first().waitFor();
+};
+const clarification = (page, index) => page.locator(`[data-open-loop-id="draft-${index}"] details[data-open-loop-clarification]`);
+const decisionDraft = (page, index) => page.locator(`[data-open-loop-id="draft-${index}"] details[data-open-loop-decisions]`);
+
+test('Attention keeps independent exact in-mount drafts, hidden decision fields and caret without writes', () => fixture(async page => {
+  await mountDraftCards(page);
+  await clarification(page, 0).getByText('Clarify this item', { exact: true }).click();
+  await clarification(page, 0).getByLabel('What needs correcting?').fill('  Exact fictional words.  ');
+  await decisionDraft(page, 1).getByText('Defer or resolve', { exact: true }).click();
+  await decisionDraft(page, 1).getByLabel('Review time', { exact: true }).fill('2026-10-12T14:20');
+  await decisionDraft(page, 1).getByLabel('Rationale').fill('Separate fictional rationale');
+  await decisionDraft(page, 1).getByLabel('Action', { exact: false }).selectOption('correct-date');
+  await decisionDraft(page, 1).getByLabel('Calendar date only').check();
+  await decisionDraft(page, 1).getByLabel('Corrected calendar date').fill('2026-10-13');
+  const words = clarification(page, 0).getByLabel('What needs correcting?');
+  await words.focus(); await words.evaluate(node => node.setSelectionRange(3, 9, 'backward'));
+  for (let index = 0; index < 2; index++) {
+    await refreshDraftCards(page);
+    assert.equal(await words.inputValue(), '  Exact fictional words.  ');
+    assert.deepEqual(await words.evaluate(node => [node === document.activeElement, node.selectionStart, node.selectionEnd, node.selectionDirection]), [true, 3, 9, 'backward']);
+    assert.equal(await decisionDraft(page, 1).getByLabel('Rationale').inputValue(), 'Separate fictional rationale');
+    assert.equal(await decisionDraft(page, 1).getByLabel('Corrected calendar date').inputValue(), '2026-10-13');
+  }
+  await decisionDraft(page, 1).getByLabel('Action', { exact: false }).selectOption('defer');
+  assert.equal(await decisionDraft(page, 1).getByLabel('Review time', { exact: true }).inputValue(), '2026-10-12T14:20');
+  await page.evaluate(() => { window.setPresented(false); window.setPresented(true); });
+  await words.waitFor(); assert.equal(await words.inputValue(), '  Exact fictional words.  ');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention discards drafts on revision, Topic binding, scope and remount boundaries and ignores stale reads', () => fixture(async page => {
+  await mountDraftCards(page);
+  for (const index of [0, 1]) { await clarification(page, index).getByText('Clarify this item', { exact: true }).click(); await clarification(page, index).getByLabel('What needs correcting?').fill(`Fictional private draft ${index}`); }
+  await page.evaluate(() => { window.openLoops.highlighted[0].revision++; });
+  await refreshDraftCards(page);
+  assert.equal(await clarification(page, 0).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 0).getByText('This item changed.', { exact: false }).waitFor();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), 'Fictional private draft 1');
+  await clarification(page, 0).getByLabel('What needs correcting?').fill('Draft on current revision');
+  await page.evaluate(() => { window.openLoops.highlighted[0].topicId = 'another-fictional-topic'; window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }, { topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]; });
+  await refreshDraftCards(page);
+  assert.equal(await clarification(page, 0).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 0).getByText('This item changed.', { exact: false }).waitFor();
+  await page.evaluate(() => { window.blockDashboard(); [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.waitForFunction(() => typeof window.finishDashboard === 'function');
+  await page.evaluate(() => { window.setAccess({ canRead: false }); window.finishDashboard(); });
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  assert.equal(await page.locator('textarea').count(), 0);
+  await page.evaluate(() => window.setAccess({ canRead: true }));
+  await clarification(page, 1).getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), '');
+  await clarification(page, 1).getByLabel('What needs correcting?').fill('Must not cross a remount');
+  await page.evaluate(() => window.mountInbox());
+  await clarification(page, 1).getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await clarification(page, 1).getByLabel('What needs correcting?').inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention discard leaves an unknown operation immutable and retry never acquires a new revision', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoopActionMode = 'unknown'; });
+  const form = clarification(page, 0);
+  await form.getByText('Clarify this item', { exact: true }).click();
+  await form.getByLabel('What needs correcting?').fill('Original fictional submitted words');
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('The transport outcome is unknown.', { exact: true }).waitFor();
+  const original = await page.evaluate(() => window.requests.find(row => row.method.endsWith('open-loops.clarify')));
+  await form.getByRole('button', { name: 'Discard unsent draft', exact: true }).click();
+  await form.getByLabel('What needs correcting?').fill('Changed words');
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).length), 1);
+  await form.getByLabel('What needs correcting?').fill(original.params.rationale);
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).at(-1)), original);
+  await page.evaluate(() => { window.openLoops.highlighted[0].revision++; });
+  await refreshDraftCards(page);
+  await form.getByLabel('What needs correcting?').fill(original.params.rationale);
+  await form.getByRole('button', { name: 'Save clarification', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.clarify')).length), 2);
+}));
+
+for (const [index, next] of [[0, 1], [1, 2], [2, 1]]) test(`Attention removal ${index} focuses the surviving ordered neighbor`, () => fixture(async page => {
+  await mountDraftCards(page);
+  await page.evaluate(() => { window.removeDecided = true; });
+  const form = decisionDraft(page, index);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Fictional completion');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.locator(`[data-open-loop-id="draft-${index}"]`).waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => document.activeElement.closest('[data-open-loop-id]')?.dataset.openLoopId), `draft-${next}`);
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 1);
+}));
+
+test('Attention final removal focuses the empty heading while a newer toolbar choice wins pending removal', () => fixture(async page => {
+  for (const moveFocus of [false, true]) {
+    await mountDraftCards(page, 1);
+    await page.evaluate(moveFocus => { window.removeDecided = true; window.delayDecide = moveFocus; }, moveFocus);
+    const form = decisionDraft(page, 0);
+    await form.getByText('Defer or resolve', { exact: true }).click();
+    await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+    await form.getByLabel('Rationale').fill('Fictional final completion');
+    await form.getByRole('button', { name: 'Save action', exact: true }).click();
+    if (moveFocus) { await page.waitForFunction(() => typeof window.finishDecide === 'function'); await page.getByRole('button', { name: 'All Topics', exact: true }).focus(); await page.evaluate(() => window.finishDecide()); }
+    await page.locator('[data-attention-empty]').waitFor();
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), moveFocus ? 'All Topics' : 'No actionable items remain');
+  }
+}));
+
+test('Attention shares one draft across duplicate projections and clears missing or revoked bindings', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoops.stageReviews = [{ stage: { id: 'fictional-stage' }, items: [structuredClone(window.openLoops.highlighted[0])] }]; });
+  await refreshDraftCards(page);
+  const forms = clarification(page, 0);
+  assert.equal(await forms.count(), 2);
+  for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
+  await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
+  assert.equal(await forms.nth(1).getByLabel('What needs correcting?').inputValue(), 'One exact fictional draft');
+  await forms.nth(1).getByLabel('What needs correcting?').focus();
+  await refreshDraftCards(page);
+  assert.equal(await forms.nth(1).getByLabel('What needs correcting?').evaluate(node => node === document.activeElement), true);
+  await page.evaluate(() => window.setAccess({ canWrite: false }));
+  await forms.first().waitFor({ state: 'detached' });
+  await page.evaluate(() => window.setAccess({ canWrite: true }));
+  await forms.first().waitFor({ state: 'attached' });
+  for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
+  await forms.nth(1).getByRole('button', { name: 'Discard unsent draft', exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  await forms.first().getByLabel('What needs correcting?').fill('Must be removed on read loss');
+  await page.evaluate(() => { window.dashboardTopics = []; });
+  await refreshDraftCards(page);
+  for (const form of await forms.all()) assert.equal(await form.getByLabel('What needs correcting?').inputValue(), '');
+  await page.evaluate(() => { window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }]; });
+  await refreshDraftCards(page);
+  await forms.first().getByLabel('What needs correcting?').fill('Must not return after target loss');
+  await page.evaluate(() => { window.openLoops.highlighted = []; window.openLoops.stageReviews = []; window.openLoops.total = 0; window.openLoops.attentionTotal = 0; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.locator('[data-attention-empty]').waitFor();
+  await page.evaluate(() => { window.openLoops.highlighted = [{ loopId: 'draft-0', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Returned fictional item', state: 'confirmed', revision: 1, evidenceCount: 1 }]; window.openLoops.total = 1; window.openLoops.attentionTotal = 1; });
+  await refreshDraftCards(page);
+  await forms.first().getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
+}));
+
+test('Attention changing an uncertain decision choice cannot create another operation', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { window.openLoopActionMode = 'unknown'; });
+  const form = decisionDraft(page, 0);
+  await form.getByText('Defer or resolve', { exact: true }).click();
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByLabel('Rationale').fill('Original fictional decision');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.getByRole('status').getByText('The transport outcome is unknown.', { exact: true }).waitFor();
+  const original = await page.evaluate(() => window.requests.find(row => row.method.endsWith('open-loops.decide')));
+  await form.getByLabel('Action', { exact: false }).selectOption('defer');
+  await form.getByLabel('Review time', { exact: true }).fill('2026-10-15T12:00');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  await page.getByRole('status').getByText('An earlier decision has an uncertain outcome.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 1);
+  await form.getByLabel('Action', { exact: false }).selectOption('resolve');
+  await form.getByRole('button', { name: 'Save action', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).at(-1)), original);
+}));
+
+test('Attention retains suggestion corrections including hidden checkboxes and values', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { Object.assign(window.openLoops.highlighted[0], { state: 'suggested', kind: 'payment', amount: 1200, currency: 'AUD' }); });
+  await refreshDraftCards(page);
+  const form = decisionDraft(page, 0);
+  await form.getByText('Review suggestion', { exact: true }).click();
+  await form.getByLabel('Correct extracted fields', { exact: true }).check();
+  await form.getByLabel('Corrected amount', { exact: true }).fill('24.50');
+  await form.getByLabel('Corrected ISO code', { exact: true }).fill('USD');
+  await form.getByLabel('Correct due date', { exact: true }).check();
+  await form.getByLabel('Calendar date only', { exact: true }).check();
+  await form.getByLabel('Corrected calendar date', { exact: true }).fill('2026-10-14');
+  await form.getByLabel('Rationale', { exact: true }).fill('Fictional correction rationale');
+  await form.getByLabel('Action', { exact: false }).selectOption('dismiss');
+  await refreshDraftCards(page);
+  await form.getByLabel('Action', { exact: false }).selectOption('confirm');
+  assert.equal(await form.getByLabel('Correct extracted fields', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected amount', { exact: true }).inputValue(), '24.50');
+  assert.equal(await form.getByLabel('Corrected ISO code', { exact: true }).inputValue(), 'USD');
+  assert.equal(await form.getByLabel('Correct due date', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Calendar date only', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected calendar date', { exact: true }).inputValue(), '2026-10-14');
+  assert.equal(await form.getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional correction rationale');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 0);
+}));
+
+test('Attention re-verifies inventory-only drafts on refresh and clears unavailable or stale inventory', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.allOpenLoops = Array.from({ length: 21 }, (_, index) => ({ loopId: `inventory-${index}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Fictional inventory item ${index}`, state: 'confirmed', revision: 1, evidenceCount: 1 }));
+    window.openLoops = { total: 21, attentionTotal: 0, highlighted: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  const words = index => page.locator(`details[data-open-loop-inventory] [data-open-loop-id="inventory-${index}"] details[data-open-loop-clarification]`).getByLabel('What needs correcting?');
+  for (const index of [0, 20]) {
+    await page.locator(`[data-open-loop-id="inventory-${index}"]`).getByText('Clarify this item', { exact: true }).click();
+    await words(index).fill(`Private fictional inventory draft ${index}`);
+  }
+  await words(20).focus(); await words(20).evaluate(node => node.setSelectionRange(4, 9, 'backward'));
+  const refresh = async () => {
+    await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click());
+    await page.locator('details[data-open-loop-inventory] article').nth(20).waitFor();
+  };
+  await refresh();
+  assert.equal(await words(0).inputValue(), 'Private fictional inventory draft 0');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  assert.deepEqual(await words(20).evaluate(node => [node === document.activeElement, node.selectionStart, node.selectionEnd, node.selectionDirection]), [true, 4, 9, 'backward']);
+  await page.evaluate(() => window.allOpenLoops[0].revision++);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  assert.equal(await words(20).inputValue(), 'Private fictional inventory draft 20');
+  await words(0).fill('Cannot cross contradictory projections');
+  await page.evaluate(() => window.openLoops.highlighted = [{ ...window.allOpenLoops[0], revision: 99 }]);
+  await refresh(); assert.equal(await words(0).inputValue(), '');
+  await page.evaluate(() => { window.openLoops.highlighted = []; window.allOpenLoops[20].topicId = 'another-fictional-topic'; window.dashboardTopics = [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }, { topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]; });
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Cannot cross revoked Topic');
+  await page.evaluate(() => window.dashboardTopics = []);
+  await refresh(); assert.equal(await words(20).inputValue(), '');
+  await page.evaluate(() => window.dashboardTopics = [{ topicId: 'another-fictional-topic', name: 'Another fictional Topic' }]);
+  await refresh(); await words(20).fill('Cleared when inventory cannot be verified');
+  await page.evaluate(() => window.inventoryReadMode = 'unavailable');
+  await page.getByRole('button', { name: 'Refresh Dashboard' }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).waitFor();
+  assert.equal(await page.locator('details[data-open-loop-inventory] article').count(), 0);
+  await page.getByText('Unsent inventory drafts were cleared', { exact: false }).waitFor();
+  await page.evaluate(() => window.inventoryReadMode = 'success');
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  await words(20).fill('Must not return after stale read');
+  await page.evaluate(() => { window.delayInventory = true; [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Dashboard').click(); });
+  await page.waitForFunction(() => typeof window.finishInventory === 'function');
+  await page.evaluate(() => { window.setAccess({ canRead: false }); window.finishInventory(); });
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  await page.evaluate(() => window.setAccess({ canRead: true }));
+  await page.getByText('Review all open loops (21)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops', exact: true }).click();
+  await page.getByRole('button', { name: 'Load more open loops', exact: true }).click();
+  await page.locator('[data-open-loop-id="inventory-20"]').getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await words(20).inputValue(), '');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => /open-loops\.(clarify|decide)$/.test(row.method)).length), 0);
 }));
 test('Planner Topic names stay current across keyboard selection and read access loss', () => fixture(async page => {
   await page.evaluate(() => {
