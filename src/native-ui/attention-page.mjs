@@ -1295,4 +1295,3 @@ const openLoopsArray = value => Array.isArray(value) ? value : [];
 export function mountPlannerPage(container, context, operations = new Map()) {
   return mountAttentionPage(container, context, operations, 'planner');
 }
-

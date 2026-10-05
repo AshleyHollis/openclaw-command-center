@@ -1358,4 +1358,3 @@ test('Planner Topic names stay current across keyboard selection and read access
   assert.equal(await page.getByText('Fictional renamed beta', { exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.some(row => /open-loops\.(organize|clarify|decide)$/.test(row.method))), false);
 }));
-
