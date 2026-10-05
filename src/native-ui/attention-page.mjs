@@ -9,6 +9,11 @@ const unwrap = (response) => response?.result ?? response;
 export function mountAttentionPage(container, context, operations = new Map(), pageMode = 'dashboard') {
   const host = context.host;
   const document = container.ownerDocument;
+  // Native host mount roots use display:contents and cannot be size containers.
+  // Own the page box so our existing container queries see the actual pane.
+  const mountRoot = container;
+  container = document.createElement('div');
+  mountRoot.replaceChildren(container);
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let presented = context.presented;
@@ -91,14 +96,16 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     transientUiState.scrollTop = container.scrollTop;
     transientUiState.windowScrollY = document.defaultView?.scrollY ?? 0;
     transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
+    transientUiState.boardScrollLeft = content.querySelector('.cc-planner-board')?.scrollLeft ?? 0;
     transientUiState.focusKey = focusKey(document.activeElement);
   };
   const restoreTransientUiState = () => {
     for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
     for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
+    const board = content.querySelector('.cc-planner-board'); if (board) board.scrollLeft = transientUiState.boardScrollLeft ?? 0;
     container.scrollTop = transientUiState.scrollTop;
     document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
-    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
+    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href],[tabindex]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
   };
 
   const formatInstant = value => {
@@ -844,7 +851,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const agendaView = element('button', 'Agenda'); agendaView.type = 'button'; agendaView.setAttribute('aria-pressed', 'false');
         views.append(boardView, listView, agendaView); controls.append(searchLabel, topicLabel, stateLabel, priorityLabel, views); primary.append(controls);
         const board = element('details'); board.open = true; board.dataset.topicBoard = 'true'; board.append(element('summary', 'Kanban board'));
-        const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.setAttribute('aria-label', 'Kanban lanes');
+        const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.dataset.focusIdentity = 'planner-lanes'; lanes.setAttribute('role', 'region'); lanes.setAttribute('aria-label', 'Kanban lanes — scroll horizontally for more lanes'); lanes.tabIndex = 0;
+        board.append(element('p', 'Scroll horizontally to reach all five lanes. Focus the lanes and use the arrow keys.'));
         for (const [key, label] of [['ready', 'Ready'], ['doing', 'Doing'], ['waiting', 'Waiting'], ['done', 'Done'], ['suggestions', 'Suggestions']]) {
           const cards = workspace.board?.[key] ?? [];
           const lane = element('section'); lane.className = 'cc-planner-lane'; lane.dataset.boardLane = key; lane.append(element('h3', `${label} (${cards.length})`));
@@ -1261,7 +1269,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let access = `${readable()}:${host.connection.canWrite}`;
   const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; void load(); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; container.classList.remove('cc-command-center-page'); container.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
