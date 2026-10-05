@@ -26,6 +26,7 @@ import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first
 import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster, rememberNativeScaleNotePage } from './first-live-native-scale.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
+import { seedAttentionLoops, attentionTransportProbe, exerciseNativeAttentionStates } from './first-live-native-attention.mjs';
 
 // Bounded fictional fixture bytes. These enter only the isolated world and
 // let the native Files replacement exercise its real document owner without
@@ -205,14 +206,14 @@ function isCommandCenterMaintenanceJob(job, sessionKey) {
 
 // The receipt wrapper and future retained variants share this actual native
 // journey. Host admission, exact source proofs and finalization stay mandatory.
-export async function seedNativeExistingTopic({ world, host, signal, catalog = false }) {
+export async function seedNativeExistingTopic({ world, host, signal, catalog = false, fixtureIdentity }) {
   const stateDir = path.join(world.root, '.openclaw');
   await waitForConsecutiveReadiness(async () => isCommandCenterMetadataReady(resolveCommandCenterDatabasePath(stateDir)), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-  const topicId = '44444444-4444-4444-8444-444444444444';
-  const name = 'Fictional Native Journey';
+  const topicId = fixtureIdentity?.topicId ?? '44444444-4444-4444-8444-444444444444';
+  const name = fixtureIdentity?.name ?? 'Fictional Native Journey';
   const paraCategory = 'area';
-  const folderReferenceId = 'fictional-native-journey-folder';
-  const sessionReferenceId = 'fictional-native-journey-primary';
+  const folderReferenceId = fixtureIdentity ? `fictional-native-folder:${topicId}` : 'fictional-native-journey-folder';
+  const sessionReferenceId = fixtureIdentity ? `fictional-native-primary:${topicId}` : 'fictional-native-journey-primary';
   const notePath = 'Overview.md';
   const noteText = '# Fictional Native Journey\nExisting authoritative Note — read only.\n';
   const sessionKey = `agent:main:command-center:acceptance-native:${topicId}`;
@@ -684,15 +685,19 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
 // diagnostic's deadline. The dispatcher owns its total row budget; stage and
 // resource deadlines remain bounded here. Runtime duration is not yet measured.
 export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, signal, onFinalization }) {
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true });
+  if (process.env.COMMAND_CENTER_NATIVE_ATTENTION_JOURNEY === '1') assert.equal(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, 'desktop-keyboard-journey', 'Attention evidence cannot substitute for full release keyboard qualification');
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true,
+    attention: process.env.COMMAND_CENTER_NATIVE_ATTENTION_JOURNEY === '1' });
 }
 
-export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
+export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, attention = false, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
   const progressStarted = performance.now();
   const progress = stage => { onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
+  assert.equal(attention && !keyboard, false, 'Attention qualification uses the existing bounded native keyboard owner');
+  const attentionProbe = attention ? attentionTransportProbe() : undefined;
   let fictionalModel;
   try {
     return await withIsolatedWorld(async (world) => {
@@ -778,6 +783,15 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const fixture = keyboard || nativeFilesWorkspace
         ? await seedNativeExistingTopic({ world, host, signal, catalog: nativeFilesWorkspace })
         : bootstrapped.fixture;
+      let attentionFixtures;
+      if (attention) {
+        const peer = await seedNativeExistingTopic({ world, host, signal, fixtureIdentity: { topicId: '55555555-5555-4555-8555-555555555555', name: 'Fictional Attention Peer' } });
+        const metadata = openCommandCenterMetadataService({ stateDir: path.join(world.root, '.openclaw') });
+        try {
+          metadata.setTopicName({ topicId: peer.topicId, name: fixture.name, expectedRevision: metadata.getTopic(peer.topicId).revision });
+          attentionFixtures = { peer, loops: await seedAttentionLoops(metadata, fixture.topicId, peer.topicId) };
+        } finally { metadata.close(); }
+      }
       const resourceFixture = nativeFilesWorkspace ? await seedNativeResourceTopic({ world, signal }) : null;
       const unassignedFixture = nativeFilesWorkspace ? await seedNativeUnassignedConversation({ world, signal }) : null;
       let importedHistory;
@@ -816,6 +830,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
+          attentionProbe?.request(message);
           if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
             requests.set(message.id, { method: message.method, params: message.params });
             if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native', 'command-center.v1.notes.read'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
@@ -825,8 +840,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           }
         });
         server.onMessage((payload) => {
+          let message; try { message = JSON.parse(String(payload)); } catch { socket.send(payload); return; }
+          if (attentionProbe && !attentionProbe.response(message, () => socket.send(payload))) return;
           socket.send(payload);
-          let message; try { message = JSON.parse(String(payload)); } catch { return; }
           if (message?.type !== 'res') return;
           if (browserChatSend?.id === message.id) browserChatAcknowledgement = message;
           const request = requests.get(message.id);
@@ -1377,6 +1393,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       result = { existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true,
         sessionKey: fixture.sessionKey, sessionId: fixture.sessionId, referenceId: fixture.sessionReferenceId };
+      } else if (attention) {
+        result = await exerciseNativeAttentionStates({ page, world, fixture, ...attentionFixtures, probe: attentionProbe, signal });
       } else if (keyboard) {
         // The host consumes the fragment credential during bootstrap. A fresh
         // Playwright page owns a fresh browser context, so reconstruct the
