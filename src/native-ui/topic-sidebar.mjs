@@ -212,10 +212,16 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
     const opened = await navigation.open({ topicId: entry.topic.topicId, referenceId: conversation.referenceId, expectedSessionId: conversation.sessionId });
     lastConversations.set(entry.topic.topicId, opened);
   }
-  async function openTopic(entry) {
+  function preferredConversation(entry) {
     const currentId = selectedSessionId();
-    const current = entry.conversations.find(row => row.sessionId === currentId);
-    const opened = await navigation.openPreferred(entry.topic.topicId, current ?? lastConversations.get(entry.topic.topicId) ?? null);
+    return entry.conversations.find(row => row.sessionId === currentId) ?? lastConversations.get(entry.topic.topicId) ?? null;
+  }
+  async function openTopic(entry) {
+    const opened = await navigation.openPreferred(entry.topic.topicId, preferredConversation(entry));
+    lastConversations.set(entry.topic.topicId, opened);
+  }
+  async function openTopicFiles(entry) {
+    const opened = await navigation.openPreferredFiles(entry.topic.topicId, preferredConversation(entry));
     lastConversations.set(entry.topic.topicId, opened);
   }
   const collapseAllTopics = () => { for (const category of ['project', 'area', 'resource', 'archive']) collapsedCategories.add(category); expandedTopics.clear(); renderedSnapshot = ''; render({ preserveDomExpansion: false }); };
@@ -264,7 +270,7 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
           if (selectedSessionIdValue === conversation.sessionId) control.setAttribute('aria-current', 'page');
           control.title = label;
         }
-        const openFiles = button('Open Topic Files', () => void navigation.openPrimaryFiles(entry.topic.topicId).catch(error => { if (!signal.aborted) status.textContent = host.redact(error.message); })); openFiles.setAttribute('data-topic-control-key', `files:${entry.topic.topicId}`);
+        const openFiles = button('Open Topic Files', () => void openTopicFiles(entry).catch(publishNavigationError)); openFiles.setAttribute('data-topic-control-key', `files:${entry.topic.topicId}`);
         openFiles.textContent = 'Files'; openFiles.setAttribute('aria-label', 'Open Topic Files');
         const create = button('New Conversation', () => host.navigation.openPage({ id: 'topic', params: { topicId: entry.topic.topicId } })); create.setAttribute('aria-label', 'New Topic Conversation');
         const actions = document.createElement('div'); actions.className = 'topic-tools'; actions.append(openFiles, create); children.append(conversations, actions);

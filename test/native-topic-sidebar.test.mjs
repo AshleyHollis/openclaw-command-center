@@ -24,7 +24,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
       const host = {
         signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: text => text,
         sessions: { openChat: value => { window.opened.push(value); if (window.remountOnOpen) window.remountSidebar(value.sessionKey); },
-          openFiles: value => { window.filesOpened = value; window.opened.push(value); if (window.remountOnOpen) window.remountSidebar(value.sessionKey); } },
+          openFiles: value => { window.filesOpened = value; window.fileRequests = [...(window.fileRequests ?? []), value]; } },
         ui: {
           registerReplacement: spec => { if (spec.id === 'topic-sidebar') window.mountSidebar = spec.mount; return () => {}; },
           selectReplacement() {}, registerPage: () => () => {}, registerNavigation: () => () => {}
@@ -39,7 +39,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
             return { result: { histories: [{ topicId: 'topic-project', historyId: 'a'.repeat(64), title: 'Imported history', readOnly: true }] } };
           }
           if (method.endsWith('sessions.topic-context')) { if (window.failedMembership === params.sessionKey) throw new Error('membership unavailable'); return { result: { schemaVersion: 1, status: 'unbound', sessionKey: params.sessionKey } }; }
-          if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:primary' } };
+          if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: params.referenceId === 'linked-ref' ? 'agent:main:linked' : 'agent:main:primary' } };
           if (method.endsWith('sessions.assign-topic')) return { result: { schemaVersion: 1, status: 'applied', logicalOperationId: params.sessionKey === 'agent:main:inbox' ? 'wrong-operation' : params.logicalOperationId, topicId: 'topic-project', referenceId: `conversation-assignment:${params.logicalOperationId}`, sessionKey: params.sessionKey, sessionId: params.expectedSessionId, topicRevision: 5 } };
           throw new Error(`unexpected ${method}`);
         }
@@ -184,6 +184,16 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
     await page.evaluate(() => { window.remountSidebar('agent:main:other'); document.querySelector('input').focus(); });
     await primary.waitFor();
     assert.equal(await page.getByRole('textbox', { name: 'Outside composer' }).evaluate(el => el === document.activeElement), true);
+    await page.getByRole('button', { name: 'Linked Conversation', exact: true }).click();
+    await page.waitForFunction(() => window.opened.at(-1)?.sessionKey === 'agent:main:linked');
+    await page.evaluate(() => { window.remountSidebar('agent:main:other'); document.querySelector('input').value = 'Fictional unsent draft'; });
+    await primary.waitFor();
+    const chatsBeforeFiles = await page.evaluate(() => window.opened.length);
+    await page.getByRole('button', { name: 'Open Topic Files', exact: true }).click();
+    await page.waitForFunction(() => window.fileRequests?.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.filesOpened), { sessionKey: 'agent:main:linked', agentId: 'main' }, 'Files reuses the remembered verified linked Conversation, not Primary');
+    assert.equal(await page.evaluate(() => window.opened.length), chatsBeforeFiles, 'Files does not select Chat or remount its transcript');
+    assert.equal(await page.getByRole('textbox', { name: 'Outside composer' }).inputValue(), 'Fictional unsent draft');
     await page.evaluate(() => window.reactivateSidebar());
     assert.equal(await projects.getAttribute('aria-expanded'), 'false', 'a new plugin activation starts from the collapsed PARA defaults');
     assert.equal(await primary.isVisible(), false);

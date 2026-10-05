@@ -6,6 +6,10 @@
   "activation": {
     "onStartup": true
   },
+  "backupResources": [
+    { "disposition": "include", "scope": "state", "relativePath": "plugins/command-center/metadata.sqlite" },
+    { "disposition": "include", "scope": "state", "relativePath": "plugins/command-center/recovery/migrations" }
+  ],
   "cliCommands": [
     { "name": "command-center", "description": "Command Center existing-data reconciliation", "hasSubcommands": true }
   ],
