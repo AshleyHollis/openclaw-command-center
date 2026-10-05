@@ -1433,6 +1433,16 @@ test('Attention shares one draft across duplicate projections and clears missing
   for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
   await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
   assert.equal(await forms.nth(1).getByLabel('What needs correcting?').inputValue(), 'One exact fictional draft');
+  await forms.nth(1).getByLabel('What needs correcting?').focus();
+  await refreshDraftCards(page);
+  assert.equal(await forms.nth(1).getByLabel('What needs correcting?').evaluate(node => node === document.activeElement), true);
+  await page.evaluate(() => window.setAccess({ canWrite: false }));
+  await forms.first().waitFor({ state: 'detached' });
+  await page.evaluate(() => window.setAccess({ canWrite: true }));
+  await forms.first().waitFor({ state: 'attached' });
+  for (const form of await forms.all()) await form.getByText('Clarify this item', { exact: true }).click();
+  assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
+  await forms.first().getByLabel('What needs correcting?').fill('One exact fictional draft');
   await forms.nth(1).getByRole('button', { name: 'Discard unsent draft', exact: true }).click();
   assert.equal(await forms.first().getByLabel('What needs correcting?').inputValue(), '');
   await forms.first().getByLabel('What needs correcting?').fill('Must be removed on read loss');
@@ -1469,4 +1479,30 @@ test('Attention changing an uncertain decision choice cannot create another oper
   await form.getByLabel('Action', { exact: false }).selectOption('resolve');
   await form.getByRole('button', { name: 'Save action', exact: true }).click();
   assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).at(-1)), original);
+}));
+
+test('Attention retains suggestion corrections including hidden checkboxes and values', () => fixture(async page => {
+  await mountDraftCards(page, 1);
+  await page.evaluate(() => { Object.assign(window.openLoops.highlighted[0], { state: 'suggested', kind: 'payment', amount: 1200, currency: 'AUD' }); });
+  await refreshDraftCards(page);
+  const form = decisionDraft(page, 0);
+  await form.getByText('Review suggestion', { exact: true }).click();
+  await form.getByLabel('Correct extracted fields', { exact: true }).check();
+  await form.getByLabel('Corrected amount', { exact: true }).fill('24.50');
+  await form.getByLabel('Corrected ISO code', { exact: true }).fill('USD');
+  await form.getByLabel('Correct due date', { exact: true }).check();
+  await form.getByLabel('Calendar date only', { exact: true }).check();
+  await form.getByLabel('Corrected calendar date', { exact: true }).fill('2026-10-14');
+  await form.getByLabel('Rationale', { exact: true }).fill('Fictional correction rationale');
+  await form.getByLabel('Action', { exact: false }).selectOption('dismiss');
+  await refreshDraftCards(page);
+  await form.getByLabel('Action', { exact: false }).selectOption('confirm');
+  assert.equal(await form.getByLabel('Correct extracted fields', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected amount', { exact: true }).inputValue(), '24.50');
+  assert.equal(await form.getByLabel('Corrected ISO code', { exact: true }).inputValue(), 'USD');
+  assert.equal(await form.getByLabel('Correct due date', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Calendar date only', { exact: true }).isChecked(), true);
+  assert.equal(await form.getByLabel('Corrected calendar date', { exact: true }).inputValue(), '2026-10-14');
+  assert.equal(await form.getByLabel('Rationale', { exact: true }).inputValue(), 'Fictional correction rationale');
+  assert.equal(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('open-loops.decide')).length), 0);
 }));

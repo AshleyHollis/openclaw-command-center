@@ -173,7 +173,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const defaults = Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.type === 'checkbox' ? node.checked : node.value]));
     const apply = values => { for (const [name, node] of Object.entries(fields)) { if (node.type === 'checkbox') node.checked = values[name]; else node.value = values[name]; } update(); };
     form.dataset.draftKey = key;
-    for (const [name, node] of Object.entries(fields)) node.dataset.focusIdentity = `${key}:${name}`;
+    for (const [name, node] of Object.entries(fields)) node.dataset.focusIdentity = `${key}:${form.dataset.focusProjection}:${name}`;
     const saved = drafts.get(key);
     if (saved && saved.topicId === draftBinding(card) && draftAuthorized(card)) apply(saved.values);
     let notice;
@@ -499,7 +499,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!writable() || ['resolved', 'cancelled'].includes(card.state)) return;
     const disclosure = element('details'); disclosure.dataset.openLoopDecisions = 'true';
     disclosure.append(element('summary', card.state === 'suggested' ? 'Review suggestion' : 'Defer or resolve'));
-    const form = element('form');
+    const form = element('form'); form.dataset.focusProjection = row.dataset.openLoopProjection ?? 'inventory';
     const decisionLabel = element('label', 'Action '); const decision = element('select');
     const choices = card.state === 'suggested'
       ? [['confirm', 'Confirm this obligation'], ['dismiss', 'Dismiss this suggestion']]
@@ -561,7 +561,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!writable()) return;
     const disclosure = element('details'); disclosure.dataset.openLoopClarification = 'true';
     disclosure.append(element('summary', 'Clarify this item'));
-    const form = element('form');
+    const form = element('form'); form.dataset.focusProjection = row.dataset.openLoopProjection ?? 'inventory';
     form.append(element('p', 'Save your exact words for this item. Existing accepted details and reminders stay in place until you make a specific correction. This does not mark a payment or task complete or create a rule for other items.'));
     const label = element('label', 'What needs correcting? ');
     const words = element('textarea'); words.required = true; words.maxLength = 1000; label.append(words);
@@ -989,7 +989,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else destination.append(element('h3', label));
       for (const card of cards) {
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
-        const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.loopKind = card.kind ?? 'general';
+        const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.openLoopProjection = label; row.dataset.loopKind = card.kind ?? 'general';
         row.append(element('h4', card.title));
         const topicName = targets.topics?.find(topic => topic.topicId === card.topicId)?.name ?? card.topicId;
         const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
