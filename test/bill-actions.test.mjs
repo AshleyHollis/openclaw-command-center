@@ -6,8 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
-import { recordIntakeSourcePlan, recordIntakeOutcome } from '../src/open-loops/intake-accounting.mjs';
+import { createCommitmentCaptureService, planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
+import { loadIntakeSourceAccount, recordIntakeSourcePlan, recordIntakeOutcome } from '../src/open-loops/intake-accounting.mjs';
+import { createProducerIntakeAdapter } from '../src/open-loops/producer-intake.mjs';
+import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { createBillActionAdapter } from '../src/open-loops/bill-actions.mjs';
 
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -141,4 +143,79 @@ test('source revision changes during read cannot publish the earlier authorized 
   const f = fixture(t); await admit(f); let changed = false;
   f.beforeRead(() => { if (!changed) { changed = true; f.reminder({ version: 'v2' }); } });
   await assert.rejects(f.adapter().read({ loopId: f.loopId }), error => error.code === 'conflict');
+});
+
+test('separately admitted explicit BILL-102 gets a distinct Backlog binding while BILL-101 stays Done and quiet', async t => {
+  const f = fixture(t);
+  const first = await admit(f);
+  const handled = await f.adapter().handle({ schemaVersion: 1, loopId: f.loopId, logicalOperationId: id(201), expectedUpdatedAt: first.native.updatedAt });
+  assert.equal(handled.outcome, 'handled-observed');
+  const firstDone = structuredClone(f.card);
+  const observedAt = '2026-10-06T00:00:00.000Z';
+  const evidence = { topicId: 'fictional-home', sourceReferenceId: 'fictional-note-102', sourcePath: 'Bills/102.md', sourceReferenceVersion: 'note-102-v1' };
+  f.metadata.createSourceReference({ version: 1, referenceId: evidence.sourceReferenceId, topicId: evidence.topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Bills/102.md', observedRevision: evidence.sourceReferenceVersion });
+  const obligation = { obligationId: 'BILL-102', title: 'Review separately requested fictional BILL-102', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit', correlationNamespace: 'fictional-mailbox', correlationId: 'BILL-102' };
+  const capture = createCommitmentCaptureService({ metadata: f.metadata, sourceService: { notesRead: async request => {
+    assert.equal(request.referenceId, evidence.sourceReferenceId);
+    assert.equal(request.observedRevision, evidence.sourceReferenceVersion);
+    return { revision: evidence.sourceReferenceVersion };
+  } } });
+  const producer = createProducerIntakeAdapter({
+    processorVersion: 'fictional-v1', now: () => observedAt,
+    extract: async () => assert.fail('The durable accepted extraction must not be re-extracted.'),
+    loadIntakeSourceAccount: input => loadIntakeSourceAccount(f.metadata, input),
+    resolveTopic: async () => ({ topicId: evidence.topicId, evidence }),
+    saveSourceNote: async () => assert.fail('The exact retained Note already exists.'),
+    captureSourceCommitment: input => capture.capture({ schemaVersion: 1, ...input, logicalOperationId: id(202), occurredAt: observedAt, observedAt }),
+    captureChatCommitment: async () => assert.fail('This accepted family is email only.'),
+    recordIntakeSourcePlan: input => recordIntakeSourcePlan(f.metadata, { schemaVersion: 1, ...input }),
+    recordIntakeOutcome: input => recordIntakeOutcome(f.metadata, { schemaVersion: 1, ...input }),
+    recordIntakeReceipt: input => recordIntakeReceipt(f.metadata, { schemaVersion: 1, ...input })
+  });
+  const source = { sourceKind: 'email', sourceExternalId: 'namespaced:fictional-mail-102', sourceVersion: 'v1' };
+  const record = { schemaVersion: 1, ...source, checkpoint: 'fictional-page-102', existingEvidence: evidence, acceptedExtraction: { schemaVersion: 1, proposedTopic: 'Fictional home', notePath: evidence.sourcePath, knowledgeMarkdown: '', obligations: [obligation] } };
+  const processed = await producer.process({ runId: 'fictional-bill-102', records: [record], nextExpectedAt: '2026-10-07T00:00:00.000Z' });
+  assert.equal(processed.actionableCount, 1);
+  const durable = loadIntakeSourceAccount(f.metadata, source);
+  const accepted = durable.account.outcomes.find(outcome => outcome.outcomeId === 'BILL-102');
+  assert.equal(accepted.status, 'applied'); assert.equal(accepted.kind, 'obligation');
+  assert.notEqual(accepted.loopId, f.loopId);
+  const nativeCards = new Map([[firstDone.id, firstDone]]);
+  const nativeCalls = [];
+  const adapter = () => createBillActionAdapter({ metadata: f.metadata, now: () => observedAt,
+    authorize: () => ({ principalId: 'fictional-operator' }),
+    readEvidence: async ({ loop, observation }) => {
+      const facts = observation.facts;
+      assert.equal(f.metadata.getSourceReference(facts.sourceReferenceId).observedRevision, facts.sourceReferenceVersion);
+      return { available: true, topicId: loop.topicId, source: { kind: 'note', topicId: loop.topicId, referenceId: facts.sourceReferenceId, path: facts.sourcePath, revision: facts.sourceReferenceVersion } };
+    },
+    nativeRequest: async (method, params, options) => {
+      nativeCalls.push({ method, params: structuredClone(params) }); options?.assertCurrent();
+      if (method === 'workboard.cards.list') return { cards: [...nativeCards.values()] };
+      if (method !== 'workboard.cards.create') assert.fail('Admitting BILL-102 must never change BILL-101 or schedule execution.');
+      assert.equal(params.status, 'todo');
+      for (const field of ['scheduledAt', 'agentId', 'sessionKey', 'runId', 'execution']) assert.equal(params[field], undefined);
+      let card = [...nativeCards.values()].find(item => item.metadata.automation.tenant === params.tenant && item.metadata.automation.boardId === params.boardId && item.metadata.automation.idempotencyKey === params.idempotencyKey);
+      if (!card) {
+        card = { id: 'fictional-card-102', title: params.title, status: 'todo', updatedAt: 200, metadata: { automation: { tenant: params.tenant, boardId: params.boardId, idempotencyKey: params.idempotencyKey } } };
+        nativeCards.set(card.id, card);
+      }
+      return { card };
+    }
+  });
+  const admission = { schemaVersion: 1, loopId: accepted.loopId, tenantId: 'fictional-tenant', boardId: 'fictional-board', logicalOperationId: id(203) };
+  const second = await adapter().admit(admission);
+  assert.notEqual(second.binding.cardId, first.binding.cardId);
+  assert.notEqual(second.binding.idempotencyKey, first.binding.idempotencyKey);
+  assert.equal(second.native.status, 'todo'); assert.equal(second.eligibility.eligible, true);
+  assert.equal(second.sourceIdentity.outcomeId, 'BILL-102');
+  await adapter().admit(admission);
+  f.reopen();
+  const old = await adapter().read({ loopId: f.loopId });
+  assert.equal(old.outcome, 'handled-observed'); assert.equal(old.native.status, 'done'); assert.equal(old.eligibility.eligible, false);
+  assert.deepEqual(nativeCards.get(firstDone.id), firstDone);
+  assert.equal(f.metadata.listBillActionBindings().length, 2); assert.equal(nativeCards.size, 2);
+  assert.equal(nativeCalls.filter(call => call.method === 'workboard.cards.create').length, 1);
+  assert.equal(f.metadata.getOpenLoop(f.loopId).paymentState, 'unpaid');
+  assert.equal(f.metadata.getOpenLoop(accepted.loopId).paymentState, 'unpaid');
 });
