@@ -192,7 +192,8 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
       milestones.push('read-only-refusal-and-immutable-Later');
 
       if (process.env.COMMAND_CENTER_ATTENTION_BROWSER !== '0') {
-        browser = await launchManagedBrowser({ headless: true, timeout: 60_000 });
+        browser = await launchManagedBrowser({ headless: true, timeout: 60_000,
+          ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
         const page = await browser.browser.newPage({ viewport: { width: 1366, height: 768 } });
         await configureEvidencePage(page, new TrafficGuard(), evidence);
         const attentionUrl = controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential });
