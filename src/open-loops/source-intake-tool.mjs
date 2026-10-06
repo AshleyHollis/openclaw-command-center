@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createCommitmentCaptureService } from './commitment-capture.mjs';
+import { createCommitmentCaptureService, retainCommitmentCaptureTimestamps } from './commitment-capture.mjs';
 import { findIntakeContinuation, recordIntakeReceipt } from './intake-receipt.mjs';
 import { loadIntakeSourceAccount, recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
@@ -132,7 +132,7 @@ export function sourceCommitmentCaptureToolFactory({ getOwners } = {}) {
       if (!sourceService || !metadata) throw sourceError('capability-unavailable', 'Source capture ownership is not ready.');
       const capture = createCommitmentCaptureService({ metadata, sourceService });
       const observedAt = new Date().toISOString();
-      const result = await capture.capture({ schemaVersion: 1, logicalOperationId: sourceCaptureOperationId(params), ...params, occurredAt: observedAt, observedAt, historicalBaseline: false });
+      const result = await capture.capture(retainCommitmentCaptureTimestamps(metadata, { schemaVersion: 1, logicalOperationId: sourceCaptureOperationId(params), ...params, occurredAt: observedAt, observedAt, historicalBaseline: false }));
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, loopId: result.loop?.loopId, state: result.loop?.state }) }], details: result });
     }
   });
