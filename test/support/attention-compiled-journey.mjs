@@ -18,6 +18,7 @@ import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs
 import { loadIntakeSourceAccount } from '../../src/open-loops/intake-accounting.mjs';
 import { producerSourceExternalId } from '../../src/open-loops/intake-retry.mjs';
 import { producerIntakePlanDigest } from '../../src/open-loops/producer-intake-plan.mjs';
+import { captureAttentionAdmissionFailure, persistAttentionAdmissionFailure } from './attention-admission-failure.mjs';
 import { assertFastHostAdmission, assertCandidatePluginPermissions } from './isolated-acceptance-preflight.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
 import { readAttentionStartupReadiness, readAttentionControlUiBuildId } from './attention-startup-readiness.mjs';
@@ -60,7 +61,7 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
   const candidateRoot = await verifyPluginArtifact({ archivePath, expectedReceipt: packageReceipt,
     destinationDirectory: path.join(validationRoot, 'candidate') });
   await assertCandidatePluginPermissions(candidateRoot);
-  const fixtureFiles = await Promise.all(['attention-compiled-pair.test.mjs', 'support/attention-compiled-journey.mjs', 'support/attention-startup-readiness.mjs'].map(async name => ({
+  const fixtureFiles = await Promise.all(['attention-compiled-pair.test.mjs', 'support/attention-compiled-journey.mjs', 'support/attention-startup-readiness.mjs', 'support/attention-admission-failure.mjs'].map(async name => ({
     path: `test/${name}`, sha256: createHash('sha256').update(await readFile(new URL(`../${name}`, import.meta.url))).digest('hex')
   })));
   const acceptedPlanDigests = [];
@@ -72,7 +73,7 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
     config.plugins.entries.workboard = { enabled: true };
     config.agents.defaults.userTimezone = 'Australia/Brisbane';
     await writeFile(world.manifest.configPath, `${JSON.stringify(config)}\n`);
-    let host, browser, controlUiBuildId;
+    let host, browser, controlUiBuildId, admissionFailureObservation;
     const deviceIdentity = createGatewayDeviceIdentity();
     const rpc = async (method, params = {}, scopes = ['operator.read', 'operator.write', 'operator.admin']) => {
       assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim(), 'Attention RPC requires the current host-issued Control UI build identity.');
@@ -150,7 +151,23 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
       await cli(initialPlan);
       const firstAccepted = inspectAccepted('fictional-message-100', 'v1', 'BILL-100');
       const firstIntent = { schemaVersion: 1, loopId: firstAccepted.loop.loopId, logicalOperationId: randomUUID(), tenantId: 'fictional-attention', boardId: 'default' };
-      let first = await rpc('command-center.v1.bill-actions.admit', firstIntent);
+      let first;
+      try { first = await rpc('command-center.v1.bill-actions.admit', firstIntent); }
+      catch (failure) {
+        try {
+          admissionFailureObservation = await captureAttentionAdmissionFailure({
+            readBinding() {
+              const metadata = openCommandCenterMetadataService({ stateDir: path.join(world.root, '.openclaw'), readOnly: true });
+              try { return metadata.getBillActionBinding(firstAccepted.loop.loopId); }
+              finally { metadata.close(); }
+            },
+            readNativeCards: async () => (await rpc('workboard.cards.list', { boardId: firstIntent.boardId }, ['operator.read'])).cards,
+            diagnostics: host.diagnostics
+          });
+          console.error(`Attention admission failure observation: ${JSON.stringify(admissionFailureObservation)}`);
+        } catch { console.error('Attention admission failure observation unavailable.'); }
+        throw failure;
+      }
       const duplicate = await rpc('command-center.v1.bill-actions.admit', firstIntent);
       assert.equal(duplicate.binding.cardId, first.binding.cardId);
       assert.equal((await nativeCard(first)).status, 'todo');
@@ -279,6 +296,12 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
     } finally {
       await closeManagedBrowser(browser, signal).catch(() => {});
       if (host) await stopPinnedHost(host.child);
+      if (admissionFailureObservation) {
+        try {
+          await persistAttentionAdmissionFailure({ observation: admissionFailureObservation, diagnostics: host.diagnostics, outputDrained: host.outputDrained,
+            evidenceDirectory: process.env.COMMAND_CENTER_ATTENTION_EVIDENCE_DIR ? path.resolve(process.env.COMMAND_CENTER_ATTENTION_EVIDENCE_DIR) : undefined });
+        } catch { console.error('Attention admission failure evidence could not be persisted.'); }
+      }
     }
   }, { candidateRoot });
   } finally { await rm(validationRoot, { recursive: true, force: true }); }
