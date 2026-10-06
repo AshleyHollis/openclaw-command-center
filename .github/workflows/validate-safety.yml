@@ -24,4 +24,6 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: node --test test/native-note-proposals.test.mjs
       - run: npm run check
