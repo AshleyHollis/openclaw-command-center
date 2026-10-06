@@ -1,6 +1,6 @@
 # Review-only Note proposal: implementation contract for #214
 
-Status: recommended contract for parent review; not an accepted ADR or an
+Status: parent-approved bounded contract for a disabled candidate; not an accepted ADR or an
 implemented/activated feature. Product base: `2253d49`. The test-only Attention
 successor `97a4` does not change that product baseline. No rebase is required
 solely for the test-head change.
@@ -32,8 +32,11 @@ Only fictional tests inject the candidate capability until separate activation.
   proposal methods. They must not call its write methods or `notesEdit/create`.
 - Add dedicated metadata transactions over existing `topic_operations` in
   `src/metadata/service.mjs`; reserve operation kind `notes.proposal.v1` and
-  refuse this kind through generic `recordTopicOperation`.
-- Read target and sources through `sourceService.notesRead`, preserving exact
+  refuse both incoming reserved kinds and replacement of existing reserved rows
+  through generic `recordTopicOperation`, `completeTopicProvisioning` and generic
+  recovery completion paths. Dedicated transactions check the immutable intent,
+  principal, Topic, generation, prior lifecycle and current authority.
+- Add a small source-owner snapshot wrapper around `sourceService.notesRead`, preserving exact
   reference/path admission, SHA-256 byte revisions, safe descriptor reads and
   Note Folder identity from `src/sources/notes.mjs` and `reference.mjs`.
 - Reuse the authenticated operator runtime in `src/bridge/register.mjs`:
@@ -93,6 +96,11 @@ snapshots, canonical `basisDigest`, verification times, proposed content,
 canonical citation descriptors, output digest and bounded failure reason. Text
 is private proposal context, not an authoritative replacement for source files.
 Do not copy it into Activity, public logs or issue evidence.
+Keep private target, source, proposed and comparison text only while prepared or
+review-required. Terminal stale, failed and discarded transitions atomically
+strip all those texts, retaining identity, digests and status for replay and
+no-resurrection checks. This is logical deletion from live metadata, not secure
+erasure from SQLite pages, backups or earlier authorized responses.
 
 The basis includes target/source external identities, effective locators and
 locator versions, Folder reference/stable identity/locator generation, Topic
@@ -101,6 +109,10 @@ owner reads, not a later browse result or generation response. Preserve exact
 source identities/revisions and existing lineage; do not invent original
 document identities from prose. Source links resolve their current exact
 reference rather than trusting a generated URL.
+The snapshot wrapper must retain the verified Folder identity and locator,
+per-file locator generation, Topic and complete panel Conversation basis;
+`notesRead` alone does not freeze all of them. Separate reads cannot prove
+detection of byte-identical inode replacement, and no such guarantee is claimed.
 An ordinary `notesRead` result does not provide generic original-document
 lineage. The mandatory citation is the selected Note's own exact reference and
 revision. Retain optional intake plan/outcome evidence only when the existing
@@ -146,6 +158,9 @@ The new UUID starts at generation `1`; this slice does not advance generations
 inside an existing request or reinterpret an accepted basis.
 Discard, stale and failure prevent late generation from publishing. A new
 request cannot silently resurrect an old terminal operation.
+Malformed staged Markdown or citations leave prepared state intact. Discard
+requires current ownership and authority but does not require source rereads to
+succeed; it can remove snapshots whose sources have become unavailable.
 
 External file reads and SQLite publication are distinct boundaries. There is
 no claim of one linearizable transaction across external edits and metadata.
@@ -159,6 +174,10 @@ Temporary access loss refuses context/review publication and returns a blocked
 projection without saved text. Confirmed revision or binding drift records
 terminal stale when current authority permits that metadata change. Do not
 return private saved proposal text to a revoked actor merely because it exists.
+Authority loss produces a text-free blocked projection without destroying the
+saved operation. Revalidate the source basis on identical replay and fence
+authority immediately before returning private context or review content. Add
+all proposal methods to the bridge's final-response authority checks.
 
 ## Recovery and UX
 
@@ -193,7 +212,6 @@ no write/apply/task action; and disabled activation flags. Run actual Linux
 Note/Folder owners and installed native review separately from mock authority
 tests. Durable proposal changes are Class 3 despite no Note write.
 
-No new user permission is needed for this disabled candidate design. Parent
-technical review should accept the operator-only first transport and selected
-Markdown-only source scope. A later direct generator/model-tool handoff needs
+No new user permission is needed for this parent-approved disabled candidate
+design. A later direct generator/model-tool handoff needs
 an enforceable supported host authority contract, not inferred Session access.
