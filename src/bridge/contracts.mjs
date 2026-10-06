@@ -1,11 +1,13 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
 import { billActionResultSchema } from './bill-action-contracts.mjs';
+import { acceptedChatResultSchema, CHAT_CAPTURE_METHODS } from './chat-capture-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
 
 export const READ_METHODS = Object.freeze([
+  'command-center.v1.chat-capture.load',
   'command-center.v1.bill-actions.list',
   'command-center.v1.bill-actions.read',
   'command-center.v1.histories.list',
@@ -46,6 +48,8 @@ export const READ_METHODS = Object.freeze([
 ]);
 
 export const WRITE_METHODS = Object.freeze([
+  'command-center.v1.chat-capture.accept',
+  'command-center.v1.chat-capture.replay',
   'command-center.v1.bill-actions.reconcile',
   'command-center.v1.bill-actions.admit',
   'command-center.v1.bill-actions.handle',
@@ -142,6 +146,7 @@ const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
 function parameterSchema(field, method) {
+  if (field === 'planId') return Object.freeze({ type: 'string', minLength: 1 });
   if (field === 'expectedUpdatedAt' || field === 'offsetMinutes') return Object.freeze({ type: 'number' });
   if (field === 'expectedEligibilityRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedRevisions') return Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ source: { enum: ['topic', 'reference'] }, id: { type: 'string', minLength: 1 }, revision: { type: ['string', 'integer'] } }), required: ['source', 'id', 'revision'] }) });
@@ -177,6 +182,7 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (CHAT_CAPTURE_METHODS.includes(method)) return acceptedChatResultSchema;
   if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
@@ -417,6 +423,9 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.chat-capture.accept': ['input'],
+  'command-center.v1.chat-capture.load': ['planId'],
+  'command-center.v1.chat-capture.replay': ['planId'],
   'command-center.v1.bill-actions.list': [],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
@@ -516,6 +525,9 @@ const required = Object.freeze({
   'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt']
 });
 const fields = Object.freeze({
+  'command-center.v1.chat-capture.accept': ['input'],
+  'command-center.v1.chat-capture.load': ['planId'],
+  'command-center.v1.chat-capture.replay': ['planId'],
   'command-center.v1.bill-actions.list': ['topicId', 'offset', 'limit'],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
@@ -626,7 +638,7 @@ export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHOD
   return [method, Object.freeze({
     method,
     version: 1,
-    scope: READ_METHODS.includes(method) ? 'operator.read' : ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write',
+    scope: CHAT_CAPTURE_METHODS.includes(method) ? 'operator.write' : READ_METHODS.includes(method) ? 'operator.read' : ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write',
     closed: true,
     fields: Object.freeze(contractFields),
     paramsSchema: Object.freeze({
