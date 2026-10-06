@@ -60,6 +60,7 @@ test('sealed plugin packs deterministically and round trips through the native a
   assert.equal(first.receipt.kind, 'command-center-plugin-artifact');
   assert.equal(first.receipt.buildDigest, receipt.digest);
   assert.ok(first.receipt.files.some(file => file.path === 'dist/.command-center-digest.json'));
+  assert.ok(first.receipt.files.every(file => !file.path.startsWith('dist/ui/') && file.path !== 'dist/asset-handler.mjs'));
   const destination = path.join(root, 'verified');
   const previousMask = process.umask(0o077);
   let verified;

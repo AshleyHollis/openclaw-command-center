@@ -129,7 +129,6 @@ async function buildUnlocked() {
   await cp(path.join(sourceRoot, 'src', 'plugin-service.mjs'), path.join(distRoot, 'plugin-service.mjs'));
   await cp(path.join(sourceRoot, 'src', 'release-scope.mjs'), path.join(distRoot, 'release-scope.mjs'));
   await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
-  await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
   for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'open-loops', 'daily-workspace', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
@@ -160,7 +159,8 @@ async function buildUnlocked() {
     await cp(path.join(pdfjs, 'build', 'pdf.worker.mjs'), path.join(distRoot, 'native-ui', 'vendor', 'pdf.worker.mjs'));
     await writePdfResourceBundle(pdfjs, path.join(distRoot, 'native-ui', 'vendor', 'pdf-resources.mjs'));
     await cp(path.join(pdfjs, 'LICENSE'), path.join(distRoot, 'native-ui', 'vendor', 'pdfjs-LICENSE.txt'));
-  await cp(path.join(sourceRoot, 'src', 'ui'), path.join(distRoot, 'ui'), { recursive: true, verbatimSymlinks: true });
+  // Retired shell routes return refusal tombstones from plugin.mjs. Keep the
+  // legacy source for retained tests, but publish only the native UI payload.
   // Git may materialize authored text with platform-native line endings. Seal
   // one byte-identical plugin on Windows and Linux so the release baseline,
   // package receipt and deployment evidence all name the same build digest.
