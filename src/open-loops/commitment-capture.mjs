@@ -1,5 +1,6 @@
 import { normalizePaymentIdentity, resolvePaymentPredecessor } from './payment-identity.mjs';
 import { loadIntakeSourceAccount } from './intake-accounting.mjs';
+import { assertAcceptedChatEffect } from './accepted-chat-scope.mjs';
 import { createHash } from 'node:crypto';
 import { normalizeLoop, normalizeObservation } from './contracts.mjs';
 
@@ -23,10 +24,11 @@ function legacySubject(value) { return `commitment:${stable([value.sourceKind, v
 
 export function normalizeCommitmentCapture(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('capture must be an object');
-  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'topicId', 'title', 'obligationId', 'obligationKind', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies', 'paymentIdentity'];
+  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'topicId', 'title', 'obligationId', 'obligationKind', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies', 'paymentIdentity', 'classification'];
   const extra = Object.keys(input).find(key => !allowed.includes(key));
   if (extra) fail(`capture contains unsupported field ${extra}`);
   if (input.schemaVersion !== 1 || !sourceKinds.has(input.sourceKind) || !provenanceKinds.has(input.provenance)) fail('capture vocabulary is unsupported');
+  if (input.classification !== undefined && (input.sourceKind !== 'chat' || input.classification !== 'decision')) fail('classification is supported only for accepted Chat decisions');
   if (input.obligationKind !== undefined && input.obligationKind !== 'payment') fail('obligationKind is unsupported');
   if (input.importance !== undefined && !importanceKinds.has(input.importance)) fail('importance is unsupported');
   if (input.importanceOrigin !== undefined && !['source', 'processing'].includes(input.importanceOrigin)) fail('capture cannot claim a user importance decision');
@@ -49,6 +51,7 @@ export function normalizeCommitmentCapture(input) {
     schemaVersion: 1,
     logicalOperationId: text(input.logicalOperationId, 'logicalOperationId', 100),
     sourceKind: input.sourceKind,
+    ...(input.classification === undefined ? {} : { classification: input.classification }),
     sourceExternalId: text(input.sourceExternalId, 'sourceExternalId', 500),
     sourceVersion: text(input.sourceVersion, 'sourceVersion', 300),
     ...(input.sourceReferenceId === undefined ? {} : { sourceReferenceId: text(input.sourceReferenceId, 'sourceReferenceId', 300) }),
@@ -101,7 +104,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
     historicalBaseline: value.historicalBaseline,
     topicId: value.topicId,
     entityRefs: [{ kind: 'obligation', id: value.obligationId }],
-    facts: { ...(value.paymentIdentity === undefined ? {} : { paymentIdentity: value.paymentIdentity }), title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(loopKind === 'payment' ? { obligationKind: 'payment' } : {}), ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: value.sourceReferenceVersion }) }) }
+    facts: { ...(value.classification === undefined ? {} : { classification: value.classification }), ...(value.paymentIdentity === undefined ? {} : { paymentIdentity: value.paymentIdentity }), title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(loopKind === 'payment' ? { obligationKind: 'payment' } : {}), ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: value.sourceReferenceVersion }) }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
   const stableSubjectId = subject(value);
@@ -129,7 +132,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
     stableSubjectId,
     title: existingLoop?.title ?? value.title,
     topicId: value.topicId,
-    state: existingLoop?.state ?? (suggestion ? 'suggested' : 'confirmed'),
+    state: existingLoop?.state ?? (value.classification === 'decision' ? 'decision-needed' : suggestion ? 'suggested' : 'confirmed'),
     ...(loopKind === 'payment' ? { paymentState: existingLoop?.paymentState ?? (suggestion ? 'potential' : 'unpaid') } : {}),
     ...(existingLoop?.dueAt ? { dueAt: existingLoop.dueAt } : value.dueAt ? { dueAt: value.dueAt } : {}),
     ...(existingLoop?.reviewAt ? { reviewAt: existingLoop.reviewAt } : value.reviewAt ? { reviewAt: value.reviewAt } : {}),
@@ -145,11 +148,14 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
   return Object.freeze({
     async capture(input) {
       const value = normalizeCommitmentCapture(input);
+      if (value.sourceKind === 'chat') assertAcceptedChatEffect(metadata, value, 'capture');
       if (value.sourceReferenceId) {
         const reference = metadata.getSourceReference?.(value.sourceReferenceId);
         if (!reference || reference.topicId !== value.topicId || !['note', 'document'].includes(reference.sourceKind)) throw new TypeError('capture source reference is not exactly owned by the Topic');
         if (sourceService?.notesRead && reference.sourceKind === 'note') {
           const retained = await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { observedRevision: value.sourceReferenceVersion }) });
+          if (value.sourceKind === 'chat' && (retained?.revision !== value.sourceReferenceVersion || retained?.path !== value.sourcePath || retained?.sourceReference?.referenceId !== value.sourceReferenceId || retained?.sourceReference?.topicId !== value.topicId || retained?.sourceReference?.sourceKind !== 'note')) throw new TypeError('The accepted Chat Note revision or exact reference changed');
+          if (value.sourceKind === 'chat') assertAcceptedChatEffect(metadata, value, 'capture');
           if (value.paymentIdentity && retained?.revision !== value.sourceReferenceVersion) throw new TypeError('The accepted payment Note revision changed');
         }
       }
@@ -180,6 +186,7 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
       if (otherKind || loopKind === 'payment' && sameSourceLegacy || distinctLegacy.length > 1 || current && distinctLegacy.length || !current && distinctLegacy.length && !sameSourceLegacy) throw new TypeError('capture correlation requires explicit duplicate review');
       const existing = current ?? sameSourceLegacy ?? null;
       const planned = planCommitmentCapture(value, existing);
+      if (value.sourceKind === 'chat') assertAcceptedChatEffect(metadata, value, 'capture');
       return metadata.applyOpenLoopChange({
         schemaVersion: 1,
         logicalOperationId: value.logicalOperationId,

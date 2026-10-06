@@ -3,6 +3,7 @@ import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } fro
 import { assertFirstLiveCommand, FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { captureHistoryReadAuthority } from './read-authority.mjs';
 import { createRequestScopedConversationRuntime } from './gateway-method-dispatch.mjs';
+import { CHAT_CAPTURE_METHODS, invokeAcceptedChatCommand } from './chat-capture-contracts.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -150,6 +151,9 @@ function captureAuthenticatedConversationAuthority({ client, context, signal, se
 }
 
 const handlerMap = Object.freeze({
+  'command-center.v1.chat-capture.accept': (service, params, runtime) => invokeAcceptedChatCommand(service, 'Accept', params.input, runtime),
+  'command-center.v1.chat-capture.load': (service, params, runtime) => invokeAcceptedChatCommand(service, 'Load', { schemaVersion: 1, planId: params.planId }, runtime),
+  'command-center.v1.chat-capture.replay': (service, params, runtime) => invokeAcceptedChatCommand(service, 'Replay', { schemaVersion: 1, planId: params.planId }, runtime),
   'command-center.v1.bill-actions.list': (service, params, runtime) => service.billActionsList(params, runtime),
   'command-center.v1.bill-actions.read': (service, params, runtime) => service.billActionsRead(params, runtime),
   'command-center.v1.bill-actions.admit': (service, params, runtime) => service.billActionsAdmit(params, runtime),
@@ -284,7 +288,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
       const requestId = req?.id ?? null;
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
-        if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
+        if (!mutationsAllowed && (WRITE_METHODS.includes(method) || CHAT_CAPTURE_METHODS.includes(method))) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
         assertFirstLiveCommand('bridge', method);
         if (FIRST_LIVE_FEATURES.notifications) service.notificationCaptureBinding?.();
         // The host profile is canonical across HTTP and WebSocket. An invalid
@@ -297,6 +301,17 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
         const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};
+        if (CHAT_CAPTURE_METHODS.includes(method)) {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          const assertCurrent = () => {
+            authority.assertCurrent();
+            if (!client.connect.scopes?.some(scope => ['operator.write', 'operator.admin'].includes(scope))) throw new SourceServiceError('unauthenticated', 'Current capture write authority is required.');
+            sessionMutationCommitGuard?.();
+            if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'The authenticated capture request is no longer current.');
+          };
+          assertCurrent();
+          runtime = { principalId: authority.principalId, assertCurrent };
+        }
         if (method.startsWith('command-center.v1.bill-actions.') || method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions) {
           const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
           const assertCurrent = () => {
@@ -396,6 +411,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') runtime.creationAuthority.assertCurrent();
         if (method.startsWith('command-center.v1.bill-actions.') || (method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions)) runtime.assertCurrent();
+        if (CHAT_CAPTURE_METHODS.includes(method)) runtime.assertCurrent();
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));
