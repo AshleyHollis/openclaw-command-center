@@ -55,7 +55,7 @@ export function renderBillActionCards(parent, projection, context) {
       const events = Array.isArray(row.native.events) ? row.native.events.filter(event => nonBlank(event.id) && nonBlank(event.kind) && Number.isFinite(event.at)) : [];
       if (events.length) {
         const history = el('details'); history.append(el('summary', 'Native history'));
-        for (const event of [...events].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))) history.append(el('p', `${new Date(event.at).toISOString()}: ${event.kind}${event.fromStatus || event.toStatus ? ` (${event.fromStatus ?? 'unknown'} → ${event.toStatus ?? 'unknown'})` : ''}`));
+        for (const event of [...events].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))) history.append(el('p', `${new Date(event.at).toISOString()}: ${event.kind}${event.fromStatus || event.toStatus ? ` (${event.fromStatus ?? 'unknown'} to ${event.toStatus ?? 'unknown'})` : ''}`));
         article.append(history);
       } else article.append(el('p', 'Native completion history is unavailable.'));
     }
@@ -82,6 +82,39 @@ export function renderBillActionCards(parent, projection, context) {
       finally { if (current()) review.disabled = false; }
     });
     review.dataset.focusIdentity = `${key}:source`; article.insertBefore(review, controls);
+    const predecessor = row.predecessor;
+    if (predecessor && [predecessor.loopId, predecessor.observationId, predecessor.title, predecessor.explanation].every(nonBlank) && predecessor.loopId !== row.loopId) {
+      const prior = el('section'); prior.dataset.billPredecessor = 'true';
+      const priorTitle = el('h4', `Prior request: ${predecessor.title}`); const priorExplanation = el('p', predecessor.explanation); prior.append(priorTitle, priorExplanation);
+      let priorSourceGeneration = 0;
+      const priorStatus = el('p'); prior.append(priorStatus);
+      const showPriorStatus = native => { priorStatus.textContent = native?.availability === 'available' && nonBlank(native.status) && Number.isFinite(native.updatedAt) ? `Prior request current native status: ${native.status === 'done' ? 'Done (manual action status)' : native.status === 'todo' ? 'Backlog' : native.status}.` : 'Prior request native status unavailable. Its current handled status is unknown.'; };
+      showPriorStatus(predecessor.native);
+      const priorReview = button('Review prior request source', async () => {
+        if (!current() || priorReview.disabled) return;
+        priorReview.disabled = true; const sourceGeneration = ++priorSourceGeneration; prior.querySelector('[data-bill-predecessor-source-link]')?.remove();
+        try {
+          // The relation belongs to this new action. Never resolve the prior loop's latest evidence.
+          const fresh = unwrap(await host.request('command-center.v1.bill-actions.read', { schemaVersion: 1, loopId: row.loopId }));
+          if (!current()) return;
+          const relation = fresh?.predecessor;
+          if (fresh?.schemaVersion !== 1 || fresh.loopId !== row.loopId || fresh.topicId !== row.topicId || fresh.availability !== 'available' || relation?.loopId !== predecessor.loopId || relation.observationId !== predecessor.observationId || !nonBlank(relation.title) || !nonBlank(relation.explanation)) throw new Error('The exact authorized prior request relation is unavailable. Refresh to check again.');
+          priorTitle.textContent = `Prior request: ${relation.title}`; priorExplanation.textContent = relation.explanation;
+          showPriorStatus(relation.native);
+          const source = relation.source;
+          if (source?.kind === 'outlook') {
+            const link = el('a', 'Open exact prior request email in Outlook'); link.href = validatedOutlookWebLink(source.url); link.target = '_blank'; link.rel = 'noopener noreferrer'; link.dataset.billPredecessorSourceLink = 'true';
+            // Retained links must still refuse navigation after their mount is retired.
+            link.addEventListener('click', event => { if (!current() || sourceGeneration !== priorSourceGeneration) event.preventDefault(); });
+            prior.append(link); link.focus(); report('Exact prior request Outlook destination ready. Outlook verifies your access.');
+          } else if (source?.kind === 'note' && [source.topicId, source.referenceId, source.path, source.revision].every(nonBlank)) {
+            host.navigation.openPage({ id: 'topic', params: { topicId: source.topicId, sourceReferenceId: source.referenceId, sourcePath: source.path, evidenceSourceVersion: source.revision } });
+          } else throw new Error('No currently authorized exact prior request reader destination is available.');
+        } catch (error) { if (current()) { priorTitle.textContent = 'Prior request unavailable'; priorExplanation.textContent = ''; priorStatus.textContent = 'Prior request evidence is unavailable. Refresh to check again.'; report(error.message || 'Prior request source unavailable.'); } }
+        finally { if (current()) priorReview.disabled = false; }
+      });
+      priorReview.dataset.focusIdentity = `${key}:predecessor:${predecessor.observationId}`; prior.append(priorReview); article.append(prior);
+    }
     if (done) continue;
     const canAct = () => current() && writable() && row.canWrite === true && row.native.status === 'todo';
     async function run(operation, reconcile = false) {

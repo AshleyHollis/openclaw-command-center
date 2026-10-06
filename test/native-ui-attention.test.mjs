@@ -229,6 +229,73 @@ async function installBillFixture(page) {
   await page.getByRole('heading', { name: 'Bill actions', exact: true }).waitFor();
 }
 
+async function installBillPredecessorFixture(page) {
+  await installBillFixture(page);
+  await page.evaluate(() => {
+    const current = window.billActions.rows[0];
+    current.title = 'New explicit fictional installment request'; current.reason = 'A new installment was explicitly requested in the accepted source';
+    current.predecessor = { loopId: 'fictional-bill-prior', observationId: 'fictional-prior-original-observation', title: 'Earlier fictional installment request', explanation: 'This source explicitly requests a new installment. The earlier request remains a separate action.', source: { kind: 'outlook', url: 'https://outlook.office.com/mail/inbox/id/fictional-prior-original' }, native: { availability: 'available', status: 'done', updatedAt: 91 } };
+    const prior = structuredClone(current); delete prior.predecessor; Object.assign(prior, { loopId: 'fictional-bill-prior', actionId: 'fictional-bill-prior', title: 'Latest reminder for the earlier fictional request', outcome: 'handled-observed' });
+    prior.native = { status: 'done', updatedAt: 91 }; prior.binding.cardId = 'fictional-prior-card'; prior.source = { kind: 'outlook', url: 'https://outlook.office.com/mail/inbox/id/fictional-prior-latest-reminder' };
+    window.billActions.rows.push(prior); window.billActions.total = 2;
+  });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await page.locator('[data-bill-predecessor]').waitFor();
+}
+
+test('bill new request preserves prior Done and fresh-reads its original predecessor observation', () => fixture(async page => {
+  await installBillPredecessorFixture(page);
+  const current = page.locator('[data-bill-action-id="fictional-bill-101"]'); const relation = current.locator('[data-bill-predecessor]');
+  assert.match(await relation.innerText(), /explicitly requests a new installment/);
+  assert.match(await relation.innerText(), /current native status: Done \(manual action status\)/);
+  assert.equal(await current.getByRole('button', { name: 'Handled', exact: true }).isEnabled(), true);
+  assert.equal(await page.locator('[data-bill-handled] [data-bill-action-id="fictional-bill-prior"]').count(), 1);
+  if (process.env.BILL_ACTION_SCREENSHOT_DIR) {
+    await page.setViewportSize({ width: 1440, height: 1400 }); await page.evaluate(() => { document.querySelector('#fictional-pane').scrollTop = 0; window.scrollTo(0, 0); }); await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-predecessor-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 }); await current.evaluate(node => node.scrollIntoView({ block: 'start' })); await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-predecessor-phone.png'), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 390), true); await page.setViewportSize({ width: 1440, height: 1400 });
+  }
+  await relation.getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  assert.equal(await relation.getByRole('link', { name: 'Open exact prior request email in Outlook' }).getAttribute('href'), 'https://outlook.office.com/mail/inbox/id/fictional-prior-original');
+  const reads = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('bill-actions.read')));
+  assert.deepEqual(reads.map(request => request.params.loopId), ['fictional-bill-101']);
+  await page.evaluate(() => { const relation = window.billActions.rows[0].predecessor; relation.source = { kind: 'note', topicId: 'topic-fictional-archive', referenceId: 'fictional-prior-note', path: 'Inbox/fictional-prior-original.md', observedRevision: 'fictional-prior-note-v1', revision: 'fictional-prior-note-v1' }; relation.native = { availability: 'unavailable' }; });
+  await relation.getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  assert.match(await relation.innerText(), /native status unavailable/);
+  assert.deepEqual((await page.evaluate(() => window.opened)).at(-1), { id: 'topic', params: { topicId: 'topic-fictional-archive', sourceReferenceId: 'fictional-prior-note', sourcePath: 'Inbox/fictional-prior-original.md', evidenceSourceVersion: 'fictional-prior-note-v1' } });
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => /bill-actions\.(?:handle|defer)$/.test(request.method)).length, 0);
+}));
+
+test('bill omitted or changed predecessor relation retires source links while the new request remains usable', () => fixture(async page => {
+  await page.context().route('https://outlook.office.com/**', route => route.abort());
+  await installBillPredecessorFixture(page);
+  const current = page.locator('[data-bill-action-id="fictional-bill-101"]'); const relation = current.locator('[data-bill-predecessor]');
+  await relation.getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  await page.evaluate(() => { window.retiredPriorSource = document.querySelector('[data-bill-predecessor-source-link]'); delete window.billActions.rows[0].predecessor; });
+  await relation.getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  assert.match(await relation.innerText(), /Prior request evidence is unavailable/);
+  assert.equal(await relation.getByRole('link').count(), 0);
+  assert.equal(await page.evaluate(() => { const event = new MouseEvent('click', { bubbles: true, cancelable: true }); window.retiredPriorSource.dispatchEvent(event); return event.defaultPrevented; }), true);
+  assert.equal(await current.getByRole('button', { name: 'Handled', exact: true }).isEnabled(), true);
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await current.locator('[data-bill-predecessor]').count(), 0);
+  assert.equal(await current.getByRole('button', { name: 'Later', exact: true }).isEnabled(), true);
+  await page.evaluate(() => { window.billActions.rows[0].predecessor = { loopId: 'fictional-bill-prior', observationId: 'fictional-prior-original-observation', title: 'Earlier fictional installment request', explanation: 'A distinct installment request', source: { kind: 'outlook', url: 'https://outlook.office.com/mail/inbox/id/fictional-prior-original' }, native: { availability: 'unavailable' } }; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await page.evaluate(() => { window.billActions.rows[0].predecessor.observationId = 'fictional-prior-newer-observation'; });
+  await relation.getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  assert.equal(await relation.getByRole('link').count(), 0);
+  assert.match(await relation.innerText(), /Prior request evidence is unavailable/);
+}));
+
+for (const retiredBy of ['read access loss', 'scope abort', 'generation replacement']) test(`bill prior request source link refuses navigation after ${retiredBy}`, () => fixture(async page => {
+  await page.context().route('https://outlook.office.com/**', route => route.abort());
+  await installBillPredecessorFixture(page);
+  await page.locator('[data-bill-predecessor]').getByRole('button', { name: 'Review prior request source', exact: true }).click();
+  await page.evaluate(reason => { window.retiredPriorSource = document.querySelector('[data-bill-predecessor-source-link]'); if (reason === 'read access loss') window.setAccess({ canRead: false }); else if (reason === 'scope abort') window.abortView(); else document.querySelector('.cc-toolbar > button:last-of-type').click(); }, retiredBy);
+  assert.equal(await page.evaluate(() => { const event = new MouseEvent('click', { bubbles: true, cancelable: true }); window.retiredPriorSource.dispatchEvent(event); return event.defaultPrevented; }), true);
+}));
+
 test('qualified bill journey reviews source, cancels Later, saves exact eligibility and handles early', () => fixture(async page => {
   if (process.env.BILL_ACTION_SCREENSHOT_DIR) {
     await page.setViewportSize({ width: 1440, height: 1400 });
@@ -279,7 +346,7 @@ test('qualified bill journey reviews source, cancels Later, saves exact eligibil
   await card.getByRole('button', { name: 'Handled', exact: true }).waitFor({ state: 'detached' });
   assert.match(await card.innerText(), /Native completion time: 2026-10-05T01:00:00.000Z/);
   await card.locator('summary', { hasText: 'Native history' }).click();
-  assert.match(await card.innerText(), /todo → done/);
+  assert.match(await card.innerText(), /todo to done/);
   assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).count(), 0);
   const handled = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.handle'))); assert.equal(handled.params.expectedUpdatedAt, 101);
   await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();

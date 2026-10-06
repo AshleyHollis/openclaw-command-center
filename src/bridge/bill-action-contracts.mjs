@@ -9,6 +9,8 @@ const row = object({
   schemaVersion: { const: 1 }, loopId: string, actionId: string, title: string, topicId: string,
   availability: string, outcome: string, reason: string, canWrite: boolean,
   deadline: object({ known: boolean, instant: string, provenance: string }), source,
+  predecessor: object({ loopId: string, observationId: string, explanation: string, title: string, source,
+    native: object({ availability: { enum: ['available', 'unavailable'] }, status: string, updatedAt: number }) }),
   sourceIdentity: object({ externalId: string, version: string, outcomeId: string, observationId: string }),
   binding: object({ tenantId: string, boardId: string, cardId: string, idempotencyKey: string }),
   native: object({ status: string, updatedAt: number, completedAt: number, events }),

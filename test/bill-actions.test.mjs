@@ -13,13 +13,13 @@ import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { createBillActionAdapter } from '../src/open-loops/bill-actions.mjs';
 
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-function fixture(t) {
+function fixture(t, paymentIdentity) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), 'bill-owner-fictional-'));
   let metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
   t.after(() => { metadata.close(); rmSync(stateDir, { recursive: true, force: true }); });
   metadata.createTopic({ topicId: 'fictional-home', name: 'Fictional home', paraCategory: 'project', lifecycle: 'active' });
   metadata.createSourceReference({ version: 1, referenceId: 'fictional-note', topicId: 'fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Bills/101.md', observedRevision: 'v1' });
-  const obligation = { obligationId: 'BILL-101', title: 'Review fictional BILL-101', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit', correlationNamespace: 'fictional-mailbox', correlationId: 'BILL-101' };
+  const obligation = { obligationId: 'BILL-101', title: 'Review fictional BILL-101', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit', correlationNamespace: 'fictional-mailbox', correlationId: 'BILL-101', ...(paymentIdentity ? { paymentIdentity } : {}) };
   const instant = '2026-10-05T22:00:00.000Z';
   const { classification, ...captureObligation } = obligation;
   const capture = planCommitmentCapture({ ...captureObligation, schemaVersion: 1, logicalOperationId: id(1), sourceKind: 'email', sourceExternalId: 'namespaced:fictional-mail-101', sourceVersion: 'v1', sourceReferenceId: 'fictional-note', sourcePath: 'Bills/101.md', sourceReferenceVersion: 'v1', topicId: 'fictional-home', occurredAt: instant, observedAt: instant });
@@ -34,8 +34,8 @@ function fixture(t) {
     if (method === 'workboard.cards.update') { beforeEffect(); options?.assertCurrent(); if (loseBefore) throw Object.assign(new Error('before acceptance'), { code: 'timeout' }); assert.equal(params.expectedUpdatedAt, 100); assert.deepEqual(params.patch, { status: 'done' }); card = { ...card, status: 'done', updatedAt: 101 }; if (loseResponse) throw Object.assign(new Error('lost'), { code: 'timeout' }); return { card }; }
     throw new Error('unexpected native method');
   } });
-  const reminder = ({ version, dueAt }) => {
-    const changed = { ...obligation, ...(dueAt ? { dueAt } : {}) }, current = metadata.getOpenLoop(loop.loopId);
+  const reminder = ({ version, dueAt, paymentIdentity: replacementIdentity }) => {
+    const changed = { ...obligation, ...(dueAt ? { dueAt } : {}), ...(replacementIdentity === undefined ? {} : { paymentIdentity: replacementIdentity }) }, current = metadata.getOpenLoop(loop.loopId);
     const { classification: ignored, ...captureValue } = changed;
     const observedAt = '2026-10-05T22:30:00.000Z';
     const planned = planCommitmentCapture({ ...captureValue, schemaVersion: 1, logicalOperationId: id(100), sourceKind: 'email', sourceExternalId: 'namespaced:fictional-mail-101', sourceVersion: version, sourceReferenceId: 'fictional-note', sourcePath: 'Bills/101.md', sourceReferenceVersion: 'v1', topicId: 'fictional-home', occurredAt: observedAt, observedAt }, current);
@@ -151,22 +151,26 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   const handled = await f.adapter().handle({ schemaVersion: 1, loopId: f.loopId, logicalOperationId: id(201), expectedUpdatedAt: first.native.updatedAt });
   assert.equal(handled.outcome, 'handled-observed');
   const firstDone = structuredClone(f.card);
-  const observedAt = '2026-10-06T00:00:00.000Z';
+  let observedAt = '2026-10-06T00:00:00.000Z';
   const evidence = { topicId: 'fictional-home', sourceReferenceId: 'fictional-note-102', sourcePath: 'Bills/102.md', sourceReferenceVersion: 'note-102-v1' };
   f.metadata.createSourceReference({ version: 1, referenceId: evidence.sourceReferenceId, topicId: evidence.topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Bills/102.md', observedRevision: evidence.sourceReferenceVersion });
-  const obligation = { obligationId: 'BILL-102', title: 'Review separately requested fictional BILL-102', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit', correlationNamespace: 'fictional-mailbox', correlationId: 'BILL-102' };
-  const capture = createCommitmentCaptureService({ metadata: f.metadata, sourceService: { notesRead: async request => {
-    assert.equal(request.referenceId, evidence.sourceReferenceId);
-    assert.equal(request.observedRevision, evidence.sourceReferenceVersion);
-    return { revision: evidence.sourceReferenceVersion };
-  } } });
+  const obligation = { obligationId: 'BILL-102', title: 'Review separately requested fictional BILL-102', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit', correlationNamespace: 'fictional-mailbox', correlationId: 'BILL-102', paymentIdentity: { schemaVersion: 1, amountMinorUnits: 14500, currency: 'AUD', invoiceId: 'BILL-102', predecessor: { loopId: f.loopId, observationId: f.metadata.getOpenLoop(f.loopId).evidenceObservationIds[0], explanation: 'Separately requested fictional next invoice BILL-102 follows BILL-101.' } } };
+  let predecessorRevoked = false, wrongNoteRevision = false, nativeHook = () => {}, evidenceHook = async () => {};
+  const sourceService = {
+    requireTopicService: () => {},
+    assertExactNoteReference: request => {
+      const reference = f.metadata.getSourceReference(request.referenceId);
+      if (request.referenceId === 'fictional-note' && predecessorRevoked || !reference || reference.topicId !== request.topicId || reference.observedRevision !== request.observedRevision) throw Object.assign(new Error('exact evidence revoked'), { code: 'unavailable' });
+    },
+    notesRead: async request => { sourceService.assertExactNoteReference(request); return { revision: wrongNoteRevision && request.referenceId === 'fictional-note' ? 'changed-bytes' : request.observedRevision }; }
+  };
   const producer = createProducerIntakeAdapter({
     processorVersion: 'fictional-v1', now: () => observedAt,
     extract: async () => assert.fail('The durable accepted extraction must not be re-extracted.'),
     loadIntakeSourceAccount: input => loadIntakeSourceAccount(f.metadata, input),
     resolveTopic: async () => ({ topicId: evidence.topicId, evidence }),
     saveSourceNote: async () => assert.fail('The exact retained Note already exists.'),
-    captureSourceCommitment: input => capture.capture({ schemaVersion: 1, ...input, logicalOperationId: id(202), occurredAt: observedAt, observedAt }),
+    captureSourceCommitment: input => createCommitmentCaptureService({ metadata: f.metadata, sourceService }).capture({ schemaVersion: 1, ...input, logicalOperationId: input.sourceVersion === 'v1' ? id(202) : input.sourceVersion === 'v2' ? id(205) : id(206), occurredAt: observedAt, observedAt }),
     captureChatCommitment: async () => assert.fail('This accepted family is email only.'),
     recordIntakeSourcePlan: input => recordIntakeSourcePlan(f.metadata, { schemaVersion: 1, ...input }),
     recordIntakeOutcome: input => recordIntakeOutcome(f.metadata, { schemaVersion: 1, ...input }),
@@ -174,6 +178,9 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   });
   const source = { sourceKind: 'email', sourceExternalId: 'namespaced:fictional-mail-102', sourceVersion: 'v1' };
   const record = { schemaVersion: 1, ...source, checkpoint: 'fictional-page-102', existingEvidence: evidence, acceptedExtraction: { schemaVersion: 1, proposedTopic: 'Fictional home', notePath: evidence.sourcePath, knowledgeMarkdown: '', obligations: [obligation] } };
+  wrongNoteRevision = true;
+  await assert.rejects(producer.process({ runId: 'fictional-wrong-predecessor-bytes', records: [record], nextExpectedAt: '2026-10-07T00:00:00.000Z' }), /predecessor Note revision changed/);
+  wrongNoteRevision = false;
   const processed = await producer.process({ runId: 'fictional-bill-102', records: [record], nextExpectedAt: '2026-10-07T00:00:00.000Z' });
   assert.equal(processed.actionableCount, 1);
   const durable = loadIntakeSourceAccount(f.metadata, source);
@@ -183,14 +190,17 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   const nativeCards = new Map([[firstDone.id, firstDone]]);
   const nativeCalls = [];
   const adapter = () => createBillActionAdapter({ metadata: f.metadata, now: () => observedAt,
-    authorize: () => ({ principalId: 'fictional-operator' }),
+    authorize: ({ loopId, observation }) => { if (loopId === f.loopId && predecessorRevoked) throw Object.assign(new Error('predecessor revoked'), { code: 'unavailable' }); if (observation) sourceService.assertExactNoteReference({ topicId: f.metadata.getOpenLoop(loopId).topicId, referenceId: observation.facts.sourceReferenceId, observedRevision: observation.facts.sourceReferenceVersion }); return { principalId: 'fictional-operator' }; },
     readEvidence: async ({ loop, observation }) => {
+      await evidenceHook({ loop, observation });
       const facts = observation.facts;
       assert.equal(f.metadata.getSourceReference(facts.sourceReferenceId).observedRevision, facts.sourceReferenceVersion);
-      return { available: true, topicId: loop.topicId, source: { kind: 'note', topicId: loop.topicId, referenceId: facts.sourceReferenceId, path: facts.sourcePath, revision: facts.sourceReferenceVersion } };
+      const retainedNote = { kind: 'note', topicId: loop.topicId, referenceId: facts.sourceReferenceId, path: facts.sourcePath, revision: facts.sourceReferenceVersion };
+      const locator = f.metadata.getEmailReaderLocator(observation.source.externalId, facts.sourceVersion);
+      return { available: true, topicId: loop.topicId, source: locator?.status === 'available' ? { kind: 'outlook', url: locator.webLink } : retainedNote, retainedNote };
     },
     nativeRequest: async (method, params, options) => {
-      nativeCalls.push({ method, params: structuredClone(params) }); options?.assertCurrent();
+      nativeCalls.push({ method, params: structuredClone(params) }); nativeHook(method); options?.assertCurrent();
       if (method === 'workboard.cards.list') return { cards: [...nativeCards.values()] };
       if (method !== 'workboard.cards.create') assert.fail('Admitting BILL-102 must never change BILL-101 or schedule execution.');
       assert.equal(params.status, 'todo');
@@ -204,18 +214,79 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
     }
   });
   const admission = { schemaVersion: 1, loopId: accepted.loopId, tenantId: 'fictional-tenant', boardId: 'fictional-board', logicalOperationId: id(203) };
+  nativeHook = method => { if (method === 'workboard.cards.create') predecessorRevoked = true; };
+  await assert.rejects(adapter().admit(admission), error => error.code === 'unavailable');
+  assert.equal(nativeCards.size, 1);
+  predecessorRevoked = false; nativeHook = () => {};
   const second = await adapter().admit(admission);
+  assert.equal(second.predecessor.loopId, f.loopId); assert.equal(second.predecessor.observationId, obligation.paymentIdentity.predecessor.observationId); assert.equal(second.predecessor.native.status, 'done');
   assert.notEqual(second.binding.cardId, first.binding.cardId);
   assert.notEqual(second.binding.idempotencyKey, first.binding.idempotencyKey);
   assert.equal(second.native.status, 'todo'); assert.equal(second.eligibility.eligible, true);
   assert.equal(second.sourceIdentity.outcomeId, 'BILL-102');
   await adapter().admit(admission);
+  const predecessorLocator = { sourceExternalId: 'namespaced:fictional-mail-101', sourceVersion: 'v1', messageId: 'fictional-mail-101', status: 'available', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-mail-101', observedAt: '2026-10-06T00:10:00.000Z' };
+  f.metadata.recordEmailReaderLocator(predecessorLocator);
+  let listCount = 0;
+  nativeHook = method => { if (method === 'workboard.cards.list' && ++listCount === 2) f.metadata.recordEmailReaderLocator({ ...predecessorLocator, status: 'unavailable', webLink: undefined, observedAt: '2026-10-06T00:11:00.000Z' }); };
+  assert.equal((await adapter().read({ loopId: accepted.loopId })).predecessor.source.kind, 'note');
+  nativeHook = () => {};
+  const currentLocator = { ...predecessorLocator, ...source, messageId: 'fictional-mail-102', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-mail-102' };
+  delete currentLocator.sourceKind;
+  f.metadata.recordEmailReaderLocator(currentLocator);
+  evidenceHook = async ({ loop }) => { if (loop.loopId === f.loopId) { evidenceHook = async () => {}; f.metadata.recordEmailReaderLocator({ ...currentLocator, status: 'unavailable', webLink: undefined, observedAt: '2026-10-06T00:11:00.000Z' }); } };
+  assert.equal((await adapter().read({ loopId: accepted.loopId })).source.kind, 'note');
+  evidenceHook = async ({ loop }) => {
+    if (loop.loopId !== f.loopId) return;
+    evidenceHook = async () => {};
+    await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(220), expectedEligibilityRevision: 0, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
+  };
+  await assert.rejects(adapter().read({ loopId: accepted.loopId }), error => error.code === 'conflict');
+  evidenceHook = async ({ loop }) => {
+    if (loop.loopId !== f.loopId) return;
+    evidenceHook = async () => {};
+    const binding = f.metadata.getBillActionBinding(accepted.loopId), action = f.metadata.getOpenLoop(accepted.loopId);
+    f.metadata.beginBillActionOperation({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(221), action: 'handle', actionId: accepted.loopId, cardId: binding.cardId, tenantId: binding.tenantId, boardId: binding.boardId, patch: { status: 'done' }, expectedUpdatedAt: 200, actorId: 'fictional-operator', sourceIdentity: { observationId: action.evidenceObservationIds[0], sourceVersion: 'v1', loopRevision: action.revision } }, () => {});
+  };
+  const racedOperation = await adapter().read({ loopId: accepted.loopId });
+  assert.equal(racedOperation.outcome, 'unknown'); assert.equal(racedOperation.pendingOperation.logicalOperationId, id(221)); assert.equal(racedOperation.eligibility.eligible, false);
+  f.metadata.settleBillActionOperation({ logicalOperationId: id(221), outcome: 'not-applied' }, () => {});
   f.reopen();
   const old = await adapter().read({ loopId: f.loopId });
   assert.equal(old.outcome, 'handled-observed'); assert.equal(old.native.status, 'done'); assert.equal(old.eligibility.eligible, false);
   assert.deepEqual(nativeCards.get(firstDone.id), firstDone);
   assert.equal(f.metadata.listBillActionBindings().length, 2); assert.equal(nativeCards.size, 2);
-  assert.equal(nativeCalls.filter(call => call.method === 'workboard.cards.create').length, 1);
+  assert.equal(nativeCalls.filter(call => call.method === 'workboard.cards.create').length, 2);
   assert.equal(f.metadata.getOpenLoop(f.loopId).paymentState, 'unpaid');
   assert.equal(f.metadata.getOpenLoop(accepted.loopId).paymentState, 'unpaid');
+  observedAt = '2026-10-06T01:00:00.000Z';
+  await producer.process({ runId: 'fictional-reminder-102', records: [{ ...record, sourceVersion: 'v2' }], nextExpectedAt: '2026-10-07T00:00:00.000Z' });
+  assert.equal((await adapter().read({ loopId: accepted.loopId })).predecessor.observationId, obligation.paymentIdentity.predecessor.observationId);
+  predecessorRevoked = true;
+  const independent = await adapter().read({ loopId: accepted.loopId });
+  assert.equal(independent.predecessor, undefined); assert.equal(independent.eligibility.eligible, false);
+  const deferred = await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(204), expectedEligibilityRevision: 1, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
+  assert.equal(deferred.outcome, 'applied');
+  predecessorRevoked = false;
+  f.metadata.updateSourceReference({ version: 1, referenceId: 'fictional-note', observedRevision: 'replaced-original-note' });
+  assert.equal((await adapter().read({ loopId: accepted.loopId })).predecessor, undefined);
+  f.metadata.updateSourceReference({ version: 1, referenceId: 'fictional-note', observedRevision: 'v1' });
+  observedAt = '2026-10-06T02:00:00.000Z';
+  const changedCause = { ...obligation, paymentIdentity: { ...obligation.paymentIdentity, predecessor: { ...obligation.paymentIdentity.predecessor, explanation: 'A changed relationship was proposed.' } } };
+  await producer.process({ runId: 'fictional-cause-change', records: [{ ...record, sourceVersion: 'v3', acceptedExtraction: { ...record.acceptedExtraction, obligations: [changedCause] } }], nextExpectedAt: '2026-10-07T00:00:00.000Z' });
+  await assert.rejects(adapter().read({ loopId: accepted.loopId }), error => error.code === 'conflict');
+  assert.equal(nativeCards.get(firstDone.id).status, 'done'); assert.equal(nativeCards.size, 2);
+
+
+});
+
+test('accepted structured amount remains immutable through restart and contradictory correction', async t => {
+  const identity = { schemaVersion: 1, amountMinorUnits: 12500, currency: 'AUD', invoiceId: 'BILL-101' };
+  const f = fixture(t, identity); await admit(f); f.done(); f.reopen();
+  f.reminder({ version: 'v2', paymentIdentity: identity });
+  assert.equal((await f.adapter().read({ loopId: f.loopId })).outcome, 'handled-observed');
+  const g = fixture(t, identity); await admit(g); g.done(); g.reminder({ version: 'v2', paymentIdentity: { ...identity, amountMinorUnits: 14500 } });
+  await assert.rejects(g.adapter().read({ loopId: g.loopId }), error => error.code === 'conflict');
+  await assert.rejects(g.adapter().handle({ schemaVersion: 1, loopId: g.loopId, logicalOperationId: id(250), expectedUpdatedAt: 101 }), error => error.code === 'conflict');
+  assert.equal(g.card.status, 'done'); assert.equal(g.metadata.listBillActionBindings().length, 1);
 });

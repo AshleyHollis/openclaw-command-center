@@ -1,3 +1,4 @@
+import { normalizePaymentIdentity } from './payment-identity.mjs';
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 
@@ -23,7 +24,7 @@ function jsonObject(value, name) {
   return Object.freeze(JSON.parse(encoded));
 }
 const extractionKeys = new Set(['schemaVersion', 'proposedTopic', 'notePath', 'knowledgeMarkdown', 'knowledgeOutcomeId', 'knowledgeSummary', 'obligations', 'noAction']);
-const obligationKeys = new Set(['obligationId', 'title', 'classification', 'obligationKind', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies']);
+const obligationKeys = new Set(['obligationId', 'title', 'classification', 'obligationKind', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies', 'paymentIdentity']);
 export function normalizeAcceptedExtraction(input) {
   const value = jsonObject(input, 'acceptedExtraction');
   if (value.schemaVersion !== 1 || Object.keys(value).some(key => !extractionKeys.has(key)) || !Array.isArray(value.obligations) || value.obligations.length > 100 || typeof value.notePath !== 'string' || value.notePath.length > 1000 || typeof value.knowledgeMarkdown !== 'string' || value.knowledgeMarkdown.length > 262_144) fail('invalid-request', 'acceptedExtraction is invalid.');
@@ -34,6 +35,10 @@ export function normalizeAcceptedExtraction(input) {
     const normalized = { ...item, obligationId: text(item.obligationId, `acceptedExtraction.obligations[${index}].obligationId`, 300), title: text(item.title, `acceptedExtraction.obligations[${index}].title`, 500), provenance: item.provenance, classification: item.classification ?? 'obligation' };
     if (!['explicit', 'inferred', 'idea', 'quoted'].includes(normalized.provenance) || !['obligation', 'decision'].includes(normalized.classification)) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
     if (normalized.obligationKind !== undefined && (normalized.obligationKind !== 'payment' || normalized.classification !== 'obligation')) fail('invalid-request', `acceptedExtraction.obligations[${index}] cannot use that obligationKind.`);
+    if (item.paymentIdentity !== undefined) {
+      if (normalized.classification !== 'obligation' || normalized.obligationKind !== 'payment' || normalized.provenance !== 'explicit') fail('invalid-request', 'Accepted payment identity requires an explicit payment obligation.');
+      normalized.paymentIdentity = normalizePaymentIdentity(item.paymentIdentity);
+    }
     return Object.freeze(normalized);
   });
   if (value.noAction !== undefined && (!value.noAction || typeof value.noAction !== 'object' || Array.isArray(value.noAction) || Object.keys(value.noAction).some(key => !['outcomeId', 'summary'].includes(key)))) fail('invalid-request', 'acceptedExtraction.noAction is invalid.');
@@ -53,6 +58,7 @@ export function normalizeIntakeSourcePlan(input) {
   const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'retainedNoteRevision', 'acceptedExtraction', 'outcomes', 'enumeration'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !Array.isArray(input.outcomes) || input.outcomes.length < 1 || input.outcomes.length > 100) fail('invalid-request', 'Intake source plan is invalid.');
   const source = sourceIdentity(input);
+  if (source.sourceKind !== 'email' && input.acceptedExtraction?.obligations?.some(item => item.paymentIdentity !== undefined)) fail('invalid-request', 'Structured payment identity is supported only for email intake.');
   const outcomes = input.outcomes.map((item, index) => {
     if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !['outcomeId', 'kind'].includes(key)) || !outcomeKinds.has(item.kind)) fail('invalid-request', `outcomes[${index}] is invalid.`);
     return Object.freeze({ outcomeId: text(item.outcomeId, `outcomes[${index}].outcomeId`, 300), kind: item.kind });

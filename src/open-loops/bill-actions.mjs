@@ -1,3 +1,5 @@
+import { validatedOutlookWebLink } from '../native-ui/outlook-web-link.mjs';
+import { resolvePaymentPredecessor } from './payment-identity.mjs';
 import { billActionDigest } from '../metadata/bill-actions.mjs';
 import { loadIntakeSourceAccount } from './intake-accounting.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
@@ -27,6 +29,9 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
       const account = loadIntakeSourceAccount(metadata, { sourceKind: 'email', sourceExternalId: observation.source.externalId, sourceVersion: observation.facts.sourceVersion });
       const obligation = account?.plan.acceptedExtraction.obligations.find(item => item.obligationId === observation.facts.obligationId);
       const outcome = account?.account.outcomes.find(item => item.outcomeId === observation.facts.obligationId);
+      if (obligation?.paymentIdentity !== undefined || observation.facts.paymentIdentity !== undefined) {
+        if (billActionDigest(obligation?.paymentIdentity ?? null) !== billActionDigest(observation.facts.paymentIdentity ?? null)) fail('conflict', 'Accepted payment identity does not match its captured evidence.');
+      }
       return obligation?.classification === 'obligation' && obligation.obligationKind === 'payment' && obligation.provenance === 'explicit' && outcome?.status === 'applied' && outcome.loopId === loopId ? { observation, obligation } : null;
     }).filter(Boolean);
     if (!accepted.length) fail('unavailable', 'A durable accepted email outcome is required.');
@@ -40,6 +45,7 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
   function commitFence(value, write) {
     const authorityValue = authorize({ loopId: value.loop.loopId, write, observation: value.observation });
     if (authorityValue?.then || authorityValue?.principalId !== value.principalId) fail('unauthenticated', 'The original bill operator authority changed.');
+    if (value.admissionPredecessor) predecessorFence(value.admissionPredecessor, value);
     const latest = admitted(value.loop.loopId);
     if (latest.loop.revision !== value.loop.revision || latest.observation.observationId !== value.observation.observationId) fail('conflict', 'The accepted action evidence changed during the request.');
   }
@@ -64,7 +70,49 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
   }
   function meaning(value) {
     const fields = ['amount', 'currency', 'payee', 'purpose', 'invoiceId', 'accountId', 'dueAt', 'dueDate', 'dueTimeZone'];
-    return billActionDigest(Object.fromEntries(fields.filter(key => value.obligation[key] !== undefined || value.observation.facts[key] !== undefined).map(key => [key, value.obligation[key] ?? value.observation.facts[key]])));
+    const legacy = Object.fromEntries(fields.filter(key => value.obligation[key] !== undefined || value.observation.facts[key] !== undefined).map(key => [key, value.obligation[key] ?? value.observation.facts[key]]));
+    return billActionDigest({ ...legacy, ...(value.obligation.paymentIdentity === undefined ? {} : { paymentIdentity: value.obligation.paymentIdentity }) });
+  }
+  function predecessorFence(predecessor, value) {
+    const relation = value.obligation.paymentIdentity.predecessor;
+    const fresh = resolvePaymentPredecessor({ metadata, loadAccount: loadIntakeSourceAccount, relation, actionLoopId: value.loop.loopId, semanticKey: value.semanticKey });
+    const auth = authorize({ loopId: fresh.loop.loopId, write: false, observation: fresh.observation });
+    if (auth?.then || auth?.principalId !== value.principalId || fresh.loop.revision !== predecessor.loop.revision) fail('unavailable', 'Original predecessor evidence or authority changed.');
+  }
+  function sourceCurrent(value, evidence) {
+    if (evidence?.source?.kind !== 'outlook') return evidence.source;
+    const locator = metadata.getEmailReaderLocator(value.observation.source.externalId, value.observation.facts.sourceVersion);
+    let url;
+    try { url = locator?.status === 'available' ? validatedOutlookWebLink(locator.webLink) : null; } catch { /* Refuse a replaced exact destination. */ }
+    if (url === evidence.source.url) return evidence.source;
+    if (evidence.retainedNote?.kind === 'note') return evidence.retainedNote;
+    fail('unavailable', 'The exact source destination changed during publication.');
+  }
+  async function currentPredecessor(value) {
+    const relation = value.obligation.paymentIdentity?.predecessor;
+    if (!relation) return null;
+    const predecessor = resolvePaymentPredecessor({ metadata, loadAccount: loadIntakeSourceAccount, relation, actionLoopId: value.loop.loopId, semanticKey: value.semanticKey });
+    predecessorFence(predecessor, value);
+    const evidence = await readEvidence(predecessor);
+    predecessorFence(predecessor, value);
+    if (!evidence?.available || evidence.topicId !== predecessor.loop.topicId) fail('unavailable', 'Exact predecessor evidence is unavailable.');
+    return { ...predecessor, evidence };
+  }
+  async function projectPredecessor(value) {
+    if (!value.obligation.paymentIdentity?.predecessor) return undefined;
+    try {
+      const predecessor = await currentPredecessor(value);
+      const binding = metadata.getBillActionBinding(predecessor.loop.loopId);
+      let native = { availability: 'unavailable' };
+      if (binding?.cardId) {
+        try { const card = await cardFor(predecessor.loop.loopId, binding); native = { availability: 'available', status: card.status, updatedAt: card.updatedAt }; }
+        catch { /* Native unavailability never manufactures copied status. */ }
+      }
+      const evidence = await readEvidence(predecessor);
+      predecessorFence(predecessor, value);
+      if (!evidence?.available || evidence.topicId !== predecessor.loop.topicId) return undefined;
+      return { ...value.obligation.paymentIdentity.predecessor, title: predecessor.obligation.title, source: sourceCurrent(predecessor, evidence), native };
+    } catch { return undefined; }
   }
   async function cardFor(loopId, binding, write = false) {
     authority(loopId, write);
@@ -86,10 +134,22 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
     const freshBinding = metadata.getBillActionBinding(binding.actionId);
     if (freshBinding.eligibilityRevision !== binding.eligibilityRevision) fail('conflict', 'Later eligibility changed during the read.');
     authority(loopId);
+    let predecessor = await projectPredecessor(value);
+    const finalCurrent = await current(loopId);
+    commitFence(value, false);
+    const source = sourceCurrent(value, finalCurrent.evidence);
+    if (predecessor) {
+      try {
+        const original = resolvePaymentPredecessor({ metadata, loadAccount: loadIntakeSourceAccount, relation: value.obligation.paymentIdentity.predecessor, actionLoopId: value.loop.loopId, semanticKey: value.semanticKey });
+        predecessorFence(original, value);
+        predecessor.source = sourceCurrent(original, { source: predecessor.source });
+      } catch { predecessor = undefined; }
+    }
+    if (metadata.getBillActionBinding(binding.actionId)?.eligibilityRevision !== binding.eligibilityRevision) fail('conflict', 'Later eligibility changed during predecessor read.');
     const unresolved = metadata.listOperations().filter(item => ['bill-action.handle.v1', 'bill-action.defer.v1'].includes(item.operationKind) && ['pending', 'unknown'].includes(item.state)).map(item => JSON.parse(item.resultIdentity)).find(item => item.actionId === binding.actionId);
     if (unresolved && unresolved.actorId !== authority(loopId)) fail('unavailable', 'An operation owned by another operator requires reconciliation.');
     const eligibility = { revision: binding.eligibilityRevision, reviewAt: binding.reviewAt, timeZone: binding.timeZone ?? null, offsetMinutes: binding.offsetMinutes ?? null, eligible: !unresolved && card.status === 'todo' && (!binding.reviewAt || Date.parse(now()) >= Date.parse(binding.reviewAt)) };
-    return { schemaVersion: 1, loopId, actionId: binding.actionId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'available', outcome: card.status === 'done' ? 'handled-observed' : unresolved ? 'unknown' : card.status === 'todo' ? 'pending' : 'conflict', ...(unresolved ? { pendingOperation: { logicalOperationId: unresolved.logicalOperationId, kind: unresolved.action, intent: unresolved.action === 'handle' ? { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedUpdatedAt: unresolved.expectedUpdatedAt } : { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedEligibilityRevision: unresolved.expectedEligibilityRevision, reviewAt: unresolved.reviewAt, timeZone: unresolved.timeZone, offsetMinutes: unresolved.offsetMinutes } } } : {}), reason: 'Accepted explicit email payment request', deadline: value.obligation.dueAt ? { known: true, instant: value.obligation.dueAt, provenance: 'accepted-source' } : { known: false }, source: value.evidence.source, sourceIdentity: { externalId: value.observation.source.externalId, version: value.observation.facts.sourceVersion, outcomeId: value.observation.facts.obligationId, observationId: value.observation.observationId }, binding: { tenantId: binding.tenantId, boardId: binding.boardId, cardId: binding.cardId, idempotencyKey: binding.createIntent.idempotencyKey }, native: { status: card.status, updatedAt: card.updatedAt, ...(Number.isFinite(card.completedAt) ? { completedAt: card.completedAt } : {}), events: (card.events ?? []).filter(event => typeof event.id === 'string' && typeof event.kind === 'string' && Number.isFinite(event.at)).map(({ id, kind, at, fromStatus, toStatus }) => ({ id, kind, at, ...(fromStatus ? { fromStatus } : {}), ...(toStatus ? { toStatus } : {}) })) }, eligibility };
+    return { schemaVersion: 1, loopId, actionId: binding.actionId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'available', outcome: card.status === 'done' ? 'handled-observed' : unresolved ? 'unknown' : card.status === 'todo' ? 'pending' : 'conflict', ...(unresolved ? { pendingOperation: { logicalOperationId: unresolved.logicalOperationId, kind: unresolved.action, intent: unresolved.action === 'handle' ? { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedUpdatedAt: unresolved.expectedUpdatedAt } : { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedEligibilityRevision: unresolved.expectedEligibilityRevision, reviewAt: unresolved.reviewAt, timeZone: unresolved.timeZone, offsetMinutes: unresolved.offsetMinutes } } } : {}), ...(predecessor ? { predecessor } : {}), reason: 'Accepted explicit email payment request', deadline: value.obligation.dueAt ? { known: true, instant: value.obligation.dueAt, provenance: 'accepted-source' } : { known: false }, source, sourceIdentity: { externalId: value.observation.source.externalId, version: value.observation.facts.sourceVersion, outcomeId: value.observation.facts.obligationId, observationId: value.observation.observationId }, binding: { tenantId: binding.tenantId, boardId: binding.boardId, cardId: binding.cardId, idempotencyKey: binding.createIntent.idempotencyKey }, native: { status: card.status, updatedAt: card.updatedAt, ...(Number.isFinite(card.completedAt) ? { completedAt: card.completedAt } : {}), events: (card.events ?? []).filter(event => typeof event.id === 'string' && typeof event.kind === 'string' && Number.isFinite(event.at)).map(({ id, kind, at, fromStatus, toStatus }) => ({ id, kind, at, ...(fromStatus ? { fromStatus } : {}), ...(toStatus ? { toStatus } : {}) })) }, eligibility };
   }
   async function admit(input) {
     envelope(input, ['tenantId', 'boardId', 'logicalOperationId']);
@@ -102,9 +162,11 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
       if (prior && (prior.operationKind !== 'bill-action.admit.v1' || JSON.parse(prior.resultIdentity).actionId !== binding.actionId || JSON.parse(prior.resultIdentity).actorId !== authority(input.loopId, true))) fail('intent-mismatch', 'The admission operation ID belongs to a different immutable intent.');
       if (!binding.cardId && binding.actorId !== authority(input.loopId, true)) fail('unavailable', 'The original operator must reconcile the pending admission.');
     } else {
+      if (value.obligation.paymentIdentity?.predecessor) value.admissionPredecessor = await currentPredecessor(value);
       const createIntent = { title: value.obligation.title, status: 'todo', tenant: input.tenantId, boardId: input.boardId, idempotencyKey: `cc-bill:${billActionDigest([value.semanticKey, input.tenantId, input.boardId])}` };
       binding = metadata.reserveBillActionBinding({ schemaVersion: 1, actionId: value.loop.loopId, semanticKey: value.semanticKey, meaningDigest: meaning(value), tenantId: input.tenantId, boardId: input.boardId, logicalOperationId: input.logicalOperationId, actorId: authority(input.loopId, true), createIntent, source: { externalId: value.observation.source.externalId, version: value.observation.facts.sourceVersion, outcomeId: value.observation.facts.obligationId } }, () => commitFence(value, true));
     }
+    if (!binding?.cardId && value.obligation.paymentIdentity?.predecessor) value.admissionPredecessor = await currentPredecessor(value);
     if (!binding.cardId) {
       const result = await nativeRequest('workboard.cards.create', binding.createIntent, { assertCurrent: () => commitFence(value, true) });
       await current(input.loopId, true);

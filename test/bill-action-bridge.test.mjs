@@ -40,6 +40,25 @@ test('closed requests refuse serialized authority and malformed native revisions
   assert.equal(BRIDGE_CONTRACTS[method('defer')].scope, 'operator.write');
 });
 
+test('predecessor projection retains exact evidence without private binding or authority', () => {
+  const value = sanitizeBridgeResult(method('read'), { schemaVersion: 1, loopId,
+    predecessor: { loopId: 'fictional-BILL-100', observationId: 'accepted-original-100', explanation: 'A separately accepted new request.',
+      title: 'Prior request', actorId: 'private-actor', binding: { cardId: 'private-card' },
+      source: { kind: 'note', topicId: 'fictional-topic', referenceId: 'note-100', path: 'bills/BILL-100.md', revision: 'note-v1', internalActorId: 'fictional-actor' },
+      native: { availability: 'available', status: 'done', updatedAt: 100, sessionKey: 'private-session', paid: true } } });
+  assert.equal(value.predecessor.observationId, 'accepted-original-100');
+  assert.equal(value.predecessor.source.revision, 'note-v1');
+  assert.equal(value.predecessor.native.status, 'done');
+  assert.equal(value.predecessor.actorId, undefined);
+  assert.equal(value.predecessor.binding, undefined);
+  assert.equal(value.predecessor.source.internalActorId, undefined);
+  assert.equal(value.predecessor.native.sessionKey, undefined);
+  assert.equal(value.predecessor.native.paid, undefined);
+  const unavailable = sanitizeBridgeResult(method('read'), { schemaVersion: 1, loopId,
+    predecessor: { loopId: 'fictional-BILL-100', observationId: 'accepted-original-100', native: { availability: 'unavailable' } } });
+  assert.deepEqual(unavailable.predecessor.native, { availability: 'unavailable' });
+});
+
 test('nested native dispatch retains the host-prepared commit guard rather than serialized params', async () => {
   let current = true;
   const guard = () => { if (!current) throw new Error('revoked'); };
