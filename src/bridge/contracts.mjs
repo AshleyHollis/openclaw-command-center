@@ -1,10 +1,13 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
+import { billActionResultSchema } from './bill-action-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
 
 export const READ_METHODS = Object.freeze([
+  'command-center.v1.bill-actions.list',
+  'command-center.v1.bill-actions.read',
   'command-center.v1.histories.list',
   'command-center.v1.histories.read',
   'command-center.v1.histories.attachment-read',
@@ -43,6 +46,10 @@ export const READ_METHODS = Object.freeze([
 ]);
 
 export const WRITE_METHODS = Object.freeze([
+  'command-center.v1.bill-actions.reconcile',
+  'command-center.v1.bill-actions.admit',
+  'command-center.v1.bill-actions.handle',
+  'command-center.v1.bill-actions.defer',
   'command-center.v1.migration.resume',
   'command-center.v1.reminders.create',
   'command-center.v1.topics.create',
@@ -135,6 +142,8 @@ const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
 function parameterSchema(field, method) {
+  if (field === 'expectedUpdatedAt' || field === 'offsetMinutes') return Object.freeze({ type: 'number' });
+  if (field === 'expectedEligibilityRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedRevisions') return Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ source: { enum: ['topic', 'reference'] }, id: { type: 'string', minLength: 1 }, revision: { type: ['string', 'integer'] } }), required: ['source', 'id', 'revision'] }) });
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedSessionId') return Object.freeze({ type: 'string', minLength: 1 });
@@ -168,6 +177,7 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
   if (method.startsWith('command-center.v1.open-loops.')) {
@@ -237,6 +247,7 @@ function actionResultSchema(method) {
     });
   }
   const properties = {
+    billActions: billActionResultSchema('command-center.v1.bill-actions.list'),
     schemaVersion: Object.freeze({ const: 1 }),
     status: Object.freeze({ type: 'string' }),
     name: Object.freeze({ type: 'string' }),
@@ -390,7 +401,7 @@ function actionResultSchema(method) {
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
     : method.endsWith('dashboard.get')
-    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'briefings', 'briefingHistory', 'routineOccurrences', 'notificationSettings']
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'briefings', 'briefingHistory', 'routineOccurrences', 'notificationSettings', 'billActions']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];
@@ -406,6 +417,12 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.bill-actions.list': [],
+  'command-center.v1.bill-actions.read': ['loopId'],
+  'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
+  'command-center.v1.bill-actions.admit': ['loopId', 'tenantId', 'boardId'],
+  'command-center.v1.bill-actions.handle': ['loopId', 'expectedUpdatedAt'],
+  'command-center.v1.bill-actions.defer': ['loopId', 'expectedEligibilityRevision', 'reviewAt', 'timeZone', 'offsetMinutes'],
   'command-center.v1.histories.list': [],
   'command-center.v1.histories.read': ['historyId'],
   'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset'],
@@ -499,6 +516,12 @@ const required = Object.freeze({
   'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt']
 });
 const fields = Object.freeze({
+  'command-center.v1.bill-actions.list': ['topicId', 'offset', 'limit'],
+  'command-center.v1.bill-actions.read': ['loopId'],
+  'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
+  'command-center.v1.bill-actions.admit': ['loopId', 'tenantId', 'boardId'],
+  'command-center.v1.bill-actions.handle': ['loopId', 'expectedUpdatedAt'],
+  'command-center.v1.bill-actions.defer': ['loopId', 'expectedEligibilityRevision', 'reviewAt', 'timeZone', 'offsetMinutes'],
   'command-center.v1.histories.list': ['topicId'],
   'command-center.v1.histories.read': ['historyId', 'offset', 'limit'],
   'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset', 'observedRevision'],

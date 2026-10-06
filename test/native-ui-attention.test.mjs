@@ -42,7 +42,19 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: structuredClone(window.dashboardTopics ?? [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }]), intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: structuredClone(window.dashboardTopics ?? [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }]), intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) }, ...(window.billActions ? { billActions: structuredClone(window.billActions) } : {}) } };
+          if (method.includes('.bill-actions.')) {
+            const row = window.billActions.rows.find(item => item.loopId === params.loopId);
+            if (method.endsWith('bill-actions.read')) return { result: structuredClone(row) };
+            if (window.billMode === 'lost-before-acceptance' && method.endsWith('bill-actions.handle')) { window.billMode = 'retry-original'; throw new Error('Fictional timeout before acceptance.'); }
+            if (window.billMode === 'unknown') throw new Error('Fictional lost response.');
+            if (window.billMode === 'retry-original' && method.endsWith('bill-actions.reconcile')) return { result: { logicalOperationId: params.logicalOperationId, state: 'unknown', outcome: 'unknown' } };
+            if (method.endsWith('bill-actions.reconcile')) return { result: { logicalOperationId: params.logicalOperationId, state: 'applied', outcome: 'handled-observed' } };
+            if (window.billMode === 'conflict') return { result: { logicalOperationId: params.logicalOperationId, state: 'conflict', outcome: 'conflict' } };
+            if (method.endsWith('bill-actions.handle')) { row.native.status = 'done'; row.native.updatedAt += 1; row.outcome = 'handled-observed'; }
+            if (method.endsWith('bill-actions.defer')) { Object.assign(row.eligibility, { revision: row.eligibility.revision + 1, reviewAt: params.reviewAt, timeZone: params.timeZone, offsetMinutes: params.offsetMinutes, eligible: false }); }
+            return { result: { logicalOperationId: params.logicalOperationId, state: 'applied', outcome: method.endsWith('bill-actions.handle') ? 'handled-observed' : 'applied' } };
+          }
           if (method.endsWith('briefings.set-read')) { const item = window.briefingHistory.find(row => row.editionId === params.editionId); item.read = params.read; window.briefings = window.briefingHistory.filter(row => !row.read); if (window.dailyMode === 'unknown-once') { window.dailyMode = 'success'; throw new Error('The transport outcome is unknown.'); } return { result: structuredClone(item) }; }
           if (method.endsWith('routines.decide')) { window.routineOccurrences = window.routineOccurrences.filter(row => !(row.routineId === params.routineId && row.occurrenceDate === params.occurrenceDate)); return { result: { schemaVersion: 1, ...params, revision: params.expectedRevision + 1 } }; }
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
@@ -180,6 +192,7 @@ async function fixture(run) {
         mount((root, next) => mountAttentionPage(root, next, operations));
       };
       window.mountInbox = () => window.mountRecord(null);
+      window.clearUiOperations = () => operations.clear();
       window.mountPlanner = (topicId) => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: topicId ? { topicId } : {}, signal: scope.signal, presented: true };
@@ -206,6 +219,200 @@ async function fixture(run) {
     assert.deepEqual(await page.evaluate(() => window.shutdown()), { pages: 0, subscribers: 0 });
   } finally { await browser?.close(); await new Promise((resolve) => server.close(resolve)); }
 }
+
+async function installBillFixture(page) {
+  await page.evaluate(() => {
+    window.billMode = 'success';
+    window.billActions = { schemaVersion: 1, total: 1, offset: 0, limit: 50, coverage: 'bound-actions-only', unavailableCount: 0, observedAt: '2026-10-05T00:00:00.000Z', userTimeZone: 'Australia/Brisbane', rows: [{ schemaVersion: 1, loopId: 'fictional-bill-101', actionId: 'fictional-bill-101', title: 'BILL-101: review the fictional payment request', topicId: 'topic-fictional-renovation', availability: 'available', outcome: 'pending', reason: 'Accepted explicit email payment request', deadline: { known: false }, canWrite: true, source: { kind: 'outlook', url: 'https://outlook.office.com/mail/inbox/id/fictional-bill-101' }, sourceIdentity: { externalId: 'fictional-email-101', version: 'fictional-email-v1', outcomeId: 'fictional-payment-intent', observationId: 'fictional-observation' }, binding: { tenantId: 'fictional-tenant', boardId: 'fictional-board', cardId: 'fictional-card', idempotencyKey: 'fictional-action-key' }, native: { status: 'todo', updatedAt: 101 }, eligibility: { revision: 0, reviewAt: null, timeZone: null, offsetMinutes: null, eligible: true } }] };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Bill actions', exact: true }).waitFor();
+}
+
+test('qualified bill journey reviews source, cancels Later, saves exact eligibility and handles early', () => fixture(async page => {
+  if (process.env.BILL_ACTION_SCREENSHOT_DIR) {
+    await page.setViewportSize({ width: 1440, height: 1400 });
+    await page.evaluate(() => window.mountInbox());
+    await page.getByRole('heading', { name: 'Command Center', exact: true }).waitFor();
+    await page.evaluate(() => { document.querySelector('#fictional-pane').scrollTop = 0; window.scrollTo(0, 0); });
+    await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-before.png'), fullPage: true });
+  }
+  await installBillFixture(page);
+  const card = page.locator('[data-bill-action-id="fictional-bill-101"]');
+  assert.match(await card.innerText(), /Deadline unknown/);
+  await card.getByRole('button', { name: 'Review source', exact: true }).click();
+  assert.equal(await card.getByRole('link', { name: 'Open exact email in Outlook' }).getAttribute('href'), 'https://outlook.office.com/mail/inbox/id/fictional-bill-101');
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => /bill-actions\.(?:handle|defer)$/.test(request.method)).length, 0);
+  await card.getByRole('button', { name: 'Later', exact: true }).click();
+  await card.getByRole('button', { name: 'Tomorrow morning', exact: true }).click();
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /6 October 2026.*09:00.*Australia\/Brisbane/);
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await card.getByLabel('Custom local date and time').inputValue(), '2026-10-06T09:00');
+  assert.equal(await card.getByLabel('Timezone (IANA)').inputValue(), 'Australia/Brisbane');
+  await card.getByRole('button', { name: 'Tomorrow morning', exact: true }).click();
+  if (process.env.BILL_ACTION_SCREENSHOT_DIR) { await page.evaluate(() => { document.querySelector('#fictional-pane').scrollTop = 0; window.scrollTo(0, 0); }); await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-after.png'), fullPage: true }); }
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 390), true);
+  assert.equal(await card.evaluate(node => [...node.querySelectorAll('input,select,button')].every(control => control.getBoundingClientRect().right <= node.getBoundingClientRect().right + 1)), true);
+  if (process.env.BILL_ACTION_SCREENSHOT_DIR) {
+    await page.evaluate(() => { document.querySelector('#fictional-pane').scrollTop = 0; window.scrollTo(0, 0); }); await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-phone.png'), fullPage: true });
+    await card.locator('[data-bill-later-form]').evaluate(node => node.scrollIntoView({ block: 'start' })); await page.screenshot({ path: path.join(process.env.BILL_ACTION_SCREENSHOT_DIR, 'bill-actions-phone-later.png'), fullPage: true });
+  }
+  await page.setViewportSize({ width: 1440, height: 1400 });
+  await card.getByRole('button', { name: 'Cancel Later' }).click();
+  assert.equal(await card.getByRole('button', { name: 'Later', exact: true }).evaluate(node => node === document.activeElement), true);
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => request.method.endsWith('bill-actions.defer')).length, 0);
+  await card.getByRole('button', { name: 'Later', exact: true }).click();
+  await card.getByRole('button', { name: 'Tomorrow morning', exact: true }).click();
+  await card.getByRole('button', { name: 'Save Later', exact: true }).click();
+  await page.locator('[data-bill-deferred]').getByText('BILL-101: review the fictional payment request', { exact: true }).waitFor({ state: 'attached' });
+  const save = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.defer')));
+  assert.equal(save.params.reviewAt, '2026-10-05T23:00:00Z'); assert.equal(save.params.timeZone, 'Australia/Brisbane'); assert.equal(save.params.offsetMinutes, 600);
+  await page.locator('[data-bill-deferred] > summary').click();
+  await card.getByRole('button', { name: 'Handled', exact: true }).click();
+  await page.locator('[data-bill-handled]').getByText('BILL-101: review the fictional payment request', { exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Bill actions');
+  await page.locator('[data-bill-handled] > summary').click();
+  assert.match(await card.innerText(), /Handled status confirmed/);
+  await page.evaluate(() => { const native = window.billActions.rows[0].native; native.completedAt = Date.parse('2026-10-05T01:00:00Z'); native.events = [{ id: 'fictional-history', kind: 'status_changed', at: native.completedAt, fromStatus: 'todo', toStatus: 'done' }]; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await card.getByRole('button', { name: 'Handled', exact: true }).waitFor({ state: 'detached' });
+  assert.match(await card.innerText(), /Native completion time: 2026-10-05T01:00:00.000Z/);
+  await card.locator('summary', { hasText: 'Native history' }).click();
+  assert.match(await card.innerText(), /todo → done/);
+  assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).count(), 0);
+  const handled = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.handle'))); assert.equal(handled.params.expectedUpdatedAt, 101);
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await page.locator('[data-bill-action-id="fictional-bill-101"]').count(), 1);
+  await page.evaluate(() => {
+    const next = structuredClone(window.billActions.rows[0]);
+    Object.assign(next, { loopId: 'fictional-bill-new-intent', actionId: 'fictional-bill-new-intent', title: 'New explicit fictional installment request', outcome: 'pending', reason: 'New installment requested in the accepted source' });
+    next.native = { status: 'todo', updatedAt: 201 }; next.eligibility = { revision: 0, reviewAt: null, timeZone: null, offsetMinutes: null, eligible: true };
+    next.binding.cardId = 'fictional-card-new-intent'; next.sourceIdentity.outcomeId = 'fictional-new-installment';
+    window.billActions.rows.push(next); window.billActions.total = 2;
+  });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await page.locator('[data-bill-action-group="active"]').getByText('New explicit fictional installment request', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-bill-handled] [data-bill-action-id="fictional-bill-101"]').count(), 1);
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => request.method.endsWith('bill-actions.handle')).length, 1);
+}));
+
+test('bill unknown and conflict retain original intent, external Done wins and permission loss clears private rows', () => fixture(async page => {
+  await installBillFixture(page);
+  await page.evaluate(() => { window.billMode = 'unknown'; });
+  let card = page.locator('[data-bill-action-id="fictional-bill-101"]');
+  await card.getByRole('button', { name: 'Handled', exact: true }).click();
+  await card.getByRole('button', { name: 'Reconcile original operation' }).waitFor();
+  assert.match(await card.innerText(), /Could not confirm whether this was handled/);
+  assert.equal(await card.getByRole('button', { name: 'Later', exact: true }).count(), 0);
+  const first = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.handle')));
+  await page.evaluate(original => {
+    const row = window.billActions.rows[0]; row.pendingOperation = { logicalOperationId: original.params.logicalOperationId, kind: 'handle', intent: original.params }; row.outcome = 'unknown'; row.eligibility.eligible = false;
+    window.clearUiOperations(); window.mountInbox();
+  }, first);
+  await card.getByRole('button', { name: 'Reconcile original operation' }).waitFor();
+  assert.equal(await page.locator('[data-bill-action-group="active"] [data-bill-action-id="fictional-bill-101"]').count(), 1);
+  await card.getByRole('button', { name: 'Reconcile original operation' }).click();
+  const recovery = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.reconcile')));
+  assert.equal(recovery.params.logicalOperationId, first.params.logicalOperationId);
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => request.method.endsWith('bill-actions.handle')).length, 1);
+  await page.evaluate(() => { window.billActions.rows[0].native.status = 'done'; window.billActions.rows[0].outcome = 'handled-observed'; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await page.locator('[data-bill-handled] > summary').click();
+  assert.match(await card.innerText(), /Handled status confirmed/);
+  await page.evaluate(() => window.setAccess({ canRead: false }));
+  await page.getByText('BILL-101: review the fictional payment request', { exact: true }).waitFor({ state: 'detached' });
+}));
+
+test('bill source fallback and partial coverage fail honestly without writes', () => fixture(async page => {
+  await installBillFixture(page);
+  await page.evaluate(() => { window.billActions.coverage = 'partial'; window.billActions.unavailableCount = 1; window.billActions.rows[0].source = { kind: 'note', topicId: 'topic-fictional-renovation', referenceId: 'fictional-note', path: 'Inbox/fictional-bill.md', revision: 'fictional-note-v1', observedRevision: 'fictional-note-v1' }; window.billActions.rows[0].canWrite = false; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  const card = page.locator('[data-bill-action-id="fictional-bill-101"]');
+  assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).isDisabled(), true);
+  await card.getByRole('button', { name: 'Review source', exact: true }).click();
+  assert.deepEqual((await page.evaluate(() => window.opened)).at(-1), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'fictional-note', sourcePath: 'Inbox/fictional-bill.md', evidenceSourceVersion: 'fictional-note-v1' } });
+  await page.evaluate(() => { window.billActions.rows = []; window.billActions.total = 0; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await page.getByRole('heading', { name: 'No actionable items remain' }).count(), 0);
+  assert.match(await page.locator('[data-bill-actions]').innerText(), /current status is unknown/);
+}));
+
+test('bill timeout before acceptance reconciles unknown and retries the immutable original operation', () => fixture(async page => {
+  await installBillFixture(page);
+  await page.evaluate(() => { window.billMode = 'lost-before-acceptance'; });
+  const card = page.locator('[data-bill-action-id="fictional-bill-101"]');
+  await card.getByRole('button', { name: 'Handled', exact: true }).click();
+  await card.getByRole('button', { name: 'Retry original operation', exact: true }).waitFor();
+  const original = await page.evaluate(() => window.requests.find(request => request.method.endsWith('bill-actions.handle')));
+  await card.getByRole('button', { name: 'Reconcile original operation', exact: true }).click();
+  await card.getByRole('button', { name: 'Retry original operation', exact: true }).waitFor();
+  assert.match(await card.innerText(), /Could not confirm whether this was handled/);
+  assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).count(), 0);
+  assert.equal(await card.getByRole('button', { name: 'Later', exact: true }).count(), 0);
+  await page.evaluate(first => {
+    const row = window.billActions.rows[0]; row.pendingOperation = { logicalOperationId: first.params.logicalOperationId, kind: 'handle', intent: first.params }; row.outcome = 'unknown'; row.eligibility.eligible = false;
+    window.clearUiOperations(); window.mountInbox();
+  }, original);
+  await card.getByRole('button', { name: 'Retry original operation', exact: true }).waitFor();
+  await page.evaluate(() => window.setAccess({ canWrite: false }));
+  assert.equal(await card.getByRole('button', { name: 'Retry original operation', exact: true }).isDisabled(), true);
+  await page.evaluate(() => window.setAccess({ canWrite: true }));
+  await card.getByRole('button', { name: 'Retry original operation', exact: true }).click();
+  await page.locator('[data-bill-handled] [data-bill-action-id="fictional-bill-101"]').waitFor({ state: 'attached' });
+  const submissions = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('bill-actions.handle')));
+  assert.equal(submissions.length, 2); assert.deepEqual(submissions[1], original);
+  assert.equal(await card.getByRole('button', { name: 'Retry original operation', exact: true }).count(), 0);
+}));
+
+test('bill conflict requires review; explicit timezone and custom fold preview never silently choose', () => fixture(async page => {
+  await installBillFixture(page);
+  const card = page.locator('[data-bill-action-id="fictional-bill-101"]');
+  await page.evaluate(() => { window.billActions.userTimeZone = undefined; });
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  await card.getByRole('button', { name: 'Later', exact: true }).click();
+  await card.getByRole('button', { name: 'Tomorrow morning', exact: true }).click();
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /Choose your timezone/);
+  await card.getByLabel('Timezone (IANA)').fill('America/New_York');
+  await card.getByLabel('Custom local date and time').fill('2026-11-01T01:30');
+  await card.getByRole('button', { name: 'Preview review time' }).click();
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /occurs twice/);
+  await card.getByLabel('Occurrence / UTC offset').selectOption('-05:00');
+  await card.getByRole('button', { name: 'Preview review time' }).click();
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /1 November 2026.*01:30.*UTC-05:00/);
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await card.getByLabel('Custom local date and time').inputValue(), '2026-11-01T01:30');
+  assert.equal(await card.getByLabel('Timezone (IANA)').inputValue(), 'America/New_York');
+  assert.equal(await card.getByLabel('Occurrence / UTC offset').inputValue(), '-05:00');
+  assert.equal(await card.getByLabel('Occurrence / UTC offset').locator('option[value="-04:00"]').count(), 1);
+  assert.equal(await card.getByLabel('Occurrence / UTC offset').locator('option[value="-05:00"]').count(), 1);
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /Preview the exact date/);
+  await card.getByRole('button', { name: 'Save Later', exact: true }).click();
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => request.method.endsWith('bill-actions.defer')).length, 0);
+  await card.getByRole('button', { name: 'Preview review time' }).click();
+  assert.match(await card.locator('[data-bill-later-form]').innerText(), /1 November 2026.*01:30.*UTC-05:00/);
+  await card.getByRole('button', { name: 'Cancel Later' }).click();
+  await page.evaluate(() => { window.billMode = 'conflict'; });
+  await card.getByRole('button', { name: 'Handled', exact: true }).click();
+  await card.getByText('This item changed. Review it before trying again.', { exact: true }).waitFor();
+  assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Refresh Dashboard', exact: true }).click();
+  assert.equal(await card.getByRole('button', { name: 'Handled', exact: true }).count(), 0);
+  assert.equal((await page.evaluate(() => window.requests)).filter(request => request.method.endsWith('bill-actions.handle')).length, 1);
+}));
+
+for (const retiredBy of ['read access loss', 'scope abort', 'generation replacement']) test(`bill source link refuses default navigation after ${retiredBy}`, () => fixture(async page => {
+  await page.context().route('https://outlook.office.com/**', route => route.abort());
+  await installBillFixture(page);
+  await page.locator('[data-bill-action-id="fictional-bill-101"]').getByRole('button', { name: 'Review source', exact: true }).click();
+  await page.getByRole('link', { name: 'Open exact email in Outlook' }).waitFor();
+  await page.evaluate(reason => { window.retiredBillSourceLink = document.querySelector('[data-bill-source-link]'); if (reason === 'read access loss') window.setAccess({ canRead: false }); else if (reason === 'scope abort') window.abortView(); else document.querySelector('.cc-toolbar > button:last-of-type').click(); }, retiredBy);
+  assert.deepEqual(await page.evaluate(() => {
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const allowed = window.retiredBillSourceLink.dispatchEvent(click);
+    return { allowed, prevented: click.defaultPrevented, attached: window.retiredBillSourceLink.isConnected };
+  }), { allowed: false, prevented: true, attached: false });
+}));
 
 test('native Attention resolves the exact server-issued record and renders evidence as text', () => fixture(async (page) => {
   assert.deepEqual(await page.evaluate(() => window.requests.map(({ method, params }) => [method, params.episodeId ?? null])), [['command-center.v1.dashboard.get', null], ['command-center.v1.attention.get', 'episode-one']]);

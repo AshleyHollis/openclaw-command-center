@@ -5,7 +5,9 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false
+  notifications: false, noteMaintenance: false,
+  // #340/#331 require exact native host/plugin qualification before exposure.
+  billActions: false
 });
 
 // The ownership catalogue deliberately retains deferred tools so their domain

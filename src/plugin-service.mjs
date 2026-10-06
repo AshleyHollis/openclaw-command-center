@@ -22,6 +22,8 @@ import { createClarificationWorker } from './open-loops/clarification-worker.mjs
 import { clarificationInterpretationStatus } from './open-loops/clarification-status.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
+import { createBillActionAdapter } from './open-loops/bill-actions.mjs';
+import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
 
@@ -142,6 +144,42 @@ export function createMetadataService(api) {
   };
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
+  function billAdapter(runtime) {
+    requireOperational();
+    const metadata = metadataService;
+    const sources = sourceService;
+    const assertCurrent = () => {
+      requireOperational();
+      if (stopPromise || metadataService !== metadata || sourceService !== sources || typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then)
+        throw new SourceServiceError('unauthenticated', 'Current bill-action owner authority is required.');
+    };
+    assertCurrent();
+    const authorize = ({ loopId, write, observation }) => {
+      assertCurrent();
+      if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');
+      const loop = metadata.getOpenLoop(loopId);
+      if (!loop) throw new SourceServiceError('unavailable', 'The exact accepted action is unavailable.');
+      sources.requireTopicService({ topicId: loop.topicId }, { write });
+      if (observation) {
+        const facts = observation.facts ?? {};
+        sources.assertExactNoteReference({ topicId: loop.topicId, referenceId: facts.sourceReferenceId,
+          path: facts.sourcePath, observedRevision: facts.sourceReferenceVersion }, { read: true });
+      }
+      return { principalId: runtime.principalId };
+    };
+    return createBillActionAdapter({ metadata, nativeRequest: runtime.nativeRequest, authorize,
+      readEvidence: ({ loop, observation }) => readBillActionEvidence({ metadata, sourceService: sources, loop, observation, assertCurrent }) });
+  }
+  const billInput = input => {
+    const { requestId: _requestId, authenticatedOperatorId: _operatorId, ...command } = input;
+    return command;
+  };
+  const billRow = (row, runtime) => {
+    let canWrite = runtime.canWrite === true;
+    try { sourceService.requireTopicService({ topicId: row.topicId }, { write: true }); }
+    catch { canWrite = false; }
+    return Object.freeze({ ...row, canWrite });
+  };
   const refuseDeferred = feature => { requireOperational(); return unavailable(feature); };
   const requireOperator = (input, action) => {
     const operatorId = typeof input?.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
@@ -550,14 +588,34 @@ export function createMetadataService(api) {
     topicReviewSnooze() { return refuseDeferred('analysis'); },
     topicReviewCheckpoint() { return refuseDeferred('analysis'); },
     topicReviewApply() { return refuseDeferred('analysis'); },
-    async dashboardGet(input = {}) {
+    async dashboardGet(input = {}, runtime = {}) {
       requireOperational();
       if (!dashboardService) return unavailable('dashboard');
       try { await sourceService?.refreshReminderAttention?.(); } catch { /* unavailable scheduler rows are omitted */ }
       const request = { ...input };
       delete request.requestId;
-      return dashboardService.get(request);
+      const dashboard = await dashboardService.get(request);
+      if (!FIRST_LIVE_FEATURES.billActions) return dashboard;
+      const billActions = await service.billActionsList({ schemaVersion: 1 }, runtime);
+      runtime.assertCurrent();
+      return Object.freeze({ ...dashboard, billActions });
     },
+    async billActionsList(input = {}, runtime = {}) {
+      const rows = await billAdapter(runtime).list(billInput(input));
+      runtime.assertCurrent();
+      const userTimeZone = api.config?.agents?.defaults?.userTimezone;
+      return Object.freeze({ ...rows, rows: rows.rows.map(row => billRow(row, runtime)),
+        ...(typeof userTimeZone === 'string' && userTimeZone.trim() ? { userTimeZone } : {}) });
+    },
+    async billActionsRead(input = {}, runtime = {}) {
+      const row = await billAdapter(runtime).read(billInput(input));
+      runtime.assertCurrent();
+      return billRow(row, runtime);
+    },
+    billActionsAdmit(input = {}, runtime = {}) { return billAdapter(runtime).admit(billInput(input)); },
+    billActionsHandle(input = {}, runtime = {}) { return billAdapter(runtime).handle(billInput(input)); },
+    billActionsDefer(input = {}, runtime = {}) { return billAdapter(runtime).defer(billInput(input)); },
+    billActionsReconcile(input = {}, runtime = {}) { return billAdapter(runtime).reconcile(billInput(input)); },
     briefingSetRead(input = {}) { requireOperational(); return dailyWorkspace.setBriefingRead(input); },
     routineDecide(input = {}) { requireOperational(); return dailyWorkspace.decideRoutine(input); },
     openLoopsList(input = {}) {

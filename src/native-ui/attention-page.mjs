@@ -1,5 +1,6 @@
 import { attentionStyles } from './attention-styles.mjs';
 import { validatedOutlookWebLink } from './outlook-web-link.mjs';
+import { renderBillActionCards } from './bill-action-cards.mjs';
 
 const text = (value) => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const nonBlank = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -185,6 +186,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else for (const item of Object.values(value)) visit(item);
     };
     visit(dashboard.openLoops);
+    visit((dashboard.billActions?.rows ?? []).filter(row => row.native?.status === 'todo').map(row => ({ ...row, revision: row.native.updatedAt })));
     for (const page of inventoryPages) visit(page.loops);
     for (const slot of draftNotices) { const card = loops.get(JSON.parse(slot)[1]); if (!card || !draftAuthorized(card)) draftNotices.delete(slot); }
     for (const [key, draft] of drafts) {
@@ -1387,6 +1389,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         }
         workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
         if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
+        if (pageMode === 'dashboard') renderBillActionCards(focus, dashboard.billActions, { host, signal, operations, current: () => current(pending), writable, reload: load, report, bindDraft: (form, row, fields, update) => bindDraft(form, { ...row, revision: row.native.updatedAt }, 'bill-later', fields, pending, update) });
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
           const internalRecordId = card.attentionRecordId ?? card.notificationRecordId;
@@ -1398,7 +1401,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
-        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]')) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
+        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]') && dashboard.billActions === undefined) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
         restoreTransientUiState(removedLoopId);
         report([message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.'), inventoryWarning].filter(Boolean).join(' ')); return;
       }

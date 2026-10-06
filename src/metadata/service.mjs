@@ -56,6 +56,7 @@ import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topi
 import { RECONCILIATION_OPERATION, installReconciliationMetadata } from './reconciliation.mjs';
 import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvisioningPrimaryMetadata, assertConditionalFolderClaims } from './provisioning-primary.mjs';
 import { installOpenLoopMetadata } from './open-loops.mjs';
+import { BILL_ACTION_KINDS, installBillActionMetadata } from './bill-actions.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { CLARIFICATION_PROPOSAL_OPERATION, CLARIFICATION_WORKER_DISPOSITION_OPERATION, installClarificationProposalMetadata } from './clarification-proposals.mjs';
@@ -1417,6 +1418,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (operationKind === 'email-reader.refresh.v1' || existing?.operation_kind === 'email-reader.refresh.v1') throw new CommandCenterMetadataError('email-reader-owner-required', 'Email reader refresh receipts require their dedicated owner.');
       if (operationKind === CLARIFICATION_PROPOSAL_OPERATION || existing?.operation_kind === CLARIFICATION_PROPOSAL_OPERATION) throw new CommandCenterMetadataError('clarification-proposal-owner-required', 'Clarification proposals require their dedicated owner.');
       if (operationKind === CLARIFICATION_WORKER_DISPOSITION_OPERATION || existing?.operation_kind === CLARIFICATION_WORKER_DISPOSITION_OPERATION) throw new CommandCenterMetadataError('clarification-disposition-owner-required', 'Clarification worker dispositions require their dedicated owner.');
+      if (BILL_ACTION_KINDS.includes(operationKind) || BILL_ACTION_KINDS.includes(existing?.operation_kind)) throw new CommandCenterMetadataError('bill-action-owner-required', 'Bill action recovery requires its dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
@@ -2544,6 +2546,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installTopicBootstrapMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installProvisioningPrimaryMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installOpenLoopMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installBillActionMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   installClarificationProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
