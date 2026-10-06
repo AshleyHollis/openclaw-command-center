@@ -16,6 +16,7 @@ import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from '
 import { createReminderServiceCronTransport } from './open-loops/service-cron-transport.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
+import { createAcceptedChatReplayService } from './open-loops/accepted-chat-replay.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
 import { createClarificationWorker } from './open-loops/clarification-worker.mjs';
@@ -558,6 +559,21 @@ export function createMetadataService(api) {
     // depend on a secondary public-property lookup.
     getTopicMaintenanceOwners() {
       return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
+    },
+    acceptedChatCaptureAccept(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).accept(input, runtime);
+    },
+    acceptedChatCaptureLoad(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).load(input, runtime);
+    },
+    acceptedChatCaptureReplay(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).replay(input, runtime);
     },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },

@@ -294,14 +294,16 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
         ...(outcome.status === 'quiet' && outcome.topicId && outcome.sourceReferenceId && outcome.sourcePath && outcome.sourceReferenceVersion ? { target: Object.freeze({ kind: 'topic-note', topicId: outcome.topicId, sourceReferenceId: outcome.sourceReferenceId, sourcePath: outcome.sourcePath, sourceVersion: outcome.sourceReferenceVersion }) } : {})
       })))
     }))),
-    explanation: accountExplanation
+    explanation: sourceKind === 'chat'
+      ? `${accountExplanation} This receipt covers submitted capture work; coverage of unsubmitted Chat messages is unknown.`
+      : accountExplanation
   });
 }
 
 function intakeCoverage(metadata, serverTime) {
   const rows = [
     intakeReceiptCoverage(metadata, 'email', serverTime) ?? { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
-    intakeReceiptCoverage(metadata, 'chat', serverTime) ?? { source: 'Chat commitments', sourceKind: 'chat', status: 'unknown', explanation: 'No maintained Chat-commitment receipt is available.' },
+    intakeReceiptCoverage(metadata, 'chat', serverTime) ?? { source: 'Chat commitments', sourceKind: 'chat', status: 'unknown', explanation: 'No maintained Chat-commitment receipt is available. Coverage of unsubmitted Chat messages is unknown.' },
     intakeReceiptCoverage(metadata, 'note', serverTime) ?? { source: 'Note processing', sourceKind: 'note', status: 'unknown', explanation: 'No maintained Note-processing receipt is available.' }
   ];
   const operations = typeof metadata?.listOperations === 'function' ? metadata.listOperations().filter(item => item.operationKind === 'selected-source-intake-root') : [];

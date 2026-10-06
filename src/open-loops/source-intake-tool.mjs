@@ -4,6 +4,7 @@ import { findIntakeContinuation, recordIntakeReceipt } from './intake-receipt.mj
 import { loadIntakeSourceAccount, recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
+import { requireAcceptedChatScope } from './accepted-chat-scope.mjs';
 
 const paymentIdentitySchema = Object.freeze({ type: 'object', additionalProperties: false, properties: { schemaVersion: { type: 'integer', const: 1 }, amountMinorUnits: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, invoiceId: { type: 'string', minLength: 1, maxLength: 300 }, accountId: { type: 'string', minLength: 1, maxLength: 300 }, payeeId: { type: 'string', minLength: 1, maxLength: 300 }, purpose: { type: 'string', minLength: 1, maxLength: 300 }, predecessor: { type: 'object', additionalProperties: false, properties: { loopId: { type: 'string', minLength: 1, maxLength: 300 }, observationId: { type: 'string', minLength: 1, maxLength: 300 }, explanation: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['loopId', 'observationId', 'explanation'] } }, required: ['schemaVersion'], dependentRequired: { amountMinorUnits: ['currency'], currency: ['amountMinorUnits'] } });
 
@@ -106,6 +107,7 @@ export function sourceNoteCaptureToolFactory({ getOwners } = {}) {
     }, required: ['topicId', 'noteFolderReferenceId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'path', 'markdown'] }),
     async execute(_toolCallId, params) {
       const { sourceService } = getOwners() ?? {};
+      if (params.sourceKind === 'chat') requireAcceptedChatScope(getOwners()?.metadata);
       if (!sourceService) throw sourceError('capability-unavailable', 'Source Note ownership is not ready.');
       const logicalOperationId = sourceNoteOperationId(params);
       const result = await sourceService.notesCreate({ schemaVersion: 1, topicId: params.topicId, referenceId: params.noteFolderReferenceId, path: params.path, text: params.markdown, sourceKind: 'note', logicalOperationId, requestId: logicalOperationId });

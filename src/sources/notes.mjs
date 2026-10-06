@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { assertAcceptedChatNote } from '../open-loops/accepted-chat-scope.mjs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -513,6 +514,7 @@ export class NoteAdapter {
   }
 
   async create(input = {}) {
+    assertAcceptedChatNote(this.metadata, input);
     if (!this.recovery.owned) return this.recovery.run(() => this.create(input));
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
@@ -553,6 +555,7 @@ export class NoteAdapter {
       // cannot distinguish an unstarted create from a published-then-deleted one.
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
+        assertAcceptedChatNote(this.metadata, input);
         await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {
@@ -578,8 +581,10 @@ export class NoteAdapter {
     }
     this.assertCurrentRoot(root);
     const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision, sourceReference };
+    assertAcceptedChatNote(this.metadata, input);
     note.sourceReference = await this.observe(note.sourceReference);
     this.assertCurrentRoot(root);
+    assertAcceptedChatNote(this.metadata, input);
     if (recoveryRecord) this.recovery.record(recoveryRecord, 'applied', 'metadata-applied');
     return mutationResult('applied', note, { logicalOperationId: input.logicalOperationId ?? null });
   }
