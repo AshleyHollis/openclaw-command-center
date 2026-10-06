@@ -49,12 +49,12 @@ test('build is deterministic and bound to its launch digest', async () => {
       for (const match of source.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/gu)) await access(new URL(match[1], pathToFileURL(modulePath)));
     }
     await assertBuiltDigest(second);
-    await writeFile(path.join(distRoot, 'ui', 'index.html'), '<changed>');
+    await writeFile(path.join(distRoot, 'native-ui', 'entry.mjs'), '// changed');
     await assert.rejects(assertBuiltDigest(second), /digest drift/);
     await assert.rejects(readBuiltReceipt(), /digest drift/);
 
-    const forgedFiles = second.files.map((entry) => entry.path === 'ui/index.html'
-      ? { ...entry, sha256: createHash('sha256').update('<changed>').digest('hex') }
+    const forgedFiles = second.files.map((entry) => entry.path === 'native-ui/entry.mjs'
+      ? { ...entry, sha256: createHash('sha256').update('// changed').digest('hex') }
       : entry);
     const forgedManifest = {
       formatVersion: 1,
@@ -94,17 +94,23 @@ test('asset paths reject traversal and final symlinks', async () => {
     assert.throws(() => safeRelative('/escape'));
     await build();
     const link = path.join(distRoot, 'unsafe-link');
-    await symlink('ui/index.html', link);
+    await symlink('native-ui/entry.mjs', link);
     await assert.rejects(assertBuiltDigest(), /Symlinked asset/);
     await rm(link);
     assert.equal((await lstat(distRoot)).isSymbolicLink(), false);
   });
 });
 
-test('mounted shell assets resolve beneath the external-tab plugin path', async () => {
-  await withIsolatedBuild(async ({ build, distRoot }) => {
-    await build();
-    await access(path.join(distRoot, 'asset-handler.mjs'));
+test('native package retains its runtime closure and excludes the retired shell payload', async () => {
+  await withIsolatedBuild(async ({ build, distRoot }, root) => {
+    // Rebuild from a pre-existing output so stale retired assets cannot survive.
+    await mkdir(path.join(distRoot, 'ui'), { recursive: true });
+    await writeFile(path.join(distRoot, 'ui', 'app.js'), '// stale shell');
+    await writeFile(path.join(distRoot, 'asset-handler.mjs'), '// stale handler');
+    const receipt = await build();
+    assert.ok(receipt.files.every(({ path: relative }) => !relative.startsWith('ui/') && relative !== 'asset-handler.mjs'));
+    await assert.rejects(access(path.join(distRoot, 'ui')), { code: 'ENOENT' });
+    await assert.rejects(access(path.join(distRoot, 'asset-handler.mjs')), { code: 'ENOENT' });
     await access(path.join(distRoot, 'plugin-service.mjs'));
     await access(path.join(distRoot, 'native-ui', 'entry.mjs'));
     await access(path.join(distRoot, 'native-ui', 'topic-navigation.mjs'));
@@ -116,11 +122,9 @@ test('mounted shell assets resolve beneath the external-tab plugin path', async 
     await access(path.join(distRoot, 'search', 'service.mjs'));
     await access(path.join(distRoot, 'search', 'source-snapshot.mjs'));
     await access(path.join(distRoot, 'http', 'opaque-frame-cors.mjs'));
-    await access(path.join(distRoot, 'ui', 'app.js'));
-    const shell = await readFile(path.join(distRoot, 'ui', 'index.html'), 'utf8');
-    assert.doesNotMatch(shell, /<base\b/u);
-    assert.match(shell, /href="\/plugins\/command-center\/styles\.css"/);
-    assert.match(shell, /src="\/plugins\/command-center\/app\.js"/);
+    // Retained acceptance still reads these authored fixtures directly.
+    for (const name of ['app.js', 'index.html', 'markdown.js', 'styles.css']) await access(path.join(root, 'src', 'ui', name));
+    await access(path.join(root, 'src', 'asset-handler.mjs'));
   });
 });
 
