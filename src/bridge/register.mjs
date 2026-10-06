@@ -33,7 +33,7 @@ function gatewayError(error, method) {
   const rawCode = String(error?.code ?? '').toUpperCase();
   const code = rawCode === 'INVALID_REQUEST' ? 'invalid-request'
     : rawCode === 'NOT_FOUND' ? 'not-found'
-      : ['CONFLICT', 'CRON_JOB_CHANGED'].includes(rawCode) ? 'conflict'
+      : ['CONFLICT', 'CRON_JOB_CHANGED', 'WORKBOARD_CONFLICT'].includes(rawCode) ? 'conflict'
         : 'unavailable';
   return new SourceServiceError(code, error?.message || `The authenticated ${method} request was refused.`);
 }
@@ -141,6 +141,12 @@ function captureAuthenticatedConversationAuthority({ client, context, signal, se
 }
 
 const handlerMap = Object.freeze({
+  'command-center.v1.bill-actions.list': (service, params, runtime) => service.billActionsList(params, runtime),
+  'command-center.v1.bill-actions.read': (service, params, runtime) => service.billActionsRead(params, runtime),
+  'command-center.v1.bill-actions.admit': (service, params, runtime) => service.billActionsAdmit(params, runtime),
+  'command-center.v1.bill-actions.handle': (service, params, runtime) => service.billActionsHandle(params, runtime),
+  'command-center.v1.bill-actions.defer': (service, params, runtime) => service.billActionsDefer(params, runtime),
+  'command-center.v1.bill-actions.reconcile': (service, params, runtime) => service.billActionsReconcile(params, runtime),
   'command-center.v1.histories.list': (service, params, runtime) => service.historiesList(params, runtime),
   'command-center.v1.histories.read': (service, params, runtime) => service.historiesRead(params, runtime),
   'command-center.v1.histories.attachment-read': (service, params, runtime) => service.historiesAttachmentRead(params, runtime),
@@ -265,7 +271,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
   for (const method of [...READ_METHODS, ...WRITE_METHODS]) {
     const contract = BRIDGE_CONTRACTS[method];
     const handler = handlerMap[method];
-    api.registerGatewayMethod(method, async ({ req, params, client, context, respond, isWebchatConnect, sessionMutationAuthorization, signal }) => {
+    api.registerGatewayMethod(method, async ({ req, params, client, context, respond, isWebchatConnect, sessionMutationAuthorization, sessionMutationCommitGuard, hasCurrentClientAuthority, signal }) => {
       const requestId = req?.id ?? null;
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
@@ -282,6 +288,26 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
         const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};
+        if (method.startsWith('command-center.v1.bill-actions.') || method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions) {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          const assertCurrent = () => {
+            authority.assertCurrent();
+            sessionMutationCommitGuard?.();
+            if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'The authenticated bill-action request is no longer current.');
+          };
+          const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update']);
+          runtime = { assertCurrent, principalId: authority.principalId, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
+            nativeRequest: (nativeMethod, nativeParams, options = {}) => {
+              if (!nativeMethods.has(nativeMethod)) throw new SourceServiceError('invalid-request', 'Unsupported native bill-action method.');
+              if (Object.keys(options).some(key => key !== 'assertCurrent') || options.assertCurrent !== undefined && typeof options.assertCurrent !== 'function') throw new SourceServiceError('invalid-request', 'Bill-action dispatch options are closed.');
+              if (nativeMethod !== 'workboard.cards.list' && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');
+              const guard = () => { assertCurrent(); options.assertCurrent?.(); };
+              guard();
+              const gateway = createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal,
+                sessionMutationAuthorization, sessionMutationCommitGuard: guard });
+              return gateway.request(nativeMethod, nativeParams);
+            } };
+        }
         if (method === 'command-center.v1.sessions.create') {
           if (client && context) {
             const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
@@ -320,7 +346,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (schedulerRuntimeMethods.has(method) && client?.connect) {
-          runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+          runtime = { ...runtime, gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
         if (method === 'command-center.v1.open-loops.interpret-clarification') {
           const authority = captureAuthenticatedConversationAuthority({ client, context, signal });
@@ -360,6 +386,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           assertHistoryRead();
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') runtime.creationAuthority.assertCurrent();
+        if (method.startsWith('command-center.v1.bill-actions.') || (method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions)) runtime.assertCurrent();
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));
