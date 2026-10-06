@@ -44,6 +44,15 @@ export function createAuthenticatedCoreGateway({ req, client, context, isWebchat
       if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some((key) => key !== 'requestId')) throw new SourceServiceError('invalid-request', 'Gateway request options are closed.');
       const handler = context?.getGatewayMethodRegistry?.()?.getHandler?.(method);
       if (typeof handler !== 'function') throw new SourceServiceError('capability-unavailable', `The authenticated ${method} method is unavailable.`);
+      const guardedWorkboardWrite = ['workboard.cards.create', 'workboard.cards.update'].includes(method) && typeof sessionMutationCommitGuard === 'function';
+      if (guardedWorkboardWrite && typeof sessionMutationAuthorization?.assertCurrent !== 'function') throw new SourceServiceError('unauthenticated', 'The original host mutation authority is unavailable.');
+      // Raw registry dispatch does not run the host dispatcher composition.
+      // Workboard retains authorization.assertCurrent through its queue and
+      // SQLite admission, so carry the source fence on that same authority.
+      const mutationAuthorization = guardedWorkboardWrite ? Object.freeze({
+        ...sessionMutationAuthorization,
+        assertCurrent() { sessionMutationAuthorization.assertCurrent(); sessionMutationCommitGuard(); }
+      }) : sessionMutationAuthorization;
       const scopedParams = method === 'sessions.create' && params && typeof params === 'object'
         ? { ...params, catalogId: 'command-center' }
         : params;
@@ -62,7 +71,7 @@ export function createAuthenticatedCoreGateway({ req, client, context, isWebchat
           context,
           isWebchatConnect,
           respond: finish,
-          ...(sessionMutationAuthorization ? { sessionMutationAuthorization } : {}),
+          ...(mutationAuthorization ? { sessionMutationAuthorization: mutationAuthorization } : {}),
           ...(sessionMutationCommitGuard ? { sessionMutationCommitGuard } : {}),
           ...(signal ? { signal } : {})
         })).then(

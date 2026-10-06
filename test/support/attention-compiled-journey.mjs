@@ -122,9 +122,11 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
     const read = loopId => rpc('command-center.v1.bill-actions.read', { schemaVersion: 1, loopId });
     const nativeCard = async row => {
       const result = await rpc('workboard.cards.list', { boardId: row.binding.boardId });
-      const card = result.cards.find(item => item.id === row.binding.cardId);
-      assert.ok(card); assert.equal(card.metadata.automation.tenant, row.binding.tenantId);
-      assert.equal(card.metadata.automation.idempotencyKey, row.binding.idempotencyKey);
+      const matching = result.cards.filter(item => item.metadata?.automation?.tenant === row.binding.tenantId
+        && (item.metadata.automation.boardId ?? 'default') === row.binding.boardId
+        && item.metadata.automation.idempotencyKey === row.binding.idempotencyKey);
+      assert.equal(matching.length, 1, 'Exactly one native card must own the admitted tenant, board and immutable key.');
+      const card = matching[0]; assert.equal(card.id, row.binding.cardId);
       return card;
     };
     const state = loopId => rpc('command-center.v1.open-loops.get', { schemaVersion: 1, loopId });
@@ -243,10 +245,18 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
       await cli(plan('fictional-message-100', 'v2', 'Bills/BILL-100.md', noteRevision, obligation));
       assert.equal((await read(first.loopId)).outcome, 'handled-observed');
       assert.equal((await read(first.loopId)).eligibility.eligible, false);
+      const verifyOriginalPredecessor = async () => {
+        const previous = (await read(second.loopId)).predecessor;
+        assert.equal(previous.observationId, firstAccepted.observation.observationId);
+        assert.equal(previous.source.kind, 'note'); assert.equal(previous.source.path, 'Bills/BILL-100.md');
+        assert.equal(previous.native.status, 'done');
+      };
+      await verifyOriginalPredecessor();
       await cli(plan('fictional-message-100', 'v3', 'Bills/BILL-100.md', noteRevision, { ...obligation, paymentIdentity: { ...obligation.paymentIdentity, amountMinorUnits: 14500 } }));
       await assert.rejects(read(first.loopId), /Authenticated command-center\.v1\.bill-actions\.read failed: .*accepted bill meaning changed.*requires review/iu);
       assert.equal((await nativeCard(first)).status, 'done');
       milestones.push('distinct-accepted-cause-and-correction-conflict');
+      await verifyOriginalPredecessor();
       await unlink(path.join(topic.folder, 'Bills/BILL-100.md'));
       const independent = await read(second.loopId);
       assert.equal(independent.predecessor, undefined); assert.equal(independent.native.status, 'todo');

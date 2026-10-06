@@ -63,14 +63,46 @@ test('nested native dispatch retains the host-prepared commit guard rather than 
   let current = true;
   const guard = () => { if (!current) throw new Error('revoked'); };
   const gateway = createAuthenticatedCoreGateway({ req: { id: 'transport-101' }, client: { connect: { scopes: ['operator.write'] } },
+    sessionMutationAuthorization: { assertCurrent() {} },
     sessionMutationCommitGuard: guard,
     context: { getGatewayMethodRegistry: () => ({ getHandler: () => async request => {
       assert.equal(request.params.assertCurrent, undefined);
       current = false;
-      request.sessionMutationCommitGuard();
+      request.sessionMutationAuthorization.assertCurrent();
       request.respond(true, { card: {} });
     } }) } });
   await assert.rejects(gateway.request('workboard.cards.update', { id: 'fictional-card', patch: { status: 'done' }, expectedUpdatedAt: 100 }), /revoked/);
+});
+
+test('nested Workboard write retains original host authority and CAS at native admission', async () => {
+  let hostCurrent = true, sourceCurrent = true, calls = 0;
+  const original = { owner: 'fictional-host-owner', assertCurrent() { calls += 1; if (!hostCurrent) throw new Error('host revoked'); } };
+  const originalAssertCurrent = original.assertCurrent;
+  const params = { id: 'fictional-card', patch: { status: 'done' }, expectedUpdatedAt: 100.25 };
+  let request;
+  const gateway = createAuthenticatedCoreGateway({ req: { id: 'fictional-transport' },
+    sessionMutationAuthorization: original,
+    sessionMutationCommitGuard() { if (!sourceCurrent) throw new Error('source revoked'); },
+    context: { getGatewayMethodRegistry: () => ({ getHandler: () => async value => {
+      request = value;
+      assert.equal(value.params, params);
+      assert.equal(value.sessionMutationAuthorization.owner, original.owner);
+      value.sessionMutationAuthorization.assertCurrent();
+      value.respond(true, { card: {} });
+    } }) } });
+  await gateway.request('workboard.cards.update', params);
+  assert.equal(calls, 1);
+  sourceCurrent = false;
+  assert.throws(() => request.sessionMutationAuthorization.assertCurrent(), /source revoked/);
+  sourceCurrent = true; hostCurrent = false;
+  assert.throws(() => request.sessionMutationAuthorization.assertCurrent(), /host revoked/);
+  assert.equal(original.assertCurrent, originalAssertCurrent);
+});
+
+test('nested Workboard write cannot fabricate missing host mutation authority', () => {
+  const gateway = createAuthenticatedCoreGateway({ req: {}, sessionMutationCommitGuard() {},
+    context: { getGatewayMethodRegistry: () => ({ getHandler: () => async () => {} }) } });
+  assert.throws(() => gateway.request('workboard.cards.create', {}), error => error.code === 'unauthenticated');
 });
 
 test('successor policy exposes only the six authenticated bill RPCs while notifications remain disabled', () => {
