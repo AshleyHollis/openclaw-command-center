@@ -73,7 +73,9 @@ test('nested native dispatch retains the host-prepared commit guard rather than 
   await assert.rejects(gateway.request('workboard.cards.update', { id: 'fictional-card', patch: { status: 'done' }, expectedUpdatedAt: 100 }), /revoked/);
 });
 
-test('new bill controls remain release-disabled pending exact native qualification', () => {
-  assert.equal(FIRST_LIVE_FEATURES.billActions, false);
-  for (const action of ['list', 'read', 'admit', 'handle', 'defer', 'reconcile']) assert.equal(FIRST_LIVE_COMMANDS.bridge.includes(method(action)), false);
+test('successor policy exposes only the six authenticated bill RPCs while notifications remain disabled', () => {
+  assert.equal(FIRST_LIVE_FEATURES.billActions, true);
+  assert.equal(FIRST_LIVE_FEATURES.notifications, false);
+  assert.equal(FIRST_LIVE_COMMANDS.bridge.filter(value => value.startsWith('command-center.v1.bill-actions.')).length, 6);
+  for (const action of ['list', 'read', 'admit', 'handle', 'defer', 'reconcile']) assert.equal(FIRST_LIVE_COMMANDS.bridge.includes(method(action)), true);
 });

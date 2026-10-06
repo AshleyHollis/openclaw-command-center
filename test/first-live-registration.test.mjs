@@ -127,7 +127,9 @@ test('Dashboard transport identity stays outside the closed read projection', as
     }
   });
   let response;
-  await methods.get('command-center.v1.dashboard.get')({ req: { id: 'fictional-dashboard-transport' }, params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+  const client = { connId: 'fictional-dashboard-connection', authenticatedOperatorId: 'fictional-dashboard-operator', connect: { role: 'operator', scopes: ['operator.read'] } };
+  const context = { authenticated: true, getClientConnIds: predicate => new Set(predicate(client) ? [client.connId] : []) };
+  await methods.get('command-center.v1.dashboard.get')({ req: { id: 'fictional-dashboard-transport' }, params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, client, context, respond: (ok, result, error) => { response = { ok, result, error }; } });
   assert.equal(response.ok, true, JSON.stringify(response));
   assert.deepEqual(dashboardInput, { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
   assert.equal(response.result.requestId, 'fictional-dashboard-transport');

@@ -6,8 +6,8 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false,
-  // #340/#331 require exact native host/plugin qualification before exposure.
-  billActions: false
+  // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
+  billActions: true
 });
 
 // The ownership catalogue deliberately retains deferred tools so their domain
@@ -21,6 +21,9 @@ export const FIRST_LIVE_DEFERRED_NATIVE_TOOLS = Object.freeze({
 
 export const FIRST_LIVE_COMMANDS = Object.freeze({
   bridge: Object.freeze([
+    'command-center.v1.bill-actions.list', 'command-center.v1.bill-actions.read',
+    'command-center.v1.bill-actions.admit', 'command-center.v1.bill-actions.handle',
+    'command-center.v1.bill-actions.defer', 'command-center.v1.bill-actions.reconcile',
     'command-center.v1.histories.list', 'command-center.v1.histories.read', 'command-center.v1.histories.attachment-read',
     'command-center.v1.sources.status', 'command-center.v1.migration.status',
     'command-center.v1.migration.review-failures', 'command-center.v1.topics.list',
