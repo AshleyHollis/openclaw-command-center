@@ -100,9 +100,9 @@ export function sourceNoteCaptureToolFactory({ getOwners } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Source Note capture requires authoritative owners.');
   return () => ({
     name: 'command_center_save_source_note',
-    description: 'Save one new quiet Topic Note from a maintained email or Note producer and return its exact Source Reference. This does not create an obligation or edit an existing Note.',
+    description: 'Save one new quiet Topic Note from a maintained email, Chat or Note producer and return its exact Note Source Reference. sourceKind identifies the upstream source, while the created reference remains a Note. This does not create an obligation or edit an existing Note.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      topicId: { type: 'string', minLength: 1 }, noteFolderReferenceId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 }, markdown: { type: 'string', minLength: 1 }
+      topicId: { type: 'string', minLength: 1 }, noteFolderReferenceId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 }, markdown: { type: 'string', minLength: 1 }
     }, required: ['topicId', 'noteFolderReferenceId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'path', 'markdown'] }),
     async execute(_toolCallId, params) {
       const { sourceService } = getOwners() ?? {};
