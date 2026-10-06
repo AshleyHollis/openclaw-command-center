@@ -9,7 +9,7 @@ test('Attention reads only the exact authenticated host build identity and prese
   const controller = new AbortController();
   const value = await readAttentionControlUiBuildId({ world, signal: controller.signal }, { fetchImpl: async (url, options) => {
     assert.equal(url, `${world.gateway.url}/__openclaw__/control-ui-config.json`);
-    assert.deepEqual(options.headers, { authorization: 'Bearer fictional-owner-token' });
+    assert.deepEqual(options.headers, { authorization: `Bearer ${world.gatewayCredential}` });
     assert.equal(options.redirect, 'error'); assert.equal(options.signal.aborted, false);
     return new Response('{"serverBuildId":"fictional-build-1"}', { status: 200 });
   } });
