@@ -7,6 +7,7 @@ import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
 import { topicSourceAvailable } from './topic-source-availability.mjs';
 import { renderGroupedSearchResults } from './search-results.mjs';
+import { mountNoteProposals } from './note-proposals.mjs';
 
 export const nativeExplorerCompleteCatalogLimit = 500;
 
@@ -16,7 +17,7 @@ export function nativeExplorerCatalogEntries(allNotes, pageNotes, limit = native
 }
 
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
-export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
+export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext, proposalPanel } = {}) {
   const host = context.host;
   let activeContext = context;
   const lifetime = new AbortController();
@@ -38,6 +39,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let catalogConversations = [];
   let catalogHistories = [];
   let noteText = '';
+  let proposalView;
   let noteView = 'reading';
   let renderGeneration = 0;
   const documentUrls = new Set();
@@ -136,6 +138,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const readerBody = element('div'); readerBody.className = 'reader-body'; readerBody.append(content, source);
   const documentHeader = element('div'); documentHeader.className = 'reader-document-header'; documentHeader.append(noteTitle, noteModes, documentAction);
   reader.append(breadcrumb, documentHeader, readerBody);
+  const proposalContainer = element('section');
+  if (FIRST_LIVE_FEATURES.noteProposals) reader.append(proposalContainer);
   notesWorkspace.append(files, reader);
   const toggleFiles = element('button', 'Hide Files'); toggleFiles.type = 'button'; toggleFiles.setAttribute('aria-expanded', 'true'); toggleFiles.setAttribute('aria-controls', tree.id);
   const focusReader = element('button', 'Go to reader'); focusReader.type = 'button';
@@ -179,7 +183,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const currentCatalog = (pending) => !signal.aborted && presented && readable() && pending === catalogGeneration;
   const report = (error) => { if (!signal.aborted && presented && error?.name !== 'AbortError') { status.textContent = host.redact(error?.message || 'Topic is unavailable.'); renderNativeExplorer(); } };
   let searchGeneration = 0;
-  function cancel() { generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
+  function cancel() { proposalView?.dispose(); proposalView = undefined; generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
   function clearDocumentUrls() { for (const url of documentUrls) URL.revokeObjectURL(url); documentUrls.clear(); }
   const draftKey = (descriptor) => JSON.stringify([descriptor.topicId, descriptor.referenceId]);
   const sameDocumentSelection = (candidate, descriptor) => candidate?.sourceKind === 'document' && candidate.topicId === descriptor.topicId && candidate.referenceId === descriptor.referenceId && candidate.path === descriptor.path && candidate.observedRevision === descriptor.observedRevision;
@@ -474,6 +478,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     noteState.textContent = `${draft.baseRevision} · ${draft.text === draft.baseText ? 'saved' : 'unsaved draft'}${draft.operation ? draft.operation.checking ? ' · checking save outcome…' : draft.operation.unknown ? ` · outcome unknown (${draft.operation.input.logicalOperationId}); check save outcome` : ' · saving…' : ''}${save.disabled && !draft.operation ? ' · writing unavailable' : ''}${draft.error ? ` · ${draft.error}` : ''}`;
   }
   async function openDocument(documentEntry, { userInitiated = false } = {}) {
+    proposalView?.dispose(); proposalView = undefined;
     if (!presented || !readable() || signal.aborted) return;
     navigation.cancel(); reading.abort(); preview?.dispose(); preview = undefined; reading = new AbortController(); const pending = ++generation;
     const readSignal = AbortSignal.any([signal, reading.signal]);
@@ -527,6 +532,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     finally { if (!documentSignal.aborted && current(pending)) documentAction.disabled = false; }
   })(), { signal });
   async function openNote(note, { discardDraft = false, userInitiated = false } = {}) {
+    proposalView?.dispose(); proposalView = undefined;
     if (!presented || !readable() || signal.aborted) return;
     navigation.cancel();
     reading.abort(); reading = new AbortController();
@@ -551,6 +557,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       if (readSignal.aborted || !current(pending)) return;
       noteText = result.text; await renderNoteView();
       if (readSignal.aborted || !current(pending)) return;
+      if (FIRST_LIVE_FEATURES.noteProposals) {
+        const target = { referenceId: descriptor.referenceId, path: descriptor.path, revision: result.revision };
+        const sources = catalogAllNotes.filter(row => row.sourceReference?.referenceId && row.revision && row.sourceReference.sourceKind !== 'document')
+          .map(row => ({ referenceId: row.sourceReference.referenceId, path: row.path, revision: row.revision }));
+        proposalView = mountNoteProposals(proposalContainer, { host, signal: readSignal, current: () => current(pending) && selected?.referenceId === target.referenceId,
+          verifyContext, topic, target, sources, panel: proposalPanel, pointers: state.noteProposalPointers ??= new Map() });
+      }
       // Read-only browsing must not create a local authoring/operation owner.
       if (!FIRST_LIVE_FEATURES.noteWrite) {
         announce(`Note opened · ${result.revision}`); status.title = result.revision;
@@ -826,6 +839,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let connected = readable();
   const unsubscribeDraft = subscribeNativeState(state, () => { if (!signal.aborted && presented && selected) showDraft(); });
   const unsubscribe = host.subscribe(() => {
+    proposalView?.sync();
     creation?.sync();
     noteCreation?.sync();
     if (!host.connection.canWrite) { writing.abort(); writing = new AbortController(); }
