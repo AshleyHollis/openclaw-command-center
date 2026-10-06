@@ -54,7 +54,8 @@ jobs:
               cd /workspace
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
-                test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
+                test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs \
+                test/chat-note-lineage.test.mjs test/source-intake-tool.test.mjs test/producer-intake.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
             '
           # Container output is private to its UID until the child has exited.
