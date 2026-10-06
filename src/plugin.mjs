@@ -119,6 +119,12 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'billActionsList') return (input, runtime) => service.billActionsList(input, runtime);
+        if (property === 'billActionsRead') return (input, runtime) => service.billActionsRead(input, runtime);
+        if (property === 'billActionsAdmit') return (input, runtime) => service.billActionsAdmit(input, runtime);
+        if (property === 'billActionsHandle') return (input, runtime) => service.billActionsHandle(input, runtime);
+        if (property === 'billActionsDefer') return (input, runtime) => service.billActionsDefer(input, runtime);
+        if (property === 'billActionsReconcile') return (input, runtime) => service.billActionsReconcile(input, runtime);
         if (property === 'briefingSetRead') return (input) => service.briefingSetRead(input);
         if (property === 'routineDecide') return (input) => service.routineDecide(input);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
