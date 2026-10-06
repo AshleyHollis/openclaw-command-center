@@ -200,7 +200,7 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
       return { available: true, topicId: loop.topicId, source: locator?.status === 'available' ? { kind: 'outlook', url: locator.webLink } : retainedNote, retainedNote };
     },
     nativeRequest: async (method, params, options) => {
-      nativeCalls.push({ method, params: structuredClone(params) }); nativeHook(method); options?.assertCurrent();
+      nativeCalls.push({ method, params: structuredClone(params) }); await nativeHook(method); options?.assertCurrent();
       if (method === 'workboard.cards.list') return { cards: [...nativeCards.values()] };
       if (method !== 'workboard.cards.create') assert.fail('Admitting BILL-102 must never change BILL-101 or schedule execution.');
       assert.equal(params.status, 'todo');
@@ -225,6 +225,48 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   assert.equal(second.native.status, 'todo'); assert.equal(second.eligibility.eligible, true);
   assert.equal(second.sourceIdentity.outcomeId, 'BILL-102');
   await adapter().admit(admission);
+  const bindingOrder = f.metadata.listBillActionBindings();
+  const earlier = bindingOrder[0].actionId, later = bindingOrder[1].actionId;
+  const afterSecondReadStarts = async change => {
+    let release, notify;
+    const held = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { notify = resolve; });
+    let nativeReads = 0;
+    const laterNativeRead = earlier === accepted.loopId ? 3 : 2;
+    nativeHook = async method => { if (method === 'workboard.cards.list' && ++nativeReads === laterNativeRead) { notify(); await held; } };
+    const pendingList = adapter().list();
+    await entered;
+    await change();
+    release();
+    const result = await pendingList;
+    nativeHook = () => {};
+    return result;
+  };
+  const earlierObservation = f.metadata.getOpenLoopObservation(f.metadata.getOpenLoop(earlier).evidenceObservationIds[0]);
+  const earlierReference = earlierObservation.facts.sourceReferenceId;
+  const revokedList = await afterSecondReadStarts(() => f.metadata.updateSourceReference({ version: 1, referenceId: earlierReference, observedRevision: 'revoked-during-other-row' }));
+  assert.equal(revokedList.rows.some(row => row.loopId === earlier), false);
+  assert.equal(revokedList.coverage, 'partial'); assert.ok(revokedList.unavailableCount >= 1);
+  assert.equal(JSON.stringify(revokedList).includes(earlierObservation.facts.sourcePath), false);
+  f.metadata.updateSourceReference({ version: 1, referenceId: earlierReference, observedRevision: earlierObservation.facts.sourceReferenceVersion });
+  const predecessorList = await afterSecondReadStarts(() => { predecessorRevoked = true; });
+  const bill102 = predecessorList.rows.find(row => row.loopId === accepted.loopId);
+  assert.ok(bill102); assert.equal(bill102.predecessor, undefined);
+  assert.equal(bill102.native.status, 'todo');
+  predecessorRevoked = false;
+  const earlierBinding = f.metadata.getBillActionBinding(earlier);
+  const earlierChoice = { schemaVersion: 1, loopId: earlier, logicalOperationId: id(223), expectedEligibilityRevision: earlierBinding.eligibilityRevision, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 };
+  const laterList = await afterSecondReadStarts(() => {
+    f.metadata.beginBillActionOperation({ ...earlierChoice, action: 'defer', actionId: earlier, cardId: earlierBinding.cardId, tenantId: earlierBinding.tenantId, boardId: earlierBinding.boardId, actorId: 'fictional-operator', sourceIdentity: { observationId: earlierObservation.observationId, sourceVersion: 'v1', loopRevision: f.metadata.getOpenLoop(earlier).revision } }, () => {});
+    f.metadata.commitBillActionDefer(earlierChoice, () => {});
+  });
+  assert.equal(laterList.rows.some(row => row.loopId === earlier), false); assert.equal(laterList.coverage, 'partial');
+  assert.equal(laterList.rows.some(row => row.eligibility?.revision === earlierBinding.eligibilityRevision && row.loopId === earlier && row.eligibility.eligible), false);
+  const unresolvedList = await afterSecondReadStarts(() => {
+    f.metadata.beginBillActionOperation({ schemaVersion: 1, loopId: earlier, logicalOperationId: id(224), action: 'handle', actionId: earlier, cardId: earlierBinding.cardId, tenantId: earlierBinding.tenantId, boardId: earlierBinding.boardId, patch: { status: 'done' }, expectedUpdatedAt: nativeCards.get(earlierBinding.cardId).updatedAt, actorId: 'fictional-operator', sourceIdentity: { observationId: earlierObservation.observationId, sourceVersion: 'v1', loopRevision: f.metadata.getOpenLoop(earlier).revision } }, () => {});
+  });
+  assert.equal(unresolvedList.rows.some(row => row.loopId === earlier), false); assert.equal(unresolvedList.coverage, 'partial');
+  f.metadata.settleBillActionOperation({ logicalOperationId: id(224), outcome: 'not-applied' }, () => {});
+
   const predecessorLocator = { sourceExternalId: 'namespaced:fictional-mail-101', sourceVersion: 'v1', messageId: 'fictional-mail-101', status: 'available', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-mail-101', observedAt: '2026-10-06T00:10:00.000Z' };
   f.metadata.recordEmailReaderLocator(predecessorLocator);
   let listCount = 0;
@@ -239,7 +281,7 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   evidenceHook = async ({ loop }) => {
     if (loop.loopId !== f.loopId) return;
     evidenceHook = async () => {};
-    await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(220), expectedEligibilityRevision: 0, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
+    await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(220), expectedEligibilityRevision: f.metadata.getBillActionBinding(accepted.loopId).eligibilityRevision, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
   };
   await assert.rejects(adapter().read({ loopId: accepted.loopId }), error => error.code === 'conflict');
   evidenceHook = async ({ loop }) => {
@@ -265,7 +307,7 @@ test('separately admitted explicit BILL-102 gets a distinct Backlog binding whil
   predecessorRevoked = true;
   const independent = await adapter().read({ loopId: accepted.loopId });
   assert.equal(independent.predecessor, undefined); assert.equal(independent.eligibility.eligible, false);
-  const deferred = await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(204), expectedEligibilityRevision: 1, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
+  const deferred = await adapter().defer({ schemaVersion: 1, loopId: accepted.loopId, logicalOperationId: id(204), expectedEligibilityRevision: f.metadata.getBillActionBinding(accepted.loopId).eligibilityRevision, reviewAt: '2026-10-07T00:00:00.000Z', timeZone: 'UTC', offsetMinutes: 0 });
   assert.equal(deferred.outcome, 'applied');
   predecessorRevoked = false;
   f.metadata.updateSourceReference({ version: 1, referenceId: 'fictional-note', observedRevision: 'replaced-original-note' });

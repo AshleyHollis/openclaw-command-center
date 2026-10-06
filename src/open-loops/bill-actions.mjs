@@ -15,6 +15,7 @@ function envelope(input, fields) {
 
 export function createBillActionAdapter({ metadata, nativeRequest, authorize, readEvidence, now = () => new Date().toISOString() }) {
   if (![nativeRequest, authorize, readEvidence].every(value => typeof value === 'function') || !metadata?.reserveBillActionBinding) throw new TypeError('Bill actions require their durable metadata, authenticated native transport and current evidence owner.');
+  const publicationSnapshots = new WeakMap(), predecessorSnapshots = new WeakMap();
   function authority(loopId, write = false) {
     const value = authorize({ loopId, write });
     if (value?.then || write && (typeof value?.principalId !== 'string' || !value.principalId.trim())) fail('unauthenticated', 'Bill authority must be synchronous and attest the operator.');
@@ -111,7 +112,9 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
       const evidence = await readEvidence(predecessor);
       predecessorFence(predecessor, value);
       if (!evidence?.available || evidence.topicId !== predecessor.loop.topicId) return undefined;
-      return { ...value.obligation.paymentIdentity.predecessor, title: predecessor.obligation.title, source: sourceCurrent(predecessor, evidence), native };
+      const row = { ...value.obligation.paymentIdentity.predecessor, title: predecessor.obligation.title, source: sourceCurrent(predecessor, evidence), native };
+      predecessorSnapshots.set(row, predecessor);
+      return row;
     } catch { return undefined; }
   }
   async function cardFor(loopId, binding, write = false) {
@@ -127,7 +130,11 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
   }
   async function read({ loopId }) {
     const value = await current(loopId), binding = bindingFor(value);
-    if (!binding?.cardId) return { schemaVersion: 1, loopId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'unavailable', outcome: 'unavailable', source: value.evidence.source, reason: 'Native action is not admitted.' };
+    if (!binding?.cardId) {
+      const row = { schemaVersion: 1, loopId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'unavailable', outcome: 'unavailable', source: value.evidence.source, reason: 'Native action is not admitted.' };
+      publicationSnapshots.set(row, { value, binding });
+      return row;
+    }
     const card = await cardFor(loopId, binding);
     await current(loopId);
     commitFence(value, false);
@@ -140,7 +147,7 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
     const source = sourceCurrent(value, finalCurrent.evidence);
     if (predecessor) {
       try {
-        const original = resolvePaymentPredecessor({ metadata, loadAccount: loadIntakeSourceAccount, relation: value.obligation.paymentIdentity.predecessor, actionLoopId: value.loop.loopId, semanticKey: value.semanticKey });
+        const original = predecessorSnapshots.get(predecessor);
         predecessorFence(original, value);
         predecessor.source = sourceCurrent(original, { source: predecessor.source });
       } catch { predecessor = undefined; }
@@ -149,7 +156,9 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
     const unresolved = metadata.listOperations().filter(item => ['bill-action.handle.v1', 'bill-action.defer.v1'].includes(item.operationKind) && ['pending', 'unknown'].includes(item.state)).map(item => JSON.parse(item.resultIdentity)).find(item => item.actionId === binding.actionId);
     if (unresolved && unresolved.actorId !== authority(loopId)) fail('unavailable', 'An operation owned by another operator requires reconciliation.');
     const eligibility = { revision: binding.eligibilityRevision, reviewAt: binding.reviewAt, timeZone: binding.timeZone ?? null, offsetMinutes: binding.offsetMinutes ?? null, eligible: !unresolved && card.status === 'todo' && (!binding.reviewAt || Date.parse(now()) >= Date.parse(binding.reviewAt)) };
-    return { schemaVersion: 1, loopId, actionId: binding.actionId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'available', outcome: card.status === 'done' ? 'handled-observed' : unresolved ? 'unknown' : card.status === 'todo' ? 'pending' : 'conflict', ...(unresolved ? { pendingOperation: { logicalOperationId: unresolved.logicalOperationId, kind: unresolved.action, intent: unresolved.action === 'handle' ? { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedUpdatedAt: unresolved.expectedUpdatedAt } : { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedEligibilityRevision: unresolved.expectedEligibilityRevision, reviewAt: unresolved.reviewAt, timeZone: unresolved.timeZone, offsetMinutes: unresolved.offsetMinutes } } } : {}), ...(predecessor ? { predecessor } : {}), reason: 'Accepted explicit email payment request', deadline: value.obligation.dueAt ? { known: true, instant: value.obligation.dueAt, provenance: 'accepted-source' } : { known: false }, source, sourceIdentity: { externalId: value.observation.source.externalId, version: value.observation.facts.sourceVersion, outcomeId: value.observation.facts.obligationId, observationId: value.observation.observationId }, binding: { tenantId: binding.tenantId, boardId: binding.boardId, cardId: binding.cardId, idempotencyKey: binding.createIntent.idempotencyKey }, native: { status: card.status, updatedAt: card.updatedAt, ...(Number.isFinite(card.completedAt) ? { completedAt: card.completedAt } : {}), events: (card.events ?? []).filter(event => typeof event.id === 'string' && typeof event.kind === 'string' && Number.isFinite(event.at)).map(({ id, kind, at, fromStatus, toStatus }) => ({ id, kind, at, ...(fromStatus ? { fromStatus } : {}), ...(toStatus ? { toStatus } : {}) })) }, eligibility };
+    const row = { schemaVersion: 1, loopId, actionId: binding.actionId, title: value.obligation.title, topicId: value.loop.topicId, availability: 'available', outcome: card.status === 'done' ? 'handled-observed' : unresolved ? 'unknown' : card.status === 'todo' ? 'pending' : 'conflict', ...(unresolved ? { pendingOperation: { logicalOperationId: unresolved.logicalOperationId, kind: unresolved.action, intent: unresolved.action === 'handle' ? { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedUpdatedAt: unresolved.expectedUpdatedAt } : { schemaVersion: 1, loopId: unresolved.loopId, logicalOperationId: unresolved.logicalOperationId, expectedEligibilityRevision: unresolved.expectedEligibilityRevision, reviewAt: unresolved.reviewAt, timeZone: unresolved.timeZone, offsetMinutes: unresolved.offsetMinutes } } } : {}), ...(predecessor ? { predecessor } : {}), reason: 'Accepted explicit email payment request', deadline: value.obligation.dueAt ? { known: true, instant: value.obligation.dueAt, provenance: 'accepted-source' } : { known: false }, source, sourceIdentity: { externalId: value.observation.source.externalId, version: value.observation.facts.sourceVersion, outcomeId: value.observation.facts.obligationId, observationId: value.observation.observationId }, binding: { tenantId: binding.tenantId, boardId: binding.boardId, cardId: binding.cardId, idempotencyKey: binding.createIntent.idempotencyKey }, native: { status: card.status, updatedAt: card.updatedAt, ...(Number.isFinite(card.completedAt) ? { completedAt: card.completedAt } : {}), events: (card.events ?? []).filter(event => typeof event.id === 'string' && typeof event.kind === 'string' && Number.isFinite(event.at)).map(({ id, kind, at, fromStatus, toStatus }) => ({ id, kind, at, ...(fromStatus ? { fromStatus } : {}), ...(toStatus ? { toStatus } : {}) })) }, eligibility };
+    publicationSnapshots.set(row, { value, binding, unresolvedId: unresolved?.logicalOperationId });
+    return row;
   }
   async function admit(input) {
     envelope(input, ['tenantId', 'boardId', 'logicalOperationId']);
@@ -236,14 +245,40 @@ export function createBillActionAdapter({ metadata, nativeRequest, authorize, re
     if (!['pending', 'unknown'].includes(operation.state)) return operation;
     return metadata.settleBillActionOperation({ logicalOperationId: input.logicalOperationId, outcome: card.status === 'done' ? 'handled-observed' : 'unknown' }, () => commitFence(value, false));
   }
+  function publishRow(row) {
+    const snapshot = publicationSnapshots.get(row);
+    if (!snapshot) fail('unavailable', 'The exact row publication snapshot is unavailable.');
+    const { value, binding, unresolvedId } = snapshot;
+    commitFence(value, false);
+    const currentBinding = bindingFor(admitted(row.loopId));
+    if (currentBinding?.cardId !== binding?.cardId || currentBinding?.tenantId !== binding?.tenantId || currentBinding?.boardId !== binding?.boardId || currentBinding?.eligibilityRevision !== binding?.eligibilityRevision) fail('conflict', 'The native binding or Later eligibility changed before list publication.');
+    const pending = metadata.listOperations().filter(item => ['bill-action.handle.v1', 'bill-action.defer.v1'].includes(item.operationKind) && ['pending', 'unknown'].includes(item.state)).map(item => JSON.parse(item.resultIdentity)).find(item => item.actionId === binding?.actionId);
+    if (pending?.logicalOperationId !== unresolvedId) fail('conflict', 'The submitted choice changed before list publication.');
+    row.source = sourceCurrent(value, { source: row.source });
+    if (row.predecessor) {
+      try {
+        const original = predecessorSnapshots.get(row.predecessor);
+        if (!original) fail('unavailable', 'The original predecessor publication snapshot is unavailable.');
+        predecessorFence(original, value);
+        row.predecessor.source = sourceCurrent(original, { source: row.predecessor.source });
+      } catch { delete row.predecessor; }
+    }
+    if (row.eligibility) row.eligibility.eligible = !pending && row.native.status === 'todo' && (!binding.reviewAt || Date.parse(now()) >= Date.parse(binding.reviewAt));
+    return row;
+  }
   async function list({ topicId, offset = 0, limit = 50 } = {}) {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) fail('invalid-request', 'Bill action page is invalid.');
-    const rows = [], errors = [];
+    const collected = [], rows = [], errors = [];
+    const unavailable = error => errors.push({ availability: 'unavailable', outcome: 'unavailable', code: error.code ?? 'unavailable' });
     for (const binding of metadata.listBillActionBindings()) {
-      try { const value = await read({ loopId: binding.actionId }); if (!topicId || value.topicId === topicId) rows.push(value); }
-      catch (error) { errors.push({ availability: 'unavailable', outcome: 'unavailable', code: error.code ?? 'unavailable' }); }
+      try { collected.push(await read({ loopId: binding.actionId })); }
+      catch (error) { unavailable(error); }
     }
-    for (const value of rows) authority(value.loopId);
+    // No await after this fence: every row is checked after all other row reads.
+    for (const row of collected) {
+      try { const value = publishRow(row); if (!topicId || value.topicId === topicId) rows.push(value); }
+      catch (error) { unavailable(error); }
+    }
     return { schemaVersion: 1, rows: rows.slice(offset, offset + limit), total: rows.length, offset, limit, coverage: errors.length ? 'partial' : 'bound-actions-only', unavailableCount: errors.length, observedAt: now() };
   }
   const publicCommand = command => async input => {
