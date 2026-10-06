@@ -106,6 +106,44 @@
         "const": false,
         "description": "Fail closed by withholding the external-tab grant in an isolated compatibility variant."
       },
+      "developerWork": {
+        "type": "object",
+        "description": "Private machine ingress principals. Secrets are read from environment references and are never included here.",
+        "additionalProperties": false,
+        "required": ["principals"],
+        "properties": {
+          "trustedProxyPeers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 80 } },
+          "devBaseUrl": { "type": "string", "pattern": "^https://", "maxLength": 500 },
+          "principals": {
+            "type": "array", "maxItems": 8,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["producerId", "role", "tokenEnv", "allowedProjects", "families"],
+              "properties": {
+                "producerId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+                "role": { "enum": ["worker", "controller"] },
+                "tokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{7,127}$" },
+                "allowedProjects": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,80}$" } },
+                "families": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "enum": ["human-request", "request-terminal", "work-outcome", "deployment-control", "deployment-outcome"] } }
+              }
+            }
+          }
+        }
+      },
+      "developerWorkProducer": {
+        "type": "object",
+        "description": "Explicitly activated DEV-only work owner. Its machine credential is referenced by environment variable and never stored in plugin config.",
+        "additionalProperties": false,
+        "required": ["enabled", "producerId", "allowedProjects", "allowedAgentIds", "receiverBaseUrl", "tokenEnv"],
+        "properties": {
+          "enabled": { "const": true },
+          "producerId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+          "allowedProjects": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,80}$" } },
+          "allowedAgentIds": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" } },
+          "receiverBaseUrl": { "type": "string", "pattern": "^https://", "maxLength": 500 },
+          "tokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{7,127}$" }
+        }
+      },
       "conversationModel": {
         "type": "string",
         "minLength": 3,
@@ -173,7 +211,7 @@
     "additionalProperties": false
   },
   "contracts": {
-    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_resolve_source_topic", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_plan_intake_source", "command_center_get_intake_source_account", "command_center_get_pending_clarification", "command_center_interpret_clarification", "command_center_record_intake_outcome", "command_center_record_intake_receipt", "command_center_publish_briefing"],
+    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_resolve_source_topic", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_plan_intake_source", "command_center_get_intake_source_account", "command_center_get_pending_clarification", "command_center_interpret_clarification", "command_center_record_intake_outcome", "command_center_record_intake_receipt", "command_center_publish_briefing", "command_center_report_developer_work", "command_center_flush_developer_work"],
     "gatewayMethodDispatch": ["authenticated-request"],
     "workspaceSessionTurnScheduling": []
   },

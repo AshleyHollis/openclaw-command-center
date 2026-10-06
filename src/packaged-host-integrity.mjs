@@ -5,7 +5,7 @@ import path from 'node:path';
 // Packaged-host receipt v2: depth-first, ordinal-sorted paths, file bytes and
 // executable bit, or relative link target. Include dist and dependencies;
 // Git's ignored-file inventory cannot authenticate an installed runtime.
-export async function packagedHostDigest(root) {
+export async function packagedHostDigest(root, { onEntry } = {}) {
   const hash = createHash('sha256');
   async function visit(directory, prefix = '') {
     for (const name of (await readdir(directory)).sort()) {
@@ -13,11 +13,17 @@ export async function packagedHostDigest(root) {
       const relative = prefix ? `${prefix}/${name}` : name;
       const file = path.join(directory, name);
       const metadata = await lstat(file);
-      if (metadata.isDirectory()) await visit(file, relative);
+      if (metadata.isDirectory()) {
+        onEntry?.({ relative, type: 'directory', executable: false, contentHash: null });
+        await visit(file, relative);
+      }
       else if (metadata.isFile()) {
         hash.update(`f\0${relative}\0${metadata.mode & 0o111 ? 'x' : '-'}\0`);
-        hash.update(await readFile(file));
+        const contents = await readFile(file);
+        hash.update(contents);
         hash.update('\0');
+        onEntry?.({ relative, type: 'file', executable: Boolean(metadata.mode & 0o111),
+          contentHash: createHash('sha256').update(contents).digest('hex') });
       } else if (metadata.isSymbolicLink()) {
         const link = await readlink(file);
         const target = path.relative(root, path.resolve(directory, link));
@@ -25,6 +31,8 @@ export async function packagedHostDigest(root) {
         const resolved = path.relative(root, await realpath(file));
         if (resolved === '..' || resolved.startsWith(`..${path.sep}`) || path.isAbsolute(resolved)) throw new Error('Runtime link resolves outside its root');
         hash.update(`l\0${relative}\0${link}\0`);
+        onEntry?.({ relative, type: 'symlink', executable: false,
+          contentHash: createHash('sha256').update(link).digest('hex') });
       } else throw new Error('Runtime contains a special file');
     }
   }

@@ -14,6 +14,9 @@ test('capture prerequisites defer only the baseline artifact, never generated sa
   observed.length = 0;
   await assert.rejects(runIndependentCheckPhases(checks.repositoryArtifactCheckPhases('qualification', owners)), AggregateError);
   assert.deepEqual(observed.sort(), ['baseline', 'safety']);
+  observed.length = 0;
+  await runIndependentCheckPhases(checks.repositoryArtifactCheckPhases('candidate-prerequisites', owners));
+  assert.deepEqual(observed, ['safety']);
   assert.throws(() => checks.repositoryArtifactCheckPhases('skip-everything', owners), /check purpose/u);
   await assert.rejects(runIndependentCheckPhases(checks.repositoryArtifactCheckPhases('capture-prerequisites', {
     ...owners, scanGenerated: async () => { throw new Error('Unsafe generated artifact'); }

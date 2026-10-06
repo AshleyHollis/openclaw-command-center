@@ -1,9 +1,9 @@
 function invalid(message) { return Object.assign(new Error(message), { code: 'invalid-request' }); }
 
 // One byte-accounting rule for native requests and in-process HTTP adapters.
-export async function readBoundedJson(req, maxBytes) {
+export async function readBoundedJson(req, maxBytes, { oversizeCode = 'invalid-request' } = {}) {
   function checked(bytes) {
-    if (bytes.byteLength > maxBytes) throw invalid('Request body is too large.');
+    if (bytes.byteLength > maxBytes) throw Object.assign(new Error('Request body is too large.'), { code: oversizeCode });
     return bytes;
   }
   function encoded(value) {
@@ -20,7 +20,7 @@ export async function readBoundedJson(req, maxBytes) {
     const chunks = []; let size = 0;
     for await (const chunk of req) {
       const part = encoded(chunk); size += part.byteLength;
-      if (size > maxBytes) throw invalid('Request body is too large.');
+      if (size > maxBytes) throw Object.assign(new Error('Request body is too large.'), { code: oversizeCode });
       chunks.push(part);
     }
     bytes = Buffer.concat(chunks, size);

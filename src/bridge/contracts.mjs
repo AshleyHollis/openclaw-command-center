@@ -37,6 +37,7 @@ export const READ_METHODS = Object.freeze([
   'command-center.v1.activity.list',
   'command-center.v1.activity.get',
   'command-center.v1.dashboard.get',
+  'command-center.v1.developer-work.resolve',
   'command-center.v1.open-loops.list',
   'command-center.v1.open-loops.get',
   'command-center.v1.open-loops.renovation-stage-prerequisites'
@@ -130,7 +131,7 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'clarificationObservationId', 'processorVersion', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title', 'editionId', 'routineId', 'occurrenceDate', 'until']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'clarificationObservationId', 'processorVersion', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title', 'editionId', 'routineId', 'occurrenceDate', 'until', 'workId', 'requestId']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
@@ -168,6 +169,12 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (method === 'command-center.v1.developer-work.resolve') {
+    const request = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ requestId: { type: 'string' }, kind: { type: 'string' }, revision: { type: 'integer' }, summary: { type: 'string' } }), required: ['requestId', 'kind', 'revision', 'summary'] });
+    return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({
+      schemaVersion: { const: 1 }, status: { enum: ['ready', 'stale', 'unavailable', 'current-work'] }, reason: { type: 'string' }, workId: { type: 'string' }, requestId: { type: 'string' }, requestRevision: { type: 'integer' }, agentId: { type: 'string' }, sessionKey: { type: 'string' }, sessionId: { type: 'string' }, lifecycleRevision: { type: 'string' }, summary: { type: 'string' }, requests: { type: 'array', items: request }
+    }), required: ['schemaVersion', 'status', 'workId'] });
+  }
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
   if (method.startsWith('command-center.v1.open-loops.')) {
@@ -476,6 +483,7 @@ const required = Object.freeze({
   'command-center.v1.activity.list': [],
   'command-center.v1.activity.get': ['activityId'],
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
+  'command-center.v1.developer-work.resolve': ['workId'],
   'command-center.v1.briefings.set-read': ['editionId', 'read'],
   'command-center.v1.routines.decide': ['routineId', 'occurrenceDate', 'expectedRevision', 'action'],
   'command-center.v1.open-loops.list': [],
@@ -572,6 +580,7 @@ const fields = Object.freeze({
   'command-center.v1.activity.list': ['topicId', 'episodeId', 'offset', 'limit'],
   'command-center.v1.activity.get': ['activityId'],
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
+  'command-center.v1.developer-work.resolve': ['workId', 'requestId'],
   'command-center.v1.briefings.set-read': ['editionId', 'read'],
   'command-center.v1.routines.decide': ['routineId', 'occurrenceDate', 'expectedRevision', 'action', 'until'],
   'command-center.v1.open-loops.list': ['offset', 'limit', 'cursor'],

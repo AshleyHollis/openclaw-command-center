@@ -885,7 +885,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15', 'the launched runtime must match the exact authenticated compatibility tuple');
+      assert.equal(descriptor.commit, compatibilityTuple.host.commit, 'the launched runtime must match the exact authenticated compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -2507,6 +2507,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertCandidatePluginPermissions(process.cwd());
       if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
         baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
+        if (baseline.hostReceipt.commit !== descriptor.commit || baseline.hostVersion !== compatibilityTuple.host.range.slice(1)) {
+          throw new Error('The historical performance baseline cannot qualify a changed host; capture a reviewed host-specific performance receipt.');
+        }
       }
       reportProgress(testContext, 'build:passed');
     } catch (error) { preparationError = error; throw error; }
@@ -4150,7 +4153,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scenarioResult('authenticated-control-ui-mount');
         const secure = await isolatedResult('secure-origin');
         const lifecycle = scenarioResult('scale-performance');
-        return { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
+        return { schemaVersion: 1, hostReceipt: { schemaVersion: descriptor.schemaVersion, commit: descriptor.commit, ...descriptor.integrity }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
       } },
       { id: 'desktop-primary-journey', run: async () => {
         const desktop = scenarioResult('desktop-primary-journey');

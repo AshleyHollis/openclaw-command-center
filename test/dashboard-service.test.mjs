@@ -4,6 +4,16 @@ import { projectDashboard } from '../src/dashboard/service.mjs';
 import { createReminderAdapter } from '../src/sources/reminders.mjs';
 import { openLoopReminderReferenceId } from '../src/open-loops/reminder-coordinator.mjs';
 
+test('Dashboard keeps actionable Routine Developer Work review visible without promoting severity', async () => {
+  const sourceService = { async attentionList() { return { episodes: [
+    { episodeId: 'review-ready', sourceCapabilityId: 'developer-work.v1', stableSubjectId: 'review-one', state: 'Active', severity: 'Routine', evidenceFacts: { requestKind: 'review' }, actions: [] },
+    { episodeId: 'routine-noise', sourceCapabilityId: 'monitor', stableSubjectId: 'noise', state: 'Active', severity: 'Routine', actions: [] }
+  ], inProgress: [] }; } };
+  const result = await projectDashboard({ sourceService, metadata: { listUsableTopics: () => [] }, now: () => '2026-09-26T11:00:00.000Z' });
+  assert.deepEqual(result.attention.map(item => item.episodeId), ['review-ready']);
+  assert.equal(result.attention[0].severity, 'Routine');
+});
+
 test('dashboard partitions current and future Reminder occurrences and pages Activity', async () => {
   const serverTime = '2026-08-27T12:00:00.000Z';
   const topics = [{ topicId: 'topic-one', name: 'Fictional Topic', paraCategory: 'project', lifecycle: 'active' }];

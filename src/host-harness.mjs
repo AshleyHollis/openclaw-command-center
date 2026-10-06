@@ -7,6 +7,7 @@ import { assertBuiltDigest } from './build.mjs';
 import { fixtureEnvironment } from './fixtures.mjs';
 import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from './isolation.mjs';
 import { packagedHostDigest } from './packaged-host-integrity.mjs';
+import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from './candidate-pair.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 const diagnosticHostProfile = process.env.COMMAND_CENTER_DIAGNOSTIC_HOST_PROFILE;
@@ -15,18 +16,106 @@ if (diagnosticHostProfile && (diagnosticHostProfile !== 'conditional-cron-id-pr5
   throw new Error('The conditional Cron ID host profile is limited to the clarification-worker diagnostic.');
 }
 export const pinnedHost = Object.freeze({
-  // The evaluator checkout is the exact authenticated first-live host receipt.
-  packageVersion: '2026.9.5',
-  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '21f1ca697532a9bd9e9cc46322a598a31435de15',
-  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
+  // Normal qualification requires the exact authenticated current host package receipt.
+  packageVersion: diagnosticHostProfile ? '2026.9.5' : '2026.9.6',
+  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '047e689bd7b4ea63cb1b5080a35ced8132a65092',
+  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:55f9ad35c4cc4933543133a0d594f43d0910a405fe3ca13cf692fe290cc5b3b8',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
 const sha256Digest = /^sha256:[a-f0-9]{64}$/;
 const hostOutputClassifierTailLength = 1024;
 
+// Report vocabulary is deliberately finite: never print exception properties
+// supplied by a host, filesystem, process or validation dependency.
+const reportCategories = new Set(['descriptor-absent', 'descriptor-invalid', 'wrapper-mismatch',
+  'invalid-commit', 'dirty-host-source', 'host-integrity', 'restart-owner', 'restart-limit',
+  'endpoint-isolation', 'host-early-exit', 'host-launch', 'host-stop', 'readiness-timeout',
+  'readiness-flapping', 'transport-timeout', 'isolation-evidence-unavailable',
+  'isolation-violation', 'plugin-not-found', 'bootstrap-authentication-failure']);
+const hostIntegrityReasons = new Set(['package-digest-mismatch', 'source-receipt-unavailable',
+  'source-receipt-mismatch', 'runtime-layout-mismatch', 'installed-build-mismatch',
+  'runtime-inventory-unsafe', 'runtime-digest-mismatch', 'candidate-descriptor-mismatch',
+  'verification-bypass']);
+const runtimeDiffs = new WeakMap();
+const maximumInventoryEntries = 100_000;
+const maximumDiffEntries = 6;
+
+function runtimeInventory() {
+  const entries = new Map();
+  return { entries, truncated: false, record(entry) {
+    if (entries.size >= maximumInventoryEntries) { this.truncated = true; return; }
+    entries.set(entry.relative, Object.freeze({ type: entry.type, executable: entry.executable, contentHash: entry.contentHash }));
+  } };
+}
+
+function safeInstalledPath(value) {
+  // The output is private, but names can still be chosen by an untrusted host.
+  // Reject anything outside the installed package and redact suspicious names.
+  if (typeof value !== 'string' || value.length > 96 || !value.startsWith('node_modules/') ||
+      value.split('/').length > 10 || value.split('/').some(part => !/^[a-zA-Z0-9@._+-]{1,48}$/u.test(part) ||
+        part === '.' || part === '..' || /token|secret|auth|credential|cookie|password|session|private|bearer|key/iu.test(part))) {
+    return '[redacted]';
+  }
+  return value;
+}
+
+function safeFingerprint(value) {
+  if (!value || !['directory', 'file', 'symlink'].includes(value.type) || typeof value.executable !== 'boolean' ||
+      !(value.contentHash === null || typeof value.contentHash === 'string' && /^[a-f0-9]{64}$/u.test(value.contentHash))) {
+    return null;
+  }
+  return { type: value.type, executable: value.executable, contentHash: value.contentHash };
+}
+
+/** Only bounded, validated metadata; never store bytes or symlink text in evidence. */
+export function summarizePackagedRuntimeDiff(before, after) {
+  const counts = { added: 0, removed: 0, changed: 0 };
+  const entries = [];
+  let truncated = Boolean(before?.truncated || after?.truncated);
+  try {
+    if (!(before?.entries instanceof Map) || !(after?.entries instanceof Map)) throw new TypeError('inventory unavailable');
+    for (const relative of new Set([...before.entries.keys(), ...after.entries.keys()])) {
+      const oldValue = before.entries.has(relative) ? safeFingerprint(before.entries.get(relative)) : null;
+      const newValue = after.entries.has(relative) ? safeFingerprint(after.entries.get(relative)) : null;
+      if ((before.entries.has(relative) && !oldValue) || (after.entries.has(relative) && !newValue)) throw new TypeError('invalid entry');
+      const kind = !oldValue ? 'added' : !newValue ? 'removed' :
+        JSON.stringify(oldValue) !== JSON.stringify(newValue) ? 'changed' : null;
+      if (!kind) continue;
+      counts[kind] += 1;
+      if (entries.length < maximumDiffEntries) entries.push({ kind, path: safeInstalledPath(relative), before: oldValue, after: newValue });
+      else truncated = true;
+    }
+    const report = { kind: 'candidate-runtime-diff', counts, truncated, entries };
+    return Object.freeze(JSON.stringify(report).length <= 4096 ? report :
+      { kind: 'candidate-runtime-diff', counts, truncated: true, entries: [] });
+  } catch {
+    return Object.freeze({ kind: 'candidate-runtime-diff', counts: { added: 0, removed: 0, changed: 0 }, truncated: true, entries: [] });
+  }
+}
+
+/** Only the exact failure created by candidate restart can carry this report. */
+export function candidateRuntimeDiff(error) { return runtimeDiffs.get(error); }
+
 export class HarnessFailure extends Error {
-  constructor(category, message) { super(message); this.name = 'HarnessFailure'; this.category = category; }
+  constructor(category, message, reason) {
+    super(message);
+    this.name = 'HarnessFailure';
+    this.category = category;
+    this.reason = hostIntegrityReasons.has(reason) ? reason : 'unspecified';
+  }
+}
+
+const smokePhases = new Set(['initial-host-launch', 'host-restart']);
+
+export function closedCandidateSmokeFailure(error, executionPhase) {
+  try {
+    const category = error instanceof HarnessFailure && reportCategories.has(error.category) ? error.category : 'unclassified';
+    const reason = category === 'host-integrity' && hostIntegrityReasons.has(error.reason) ? error.reason : 'unspecified';
+    return Object.freeze({ category, reason, phase: smokePhases.has(executionPhase) ? executionPhase : 'unknown' });
+  } catch {
+    return Object.freeze({ category: 'unclassified', reason: 'unspecified', phase: 'unknown' });
+  }
 }
 
 function parseIntegrity(value, packaged = false) {
@@ -51,7 +140,7 @@ function under(root, value) {
   return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
-export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
+function parseDescriptorAgainstHost(raw, expectedHost) {
   if (!raw) throw new HarnessFailure('descriptor-absent', `${descriptorEnvironment} is mandatory`);
   let descriptor;
   try { descriptor = JSON.parse(raw); } catch { throw new HarnessFailure('descriptor-invalid', 'Host descriptor is not valid JSON'); }
@@ -64,26 +153,39 @@ export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
   let runtimeExecutable;
   // The controller may describe either `openclaw.mjs gateway …` directly or
   // `node openclaw.mjs gateway …`; validate the same immutable invocation.
-  if (path.basename(wrapper) !== pinnedHost.executable) {
-    if (!/^node(?:\.exe)?$/iu.test(path.basename(wrapper)) || typeof args[0] !== 'string' || path.basename(args[0]) !== pinnedHost.executable) {
+  if (path.basename(wrapper) !== expectedHost.executable) {
+    if (!/^node(?:\.exe)?$/iu.test(path.basename(wrapper)) || typeof args[0] !== 'string' || path.basename(args[0]) !== expectedHost.executable) {
       throw new HarnessFailure('wrapper-mismatch', 'Host descriptor does not name the controller-owned wrapper');
     }
     runtimeExecutable = wrapper;
     wrapper = args[0];
     args = args.slice(1);
   }
-  if (JSON.stringify(args) !== JSON.stringify(pinnedHost.args)) {
+  if (JSON.stringify(args) !== JSON.stringify(expectedHost.args)) {
     throw new HarnessFailure('wrapper-mismatch', 'Host descriptor does not name the controller-owned wrapper');
   }
-  if (descriptor.commit !== pinnedHost.commit) throw new HarnessFailure('invalid-commit', 'Host descriptor commit is not pinned');
+  if (descriptor.commit !== expectedHost.commit) throw new HarnessFailure('invalid-commit', 'Host descriptor commit is not pinned');
   const packaged = descriptor.schemaVersion === 2;
   if (descriptor.schemaVersion !== undefined && ![1, 2].includes(descriptor.schemaVersion)) throw new HarnessFailure('descriptor-invalid', 'Unsupported host descriptor version');
   if (packaged && (typeof descriptor.runtimeRoot !== 'string' || wrapper !== 'node_modules/openclaw/openclaw.mjs')) {
     throw new HarnessFailure('descriptor-invalid', 'Packaged host requires the exact installed layout');
   }
   const integrity = parseIntegrity(descriptor.integrity, packaged);
-  if (packaged && integrity.packageDigest !== pinnedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package');
+  if (packaged && integrity.packageDigest !== expectedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package', 'package-digest-mismatch');
   return Object.freeze({ commit: descriptor.commit, checkout: descriptor.checkout, executable: wrapper, runtimeExecutable, args: Object.freeze([...args]), integrity, ...(packaged ? { schemaVersion: 2, runtimeRoot: descriptor.runtimeRoot } : {}) });
+}
+
+export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
+  return parseDescriptorAgainstHost(raw, pinnedHost);
+}
+
+/** Candidate-only parser; the ordinary release parser retains committed pins. */
+export function parseCandidateHostDescriptor(raw, pairValue) {
+  const pair = parseCandidatePair(pairValue);
+  const host = pair.openClaw;
+  const descriptor = parseDescriptorAgainstHost(raw, { ...host, commit: host.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args });
+  if (descriptor.schemaVersion !== 2) throw new HarnessFailure('descriptor-invalid', 'Candidate host requires a packaged runtime receipt');
+  return descriptor;
 }
 
 function git(checkout, args) {
@@ -105,14 +207,14 @@ async function assertNoSymlinkPath(root, relative, stat = lstat) {
   }
 }
 
-async function assertHostIntegrity(checkout, descriptor, read) {
+async function assertHostIntegrity(checkout, descriptor, read, expectedHost) {
   let receipt;
   try {
     receipt = JSON.parse(await read(path.join(path.dirname(checkout), 'receipt.json'), 'utf8'));
   } catch {
-    throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable');
+    throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable', 'source-receipt-unavailable');
   }
-  if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== pinnedHost.commit
+  if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== expectedHost.commit
     || !sha256Digest.test(receipt.sourceDigest)
     || !sha256Digest.test(receipt.executableDigest)
     || !sha256Digest.test(receipt.contractDigest)
@@ -120,23 +222,23 @@ async function assertHostIntegrity(checkout, descriptor, read) {
     || receipt.executableDigest !== descriptor.integrity.executableDigest
     || receipt.contractDigest !== descriptor.integrity.contractDigest
     || (descriptor.schemaVersion === 2 && (receipt.packageDigest !== descriptor.integrity.packageDigest || receipt.runtimeDigest !== descriptor.integrity.runtimeDigest))) {
-    throw new HarnessFailure('host-integrity', 'Host source/runtime integrity receipt differs from the descriptor');
+    throw new HarnessFailure('host-integrity', 'Host source/runtime integrity receipt differs from the descriptor', 'source-receipt-mismatch');
   }
 }
 
 /** Injectable filesystem/Git seams keep host-integrity category tests offline. */
-export async function verifyHost(descriptor, { gitCommand = git, resolvePath = realpath, read = readFile, stat = lstat } = {}) {
+async function verifyHostAgainst(descriptor, expectedHost, { gitCommand = git, resolvePath = realpath, read = readFile, stat = lstat } = {}, inventory) {
   const checkout = await resolvePath(descriptor.checkout).catch(() => { throw new HarnessFailure('descriptor-invalid', 'Host checkout is not accessible'); });
   const packaged = descriptor.schemaVersion === 2;
   let runtimeRoot = checkout;
   if (packaged) {
     const expectedRoot = path.join(path.dirname(checkout), 'runtime');
-    if (path.resolve(descriptor.runtimeRoot) !== expectedRoot || (await stat(expectedRoot)).isSymbolicLink()) throw new HarnessFailure('host-integrity', 'Packaged runtime must be the separate sibling handoff');
+    if (path.resolve(descriptor.runtimeRoot) !== expectedRoot || (await stat(expectedRoot)).isSymbolicLink()) throw new HarnessFailure('host-integrity', 'Packaged runtime must be the separate sibling handoff', 'runtime-layout-mismatch');
     runtimeRoot = await resolvePath(expectedRoot);
   }
   const wrapper = path.resolve(runtimeRoot, descriptor.executable);
   if (!under(runtimeRoot, wrapper)) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper escapes its runtime');
-  const wrapperRelative = packaged ? pinnedHost.executable : path.relative(checkout, wrapper);
+  const wrapperRelative = packaged ? expectedHost.executable : path.relative(checkout, wrapper);
   await assertNoSymlinkPath(runtimeRoot, path.relative(runtimeRoot, wrapper), stat);
   if (descriptor.runtimeExecutable) {
     const [declaredRuntime, controllerRuntime] = await Promise.all([resolvePath(descriptor.runtimeExecutable), resolvePath(process.execPath)]).catch(() => {
@@ -146,12 +248,15 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   }
   let commit;
   try { commit = await gitCommand(checkout, ['rev-parse', 'HEAD']); } catch { throw new HarnessFailure('invalid-commit', 'Host checkout is not a Git checkout'); }
-  if (commit !== pinnedHost.commit) throw new HarnessFailure('invalid-commit', 'Host checkout is not at the pinned commit');
-  try { await gitCommand(checkout, ['cat-file', '-e', `${pinnedHost.commit}^{commit}`]); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object is not a Git commit'); }
+  if (commit !== expectedHost.commit) throw new HarnessFailure('invalid-commit', 'Host checkout is not at the pinned commit');
+  if (expectedHost.repository && await gitCommand(checkout, ['remote', 'get-url', 'origin']).catch(() => '') !== expectedHost.repository) {
+    throw new HarnessFailure('invalid-commit', 'Candidate host repository origin differs from the pair');
+  }
+  try { await gitCommand(checkout, ['cat-file', '-e', `${expectedHost.commit}^{commit}`]); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object is not a Git commit'); }
   try { await gitCommand(checkout, ['fsck', '--full']); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object database failed integrity validation'); }
   if (await gitCommand(checkout, ['status', '--porcelain', '--untracked-files=no']).catch(() => 'dirty')) throw new HarnessFailure('dirty-host-source', 'Host tracked source is dirty');
   const hostPackage = JSON.parse(await read(path.join(checkout, 'package.json'), 'utf8').catch(() => '{}'));
-  if (hostPackage.version !== pinnedHost.packageVersion) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
+  if (hostPackage.version !== expectedHost.packageVersion) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
   const indexed = await gitCommand(checkout, ['ls-files', '-s', '--', wrapperRelative]);
   const blob = indexed.split(/\s+/)[1];
   if (!blob) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper is not tracked by its pinned commit');
@@ -160,16 +265,32 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   if (object !== blob) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper differs from the Git object');
   const wrapperSha256 = createHash('sha256').update(contents).digest('hex');
   if (descriptor.integrity.executableDigest.slice('sha256:'.length) !== wrapperSha256) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper integrity assertion differs');
-  await assertHostIntegrity(checkout, descriptor, read);
+  await assertHostIntegrity(checkout, descriptor, read, expectedHost);
   if (packaged) {
     const installed = path.dirname(wrapper);
     const installedPackage = JSON.parse(await read(path.join(installed, 'package.json'), 'utf8'));
     const build = JSON.parse(await read(path.join(installed, 'dist/build-info.json'), 'utf8'));
-    if (installedPackage.name !== 'openclaw' || installedPackage.version !== pinnedHost.packageVersion || build.commit !== pinnedHost.commit || build.version !== pinnedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source');
-    const actual = await packagedHostDigest(runtimeRoot).catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe'); });
-    if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt');
+    if (installedPackage.name !== 'openclaw' || installedPackage.version !== expectedHost.packageVersion || build.commit !== expectedHost.commit || build.version !== expectedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source', 'installed-build-mismatch');
+    const actual = await packagedHostDigest(runtimeRoot, inventory ? { onEntry: entry => inventory.record(entry) } : undefined)
+      .catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe', 'runtime-inventory-unsafe'); });
+    if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt', 'runtime-digest-mismatch');
   }
   return Object.freeze({ checkout: packaged ? path.dirname(wrapper) : checkout, wrapper, commit, runtimeExecutable: descriptor.runtimeExecutable });
+}
+
+/** Release callers cannot select another expected host through options. */
+export function verifyHost(descriptor, options) { return verifyHostAgainst(descriptor, pinnedHost, options); }
+
+export function verifyCandidateHost(descriptor, pairValue, options) {
+  const host = parseCandidatePair(pairValue).openClaw;
+  const parsed = parseCandidateHostDescriptor(JSON.stringify(descriptor), pairValue);
+  if (parsed.commit !== host.sourceCommit ||
+      Object.entries({ packageDigest: host.packageDigest, runtimeDigest: host.runtimeDigest,
+        sourceDigest: host.sourceDigest, executableDigest: host.executableDigest,
+        contractDigest: host.contractDigest }).some(([key, value]) => parsed.integrity?.[key] !== value)) {
+    throw new HarnessFailure('host-integrity', 'Candidate host descriptor differs from the pair', 'candidate-descriptor-mismatch');
+  }
+  return verifyHostAgainst(parsed, { ...host, commit: host.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args }, options);
 }
 
 export function redact(text, maximum = 4096) {
@@ -257,6 +378,24 @@ export async function launchPinnedHost(options) {
   } finally { owner.transitioning = false; }
 }
 
+/** Candidate launch uses the same isolated world and lifecycle safeguards. */
+export async function launchCandidateHost(options) {
+  if (options.hostVerificationOptions) throw new HarnessFailure('host-integrity', 'Candidate launch requires real source and runtime verification', 'verification-bypass');
+  const descriptor = parseCandidateHostDescriptor(JSON.stringify(options.descriptor), options.candidatePair);
+  const pair = assertCandidatePairEvidence(options.candidatePair, {
+    inputTreeReceipt: options.inputTreeReceipt, buildReceipt: options.buildReceipt,
+    artifactReceipt: options.artifactReceipt, hostDescriptor: descriptor
+  });
+  const expectedHost = { ...pair.openClaw, commit: pair.openClaw.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args };
+  const { world } = options;
+  if (!world || worldRuns.has(world)) throw new HarnessFailure('restart-owner', 'World already has a host lifecycle owner');
+  const owner = { options: { ...options, descriptor }, expectedHost, candidatePair: pair, transitioning: true, current: undefined };
+  worldRuns.set(world, owner);
+  try { return await launchGeneration(owner, owner.options, []); }
+  catch (error) { worldRuns.delete(world); throw error; }
+  finally { owner.transitioning = false; }
+}
+
 /** Restart only a run issued by this owner; never copy state or choose a new port. */
 export async function restartPinnedHost(previousRun, { signal, onOutput } = {}) {
   const owner = runOwners.get(previousRun);
@@ -289,7 +428,22 @@ export async function restartPinnedHost(previousRun, { signal, onOutput } = {}) 
 
 async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutput = () => {}, signal, notificationCaPath, hostVerificationOptions }, preceding) {
   signal?.throwIfAborted();
-  const host = await verifyHost(descriptor, hostVerificationOptions);
+  if (owner.candidatePair) {
+    assertCandidatePairEvidence(owner.candidatePair, { inputTreeReceipt: owner.options.inputTreeReceipt,
+      buildReceipt, artifactReceipt: owner.options.artifactReceipt, hostDescriptor: descriptor });
+    await assertCandidateArchiveBytes(owner.candidatePair, owner.options);
+  }
+  const inventory = owner.candidatePair ? runtimeInventory() : undefined;
+  let host;
+  try { host = await verifyHostAgainst(descriptor, owner.expectedHost ?? pinnedHost, hostVerificationOptions, inventory); }
+  catch (error) {
+    if (owner.candidatePair && owner.runtimeBaseline && error instanceof HarnessFailure &&
+        error.category === 'host-integrity' && error.reason === 'runtime-digest-mismatch') {
+      runtimeDiffs.set(error, summarizePackagedRuntimeDiff(owner.runtimeBaseline, inventory));
+    }
+    throw error;
+  }
+  if (inventory && !owner.runtimeBaseline) owner.runtimeBaseline = inventory;
   signal?.throwIfAborted();
   await assertBuiltDigest(buildReceipt);
   signal?.throwIfAborted();
@@ -304,14 +458,14 @@ async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutp
   guard.assert('127.0.0.1', 'host launch');
   const guardModule = new URL('./isolated-child-guard.mjs', import.meta.url);
   const executable = host.runtimeExecutable || host.wrapper;
-  const arguments_ = host.runtimeExecutable ? [host.wrapper, ...pinnedHost.args] : pinnedHost.args;
+  const arguments_ = host.runtimeExecutable ? [host.wrapper, ...descriptor.args] : descriptor.args;
   if (notificationCaPath && !under(world.root, path.resolve(notificationCaPath))) throw new HarnessFailure('endpoint-isolation', 'Notification CA path escapes the isolated world');
   const child = spawn(executable, arguments_, {
     cwd: host.checkout,
     // Preserve only the executable search path needed by the controller's
     // `#!/usr/bin/env node` wrapper. Fixture/configuration state remains
     // explicitly rooted in the disposable world.
-    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}`, ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
+    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}`, ...(world.machineCredential ? { COMMAND_CENTER_FIXTURE_DEV_BEARER: world.machineCredential } : {}), ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const diagnostics = { stdout: '', stderr: '', category: undefined, guard };

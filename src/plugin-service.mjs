@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { extractSelectedDocumentText } from './open-loops/selected-document-text.mjs';
 import { createAttentionService } from './attention/service.mjs';
+import { createDeveloperWorkService } from './developer-work/service.mjs';
+import { createDeveloperEventTransport, createDeveloperWorkProducer } from './developer-work/producer.mjs';
+import { reconcileDeveloperWorkRetrySchedule } from './developer-work/retry-schedule.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
+import { createNotificationService } from './notifications/service.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 import { createPreservedHistoryReader } from './migration/preserved-history-read.mjs';
@@ -87,11 +91,17 @@ async function readVisibleTranscript(input) {
   return readVisibleSessionTranscriptMessageEntries(input);
 }
 
-export function createMetadataService(api) {
+export function createMetadataService(api, { notificationEmitter } = {}) {
   let metadataService;
   let sourceService;
   let attentionService;
+  let developerWorkService;
+  let developerWorkProducer;
   let dashboardService;
+  let notificationService;
+  let notificationTimer;
+  let notificationTimerRun;
+  let activationClosing = false;
   let openLoopReminders;
   let capacityReview;
   let dailyWorkspace;
@@ -110,7 +120,12 @@ export function createMetadataService(api) {
   let releaseNoteFilesystemCoordinator;
   let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
-  const closeActivation = () => {
+  const closeActivation = async () => {
+    activationClosing = true;
+    if (notificationTimer) clearTimeout(notificationTimer);
+    notificationTimer = undefined;
+    await notificationTimerRun?.catch(() => {});
+    notificationTimerRun = undefined;
     if (clarificationWorkerTimer) clearTimeout(clarificationWorkerTimer);
     clarificationWorkerTimer = undefined;
     clarificationWorker = undefined;
@@ -128,13 +143,19 @@ export function createMetadataService(api) {
     releaseNoteFilesystemCoordinator = undefined;
     releaseTopicMaintenanceOwners?.();
     releaseTopicMaintenanceOwners = undefined;
+    await notificationService?.stop?.();
     sourceService?.close?.();
+    developerWorkService?.close?.();
+    developerWorkProducer?.close?.();
     attentionService?.close?.();
     metadataService?.close();
     metadataService = undefined;
     sourceService = undefined;
     attentionService = undefined;
+    developerWorkService = undefined;
+    developerWorkProducer = undefined;
     dashboardService = undefined;
+    notificationService = undefined;
     openLoopReminders = undefined;
     capacityReview = undefined;
     dailyWorkspace = undefined;
@@ -300,7 +321,9 @@ export function createMetadataService(api) {
     id: 'command-center-metadata',
     async start(context = {}) {
       stopPromise = undefined;
+      activationClosing = false;
       try {
+      if (api.pluginConfig?.developerWorkProducer?.enabled === true && (api.pluginConfig?.developerWork?.principals?.length ?? 0) > 0) throw new Error('DEV producer and LIVE receiver principals require separate Gateway activations.');
       const [{ setHostDurableFolderStager, setHostFilesystemIdentityReader }, { setHostNoteFilesystemCoordinator }, { setHostDurableDirectoryPublisher }, fileAccess, sqlite] = await Promise.all([
         import('./sources/note-folder-identity.mjs'), import('./sources/note-filesystem-owner.mjs'),
         import('./topics/conventions.mjs'),
@@ -368,6 +391,24 @@ export function createMetadataService(api) {
           verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
           actions: []
         });
+        if (FIRST_LIVE_FEATURES.notifications) notificationService = createNotificationService({
+          metadata: metadataService, attentionService, emitter: notificationEmitter,
+          timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC', logger: api.logger
+        });
+        developerWorkService = createDeveloperWorkService({ metadata: metadataService, attention: attentionService, devBaseUrl: api.pluginConfig?.developerWork?.devBaseUrl });
+        await developerWorkService.drain();
+      }
+      if (api.pluginConfig?.developerWorkProducer?.enabled === true) {
+        const config = api.pluginConfig.developerWorkProducer;
+        const sessionReader = api.runtime?.agent?.session?.getSessionEntry;
+        if (typeof sessionReader !== 'function') throw new Error('DEV Developer Work requires the public OpenClaw session reader.');
+        developerWorkProducer = createDeveloperWorkProducer({
+          metadata: metadataService,
+          sessionReader: input => sessionReader(input),
+          authority: { producerId: config.producerId, role: 'worker', allowedProjects: config.allowedProjects },
+          receiver: createDeveloperEventTransport({ baseUrl: config.receiverBaseUrl, tokenEnv: config.tokenEnv })
+        });
+        await developerWorkProducer.flush();
       }
       const historySource = structuredClone(api.pluginConfig?.preservedHistorySource);
       const nativeHistorySource = structuredClone(api.pluginConfig?.nativeHistorySource);
@@ -416,6 +457,7 @@ export function createMetadataService(api) {
           dailyWorkspace,
           now: () => new Date().toISOString(),
           timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
+          ...(notificationService ? { notificationSettings: () => notificationService.getSettings() } : {}),
           navigationResolver: async (record) => {
             const referenceId = record?.sourceReferenceId;
             const topicId = record?.topicId;
@@ -431,6 +473,27 @@ export function createMetadataService(api) {
             return Object.freeze({ kind: 'source', topicId, referenceId, sourceKind: reference.sourceKind, verified: true });
           }
         });
+      }
+      if (notificationService) {
+        const owner = notificationService;
+        const schedule = () => {
+          notificationTimer = setTimeout(async () => {
+            const run = (async () => {
+              await developerWorkService?.drain();
+              if (!activationClosing && !stopPromise && notificationService === owner) await owner.reconcile();
+            })();
+            notificationTimerRun = run;
+            try { await run; }
+            catch (error) { if (!stopPromise) api.logger?.warn?.(`Command Center notification reconciliation ${typeof error?.code === 'string' ? error.code : 'failed'}`); }
+            finally {
+              if (notificationTimerRun === run) notificationTimerRun = undefined;
+              if (!activationClosing && !stopPromise && notificationService === owner) schedule();
+            }
+          }, 60_000);
+          notificationTimer.unref?.();
+        };
+        await owner.reconcile();
+        schedule();
       }
       // Existing-data bootstrap and its durable recovery remain required.
       // Native Cron is acquired only by an authenticated Reminder/Schedule
@@ -497,18 +560,21 @@ export function createMetadataService(api) {
         };
         schedule();
       }
+      // The DEV retry job is reconciled after other startup owners initialize,
+      // so a later startup failure cannot leave it calling an inactive producer.
+      if (developerWorkProducer) await reconcileDeveloperWorkRetrySchedule({ scheduler: context.getCron?.(), gateway: api.runtime?.gateway });
       return migrationResult;
       } catch (error) {
-        closeActivation();
+        await closeActivation();
         throw error;
       }
     },
     stop() {
       if (stopPromise) return stopPromise;
-      stopPromise = Promise.resolve().then(() => {
+      stopPromise = Promise.resolve().then(async () => {
         // Do not retain an old host activation's capability across a restart.
         // The release closure cannot clear a capability installed by its successor.
-        closeActivation();
+        await closeActivation();
       });
       return stopPromise;
     },
@@ -534,11 +600,18 @@ export function createMetadataService(api) {
       });
     },
     get attentionService() { return attentionService; },
+    get developerWorkService() { return developerWorkService; },
+    get developerWorkProducer() { return developerWorkProducer; },
+    developerWorkResolve(input = {}) {
+      requireOperational();
+      if (!developerWorkProducer) throw new SourceServiceError('capability-unavailable', 'DEV Developer Work is not active on this Gateway.');
+      return developerWorkProducer.resolve(input);
+    },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
     get searchRebuildService() { return undefined; },
     get dashboardService() { return dashboardService; },
-    get notificationService() { return undefined; },
+    get notificationService() { return notificationService; },
     get topicAnalysisRunner() { return undefined; },
     get topicAnalysisSchedule() { return undefined; },
     get topicReview() { return undefined; },
@@ -867,9 +940,25 @@ export function createMetadataService(api) {
       const actorId = requireOperator(input, 'renovation decision revision');
       return metadataService.reviseRenovationDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, revision: { loopId: input.loopId, chosenOption: input.chosenOption, rationale: input.rationale, decidedAt: input.decidedAt } });
     },
-    dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
-    notificationReconcile() { return refuseDeferred('notifications'); },
-    notificationCaptureBinding() { return refuseDeferred('notifications'); },
+    async dashboardUpdateSettings(input) {
+      requireOperational();
+      if (!notificationService) return refuseDeferred('notifications');
+      const settings = notificationService.updateSettings(input);
+      await notificationService.reconcile();
+      return settings;
+    },
+    notificationReconcile() {
+      requireOperational();
+      if (!notificationService) return refuseDeferred('notifications');
+      return notificationService.reconcile();
+    },
+    async notificationCaptureBinding() {
+      requireOperational();
+      if (!notificationService) return refuseDeferred('notifications');
+      const bound = await notificationService.captureCurrentOperatorBinding();
+      if (bound) await notificationService.reconcile();
+      return bound;
+    },
     topicContextRetrieve() { return refuseDeferred('search'); },
     async searchRebuild() { return refuseDeferred('search'); },
     async searchPrepareRebuild() { return refuseDeferred('search'); }

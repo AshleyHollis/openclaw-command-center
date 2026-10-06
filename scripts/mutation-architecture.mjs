@@ -88,12 +88,15 @@ export async function checkMutationArchitecture(root) {
   const catalogue = JSON.parse(await readFile(path.join(directory, 'docs/architecture/mutation-owners.json'), 'utf8'));
   if (catalogue.schemaVersion !== 1 || !Array.isArray(catalogue.owners)) throw new Error('Invalid mutation owner catalogue.');
   const manifest = JSON.parse(await readFile(path.join(directory, 'openclaw.plugin.json'), 'utf8'));
-  const nativeWriteRoutes = (manifest.controlUi.httpRoutes ?? []).filter((route) => route.method !== 'GET').map((route) => route.path);
+  const controlUiWriteRoutes = (manifest.controlUi.httpRoutes ?? []).filter((route) => route.method !== 'GET').map((route) => route.path);
   const moduleAt = (relative) => import(pathToFileURL(path.join(directory, relative)).href);
-  const [topics, page, analysis, dashboard, search, releaseScope] = await Promise.all([
+  const [topics, page, analysis, dashboard, search, developerWork, releaseScope] = await Promise.all([
     moduleAt('src/topics/http.mjs'), moduleAt('src/topics/page-http.mjs'), moduleAt('src/topics/analysis-http.mjs'),
-    moduleAt('src/dashboard/http-route.mjs'), moduleAt('src/search/http-route.mjs'), moduleAt('src/release-scope.mjs')
+    moduleAt('src/dashboard/http-route.mjs'), moduleAt('src/search/http-route.mjs'), moduleAt('src/developer-work/http-route.mjs'), moduleAt('src/release-scope.mjs')
   ]);
+  // The machine-authenticated route is plugin-owned rather than a Control UI
+  // grant. It is registered even while no producer principal is configured.
+  const nativeWriteRoutes = [...controlUiWriteRoutes, developerWork.developerEventRoute];
   // These are the validators' actual vocabularies, not a second handwritten list
   // of actions. $request names the whole-body Search command only in this audit.
   const knownHttpSurfaces = [
@@ -101,11 +104,11 @@ export async function checkMutationArchitecture(root) {
     { route: '/plugins/command-center/api/topic/actions', module: 'src/topics/page-http.mjs', actions: Object.keys(page.topicPageActionFields) },
     { route: '/plugins/command-center/api/topic-analysis/actions', module: 'src/topics/analysis-http.mjs', actions: analysis.TOPIC_ANALYSIS_ACTIONS },
     { route: '/plugins/command-center/api/dashboard/actions', module: 'src/dashboard/http-route.mjs', actions: dashboard.dashboardActions },
-    { route: search.searchRebuildRoute, module: 'src/search/http-route.mjs', actions: ['$request'] }
+    { route: search.searchRebuildRoute, module: 'src/search/http-route.mjs', actions: ['$request'] },
+    { route: developerWork.developerEventRoute, module: 'src/developer-work/http-route.mjs', actions: ['$request'] }
   ];
-  // A first-delivery manifest intentionally exposes no mutable HTTP routes.
-  // Keep the deferred handler inventory in source, but audit only routes that
-  // the packaged manifest can actually admit.
+  // Keep deferred Control UI handlers in source, and separately include the
+  // registered plugin-owned machine route in the ownership inventory.
   const httpSurfaces = knownHttpSurfaces.filter((surface) => nativeWriteRoutes.includes(surface.route));
   const httpCommands = catalogue.httpCommands.filter((command) => nativeWriteRoutes.includes(command.route));
   const deferredNativeTools = Object.entries(releaseScope.FIRST_LIVE_DEFERRED_NATIVE_TOOLS ?? {})

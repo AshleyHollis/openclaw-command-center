@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CRITICAL_REPEAT_OFFSETS_MS, HIGH_REPEAT_OFFSET_MS, isQuietHours, policySlots, quietHoursEnd } from '../src/notifications/policy.mjs';
+import { CRITICAL_REPEAT_OFFSETS_MS, HIGH_REPEAT_OFFSET_MS, developerNotificationCategory, isQuietHours, policySlots, quietHoursEnd } from '../src/notifications/policy.mjs';
 
 test('notification policy fixes repeat slots and quiet-hour boundaries', () => {
   const settings = { quietHoursEnabled: true, quietHoursStart: '22:00', quietHoursEnd: '07:00', timeZone: 'UTC', dueReminders: true, importantItems: true, criticalRealerts: true, genericPreview: false };
@@ -16,4 +16,17 @@ test('notification policy fixes repeat slots and quiet-hour boundaries', () => {
   assert.equal(quietHoursEnd(Date.parse('2026-08-27T23:00:00.000Z'), settings), Date.parse('2026-08-28T07:00:00.000Z'));
   assert.equal(policySlots({ severity: 'High', activationAtMs: start, settings: { ...settings, importantItems: false } }).length, 0);
   assert.equal(policySlots({ severity: 'Reminder', activationAtMs: start, kind: 'reminder', explicitTimed: true, settings }).at(0).bypassQuietHours, true);
+});
+
+test('Developer Work categories retain source severity and receive one quiet-aware slot', () => {
+  const start = Date.parse('2026-08-27T12:00:00.000Z');
+  assert.equal(developerNotificationCategory({ sourceCapabilityId: 'developer-work.v1', attentionReason: 'developer-review-required' }), 'review');
+  assert.equal(developerNotificationCategory({ sourceCapabilityId: 'monitor', attentionReason: 'developer-review-required' }), null);
+  assert.deepEqual(policySlots({ severity: 'Routine', developerCategory: 'review', activationAtMs: start }), [
+    { slotKind: 'developer-review', dueAtMs: start, bypassQuietHours: false }
+  ]);
+  assert.deepEqual(policySlots({ severity: 'High', developerCategory: 'input', activationAtMs: start }), [
+    { slotKind: 'developer-input', dueAtMs: start, bypassQuietHours: false }
+  ]);
+  assert.deepEqual(policySlots({ severity: 'High', developerCategory: 'review', activationAtMs: start }), []);
 });

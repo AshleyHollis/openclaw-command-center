@@ -10,12 +10,14 @@ import plugin from '../src/plugin.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
+import { developerEventRoute } from '../src/developer-work/http-route.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
 import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { build, distRoot } from '../src/build.mjs';
+import { FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 const qualifyRegisteredOpenLoop = async (host, method, params) => (await host.authenticatedGatewayRequest(method, params)).result;
@@ -49,6 +51,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   const lifecycles = [];
   const sessionCatalogs = [];
   const candidates = [];
+  const clears = [];
   const tools = new Map();
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
@@ -67,7 +70,11 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     notifications: {
       registerEmitter(declaration) {
         declarations.push(structuredClone(declaration));
-        return { bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; } };
+        return {
+          async bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; },
+          async emit(candidate) { candidates.push(structuredClone(candidate)); return { status: 'sent', attempted: 1, delivered: 1, failed: 0, ambiguous: 0 }; },
+          async clear(input) { clears.push(structuredClone(input)); return { status: 'cleared', attempted: 1, cleared: 1, failed: 0, ambiguous: 0 }; }
+        };
       }
     },
     registerHttpRoute(value) { routes.push(value); },
@@ -77,7 +84,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates, tools,
+    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates, clears, tools,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
@@ -755,7 +762,7 @@ test('native manifest uses the supported asset declaration while routes stay reg
   plugin.register(host.api);
   assert.ok(host.routes.length > 0, 'the plugin must register its authenticated API routes');
   for (const route of host.routes) {
-    assert.equal(route.auth, ['/plugins/command-center/styles.css', '/plugins/command-center/markdown.js', '/plugins/command-center/app.js'].includes(route.path) ? 'plugin' : 'gateway');
+    assert.equal(route.auth, [developerEventRoute, '/plugins/command-center/styles.css', '/plugins/command-center/markdown.js', '/plugins/command-center/app.js'].includes(route.path) ? 'plugin' : 'gateway');
     assert.equal(route.match, 'exact');
   }
   assert.ok(host.routes.some((route) => route.path === '/plugins/command-center/api/topic/actions'));
@@ -947,6 +954,86 @@ test('real first-live plugin activates Attention without acquiring the deferred 
   }
 });
 
+test('candidate discovery registers without acquiring a live notification emitter', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
+  const { default: builtPlugin } = await import('../dist/plugin.mjs');
+  const host = fakePublishedApi(os.tmpdir());
+  host.api.registrationMode = 'discovery';
+  host.api.notifications.registerEmitter = () => undefined;
+  assert.doesNotThrow(() => builtPlugin.register(host.api));
+  assert.equal(host.declarations.length, 0);
+});
+
+test('candidate notification gate mounts the registered owner and clears a resolved DEV request', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
+  const { default: builtPlugin } = await import('../dist/plugin.mjs');
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-candidate-notifications-'));
+  const credential = 'fictional-machine-credential-with-enough-entropy-123456789';
+  const previousCredential = process.env.FICTIONAL_DEV_BEARER;
+  process.env.FICTIONAL_DEV_BEARER = credential;
+  const host = fakePublishedApi(stateDir, { pluginConfig: { developerWork: { principals: [{
+    producerId: 'fictional-dev', role: 'worker', tokenEnv: 'FICTIONAL_DEV_BEARER',
+    allowedProjects: ['fictional-project'], families: ['human-request', 'request-terminal']
+  }] } } });
+  const requestId = 'fictional-input-a';
+  const session = { agentId: 'fictional-agent', sessionKey: 'agent:fictional-agent:main', sessionId: 'fictional-session', lifecycleRevision: 'fictional-lifecycle' };
+  const request = { requestId, kind: 'input', expectedRequestRevision: 0, summary: 'Fictional input required', question: 'Fictional private question?' };
+  const base = { schemaVersion: 1, workId: 'fictional-work', context: { projectAlias: 'fictional-project', phase: 'waiting' }, session };
+  try {
+    builtPlugin.register(host.api);
+    assert.equal(host.declarations.length, 1);
+    const route = host.routes.find((entry) => entry.path === developerEventRoute);
+    assert.equal(route.auth, 'plugin');
+    const service = host.services[0];
+    await service.start();
+    assert.ok(service.notificationService);
+    const defaults = service.notificationService.getSettings();
+    assert.equal(defaults.quietHoursEnabled, true);
+    assert.equal(defaults.developerInput, true);
+    // This delivery fixture opts out of quiet hours through the owning settings
+    // command, rather than depending on the test runner wall-clock hour.
+    const settings = await service.dashboardUpdateSettings({
+      schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: defaults.revision,
+      settings: { quietHoursEnabled: false }
+    });
+    assert.equal(settings.quietHoursEnabled, false);
+    const send = async (event, watermark) => {
+      const response = { statusCode: 200, setHeader() {}, end(body) { this.body = JSON.parse(body); } };
+      await route.handler({ method: 'POST', socket: { encrypted: true },
+        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': String(watermark) },
+        body: event }, response);
+      assert.equal(response.statusCode, 200, JSON.stringify(response.body));
+      return response.body.receipt;
+    };
+    const first = await send({
+      ...base, eventId: randomUUID(), workRevision: 1, eventType: 'human_input_required', occurredAt: new Date().toISOString(), request
+    }, 1);
+    assert.equal(first.projectionState, 'projected');
+    assert.equal(host.candidates.length, 1);
+    assert.equal(host.bindingCaptures, 0, 'background delivery must not borrow request-scoped operator authority');
+    assert.equal(JSON.stringify(host.candidates[0]).includes(request.question), false);
+    assert.equal(host.candidates[0].deepLink.destinationId, 'attention-card');
+    const resolved = await send({
+      ...base, eventId: randomUUID(), workRevision: 2, eventType: 'request_resolved', occurredAt: new Date().toISOString(),
+      request: { ...request, expectedRequestRevision: 1 }, outcome: { code: 'answered', requestId }
+    }, 2);
+    assert.equal(resolved.projectionState, 'projected');
+    assert.equal(host.clears.length, 1);
+    const pendingRequest = { ...request, requestId: 'fictional-input-b' };
+    const pendingBase = { ...base, workId: 'fictional-work-b' };
+    await send({ ...pendingBase, eventId: randomUUID(), workRevision: 1, eventType: 'human_input_required',
+      occurredAt: new Date().toISOString(), request: pendingRequest }, 2);
+    assert.equal(host.candidates.length, 1, 'the announced replay must not push an incomplete request');
+    await send({ ...pendingBase, eventId: randomUUID(), workRevision: 2, eventType: 'request_resolved',
+      occurredAt: new Date().toISOString(), request: { ...pendingRequest, expectedRequestRevision: 1 },
+      outcome: { code: 'answered', requestId: pendingRequest.requestId } }, 2);
+    assert.equal(host.candidates.length, 1, 'a resolved replay must never emit the stale input');
+  } finally {
+    await host.services[0]?.stop?.();
+    if (previousCredential === undefined) delete process.env.FICTIONAL_DEV_BEARER;
+    else process.env.FICTIONAL_DEV_BEARER = previousCredential;
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('plugin activation does not require the deferred notification emitter API', () => {
   const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-state'));
   delete host.api.notifications;
@@ -1030,10 +1117,10 @@ test('background notification reconciliation excludes a future Reminder and rout
     metadata,
     attentionService: { allEpisodes: () => episodes },
     now: () => Date.parse('2026-08-27T12:00:00.000Z'),
-    emitter: { bindCurrentOperator: () => ({ async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } }) }
+    emitter: { async bindCurrentOperator() { return { async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } }; } }
   });
   try {
-    assert.equal(notification.captureCurrentOperatorBinding(), true);
+    assert.equal(await notification.captureCurrentOperatorBinding(), true);
     await notification.reconcile();
     assert.deepEqual(candidates, []);
   } finally {

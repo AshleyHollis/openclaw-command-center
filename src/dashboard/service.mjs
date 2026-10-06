@@ -73,7 +73,7 @@ function compactEpisode(episode, metadata, serverTimeMs) {
     actions: Object.freeze(Array.isArray(episode?.actions) ? episode.actions.slice(0, 3) : []),
     attentionRecordId: opaqueNotificationId({ version: 1, episodeId: episode?.episodeId }, 'record'),
     notificationRecordIds: Object.freeze(focusEmissions.map(notificationFocusRecordId)),
-    context: typeof evidence.context === 'string' ? evidence.context.slice(0, 120) : episode?.sourceKind === 'reminder' ? 'Reminder' : 'Attention item',
+    context: episode?.sourceCapabilityId === 'developer-work.v1' ? (typeof evidence.summary === 'string' ? evidence.summary.slice(0, 120) : 'Development needs your attention') : typeof evidence.context === 'string' ? evidence.context.slice(0, 120) : episode?.sourceKind === 'reminder' ? 'Reminder' : 'Attention item',
     evidenceFacts: undefined,
     evidence: Object.freeze({ ...evidence })
   });
@@ -345,6 +345,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
     episode.severity !== 'Routine' || episode.sourceKind === 'approval'
     || asArray(episode.actions).some((action) => ['approval.approve', 'approval.reject'].includes(action.actionId))
     || episode.sourceCapabilityId === 'topic-review'
+    || episode.sourceCapabilityId === 'developer-work.v1'
     || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true
   )).map((episode) => compactEpisode(episode, metadata, serverTimeMs));
   const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode, metadata, serverTimeMs), actions: [] }));

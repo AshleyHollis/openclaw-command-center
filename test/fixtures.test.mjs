@@ -65,6 +65,23 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
   } finally { await disposeIsolatedWorld(world); }
 });
 
+test('candidate machine ingress keeps its fictional credential outside plugin config', async () => {
+  const world = await createIsolatedWorld({ candidateRoot: process.cwd(), machineIngress: true,
+    reserveEndpoint: reserveFixtureEndpoint });
+  try {
+    const configText = await readFile(world.manifest.configPath, 'utf8');
+    const config = JSON.parse(configText);
+    const developerWork = config.plugins.entries['command-center'].config.developerWork;
+    assert.ok(world.machineCredential.length >= 32);
+    assert.equal(configText.includes(world.machineCredential), false);
+    assert.deepEqual(developerWork.trustedProxyPeers, ['127.0.0.1']);
+    assert.deepEqual(developerWork.principals[0].allowedProjects, ['fictional-project']);
+    assert.equal(developerWork.principals[0].tokenEnv, 'COMMAND_CENTER_FIXTURE_DEV_BEARER');
+  } finally { await disposeIsolatedWorld(world); }
+  await assert.rejects(createIsolatedWorld({ machineIngress: true, reserveEndpoint: reserveFixtureEndpoint }),
+    /requires an isolated candidate/u);
+});
+
 test('a released real fixture reservation can reacquire only its unchanged loopback endpoint', async () => {
   const world = await createIsolatedWorld({ candidateRoot: process.cwd() });
   const manifest = await readFile(world.manifestPath);

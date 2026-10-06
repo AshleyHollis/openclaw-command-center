@@ -37,6 +37,7 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.attention.list', 'command-center.v1.attention.get',
     'command-center.v1.attention.act', 'command-center.v1.activity.list',
     'command-center.v1.activity.get', 'command-center.v1.dashboard.get',
+    'command-center.v1.developer-work.resolve',
     'command-center.v1.open-loops.list', 'command-center.v1.open-loops.get', 'command-center.v1.open-loops.capture',
     'command-center.v1.open-loops.intake-selected', 'command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify', 'command-center.v1.open-loops.interpret-clarification', 'command-center.v1.open-loops.resume-follow-up',
     'command-center.v1.open-loops.payment-status',

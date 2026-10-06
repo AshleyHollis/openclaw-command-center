@@ -424,9 +424,11 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
 
   function registerSourceCapability(input) {
     const value = object(input, 'source capability');
-    const allowed = ['sourceCapabilityId', 'sourceKind', 'monitoring', 'actions', 'verifyTransition', 'deriveEvidence', 'actionExecutor', 'preauthorizations', 'planRevision', 'policyRevision', 'preconditionReader'];
+    const allowed = ['sourceCapabilityId', 'sourceKind', 'monitoring', 'actions', 'verifyTransition', 'deriveEvidence', 'actionExecutor', 'preauthorizations', 'planRevision', 'policyRevision', 'preconditionReader', 'revisionOrdering', 'commitGuard'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('invalid-capability', 'Source capability contains unsupported field.');
     nonBlank(value.sourceCapabilityId, 'sourceCapabilityId');
+    if (value.revisionOrdering !== undefined && (value.sourceCapabilityId !== 'developer-work.v1' || value.revisionOrdering !== 'positive-integer')) fail('invalid-capability', 'Source revision ordering is reserved for Developer Work.');
+    if (value.commitGuard !== undefined && (value.sourceCapabilityId !== 'developer-work.v1' || typeof value.commitGuard !== 'function')) fail('invalid-capability', 'Commit-time authority is reserved for Developer Work.');
     if (!Array.isArray(value.actions) || value.actions.length > 3) fail('invalid-capability', 'A source capability may register at most three actions.');
     const descriptors = value.actions.map((descriptor) => actionRegistry.register(descriptor));
     if (descriptors.some((descriptor) => descriptor.kind === 'mutation' && descriptor.approvalMode !== 'required')) fail('invalid-capability', 'Source-authored mutations require a fresh approval.');
@@ -452,6 +454,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const capability = Object.freeze({
       sourceCapabilityId: value.sourceCapabilityId,
       sourceKind: value.sourceKind ?? 'operational',
+      revisionOrdering: value.revisionOrdering ?? null,
+      commitGuard: value.commitGuard ?? null,
       // Capabilities registered before the monitoring declaration existed are
       // monitorable unless they explicitly opt out; new adapters declare this.
       monitoring: value.monitoring !== false,
@@ -473,6 +477,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const occurrence = normalizeOccurrence(input);
     const capability = capabilities.get(occurrence.sourceCapabilityId);
     if (!capability) fail('capability-unavailable', `Source capability ${occurrence.sourceCapabilityId} is not registered.`);
+    const sourceRevision = capability.revisionOrdering === 'positive-integer' ? Number(occurrence.occurrenceVersion) : null;
+    if (capability.revisionOrdering === 'positive-integer' && (!/^[1-9]\d*$/u.test(occurrence.occurrenceVersion ?? '') || !Number.isSafeInteger(sourceRevision))) fail('invalid-occurrence', 'Developer Work requires a positive source revision.');
     if (occurrence.topicId && typeof metadata?.getTopic === 'function' && !metadata.getTopic(occurrence.topicId)) fail('not-found', 'The exact Attention Topic was not found.');
     if (occurrence.sourceReferenceId && typeof metadata?.getSourceReference === 'function') {
       const reference = metadata.getSourceReference(occurrence.sourceReferenceId);
@@ -486,6 +492,9 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
     const clock = nowIso(now);
     return transaction((database) => {
+      // The source may advance while async verification is in flight. Read its
+      // exact request from this transaction's snapshot before publishing.
+      if (capability.commitGuard && capability.commitGuard(database, effectiveOccurrence) !== true) return Object.freeze({ episode: null, activity: null, duplicate: false, ignored: true });
       const exact = findOccurrence(identity.identityDigest, occurrenceIdentity);
       const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
       if (exact) {
@@ -499,6 +508,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const current = generations[0];
       if (confirmedState === 'Withdrawn' && (!current || ['Resolved', 'Withdrawn'].includes(current.state))) return Object.freeze({ episode: current ?? null, duplicate: false, ignored: true });
       if (current && ['Resolved', 'Withdrawn'].includes(current.state)) {
+        if (capability.revisionOrdering === 'positive-integer') return Object.freeze({ episode: current, duplicate: false, ignored: true });
         const terminal = Date.parse(current.terminalAt ?? current.updatedAt);
         const withinWindow = Date.parse(clock) < terminal + DELIVERY_WINDOW_MS;
         const provedNewEpisode = (verifiedTransition && effectiveOccurrence.transitionEvidence?.state === 'active') || isHigherSeverity(severity, current.severity);
@@ -506,8 +516,15 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       }
       if (current && !['Resolved', 'Withdrawn'].includes(current.state)) {
         const prior = latestOccurrence(current.episodeId);
-        if (occurrenceInstant(effectiveOccurrence.occurredAt) < occurrenceInstant(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
-        if (occurrenceInstant(effectiveOccurrence.occurredAt) === occurrenceInstant(current.occurredAt) && (prior?.occurrence_version ?? prior?.occurrenceVersion) && (prior?.occurrence_version ?? prior?.occurrenceVersion) !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
+        if (capability.revisionOrdering === 'positive-integer') {
+          const priorRevision = Number(prior?.occurrence_version ?? prior?.occurrenceVersion ?? 0);
+          if (sourceRevision < priorRevision) return Object.freeze({ episode: current, duplicate: false, ignored: true });
+          if (sourceRevision === priorRevision) fail('conflict', 'The same Developer Work revision cannot change its evidence.');
+        } else {
+          if (occurrenceInstant(effectiveOccurrence.occurredAt) < occurrenceInstant(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
+          const priorOccurrenceVersion = prior?.occurrence_version ?? prior?.occurrenceVersion;
+          if (occurrenceInstant(effectiveOccurrence.occurredAt) === occurrenceInstant(current.occurredAt) && priorOccurrenceVersion && priorOccurrenceVersion !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
+        }
       }
       const generation = current ? current.generation + 1 : 1;
       if (current && !['Resolved', 'Withdrawn'].includes(current.state) && (current.topicId !== (effectiveOccurrence.topicId ?? null) || current.sourceReferenceId !== (effectiveOccurrence.sourceReferenceId ?? null))) fail('conflict', 'Attention episode source linkage cannot be rebound.');

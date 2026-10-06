@@ -3,6 +3,9 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./native-developer-work-companion": "./dist/developer-work/native-library.mjs"
+  },
   "description": "The Command Center external Control UI plugin for OpenClaw.",
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -14,13 +17,13 @@
   "devDependencies": {
     "dompurify": "3.4.15",
     "markdown-it": "15.0.2",
-    "openclaw": "2026.9.5",
+    "openclaw": "2026.9.6",
     "pdfjs-dist": "6.3.289",
     "playwright": "1.63.0",
     "playwright-core": "1.63.0"
   },
   "peerDependencies": {
-    "openclaw": "2026.9.5"
+    "openclaw": "2026.9.6"
   },
   "commandCenter": {
     "runtimeCapability": {
@@ -68,25 +71,25 @@
         }
       },
       "host": {
-        "range": "=2026.9.5",
-        "commit": "21f1ca697532a9bd9e9cc46322a598a31435de15"
+        "range": "=2026.9.6",
+        "commit": "047e689bd7b4ea63cb1b5080a35ced8132a65092"
       },
       "pluginApi": {
         "package": "openclaw",
-        "range": "=2026.9.5"
+        "range": "=2026.9.6"
       },
       "commandCenterSchema": {
         "readable": {
           "min": 1,
-          "max": 9
+          "max": 11
         },
         "migratable": {
           "min": 1,
-          "max": 8
+          "max": 10
         },
         "writable": {
-          "min": 9,
-          "max": 9
+          "min": 11,
+          "max": 11
         }
       },
       "capabilityBridgeProtocol": {
@@ -100,7 +103,7 @@
       "./dist/plugin.mjs"
     ],
     "compat": {
-      "pluginApi": "=2026.9.5"
+      "pluginApi": "=2026.9.6"
     }
   }
 }

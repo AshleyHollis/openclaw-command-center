@@ -1173,6 +1173,17 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     content.replaceChildren();
     const card = element('article'); card.dataset.episodeId = episode.episodeId;
     card.append(element('h2', episode.context || 'Attention item'), element('p', `${episode.severity} · ${episode.state}`));
+    if (episode.sourceCapabilityId === 'developer-work.v1') {
+      const facts = episode.evidenceFacts ?? {};
+      if (nonBlank(facts.question)) card.append(element('p', facts.question));
+      card.append(element('p', 'This is a DEV-owned request. Opening its session does not answer or resolve it.'));
+      if (nonBlank(facts.devHandoffUrl)) {
+        const open = element('a', 'Open DEV Session'); open.href = facts.devHandoffUrl; open.target = '_blank'; open.rel = 'noopener noreferrer';
+        card.append(open, element('p', 'DEV will ask you to sign in and verify the exact waiting session before opening Chat.'));
+      } else card.append(element('p', 'The separate DEV destination is not configured for this request.'));
+      content.append(card);
+      return;
+    }
     const evidence = element('details'); evidence.append(element('summary', 'Evidence'));
     const evidenceText = element('pre', text({ diagnosis: episode.diagnosis, evidence: episode.evidenceFacts }));
     evidenceText.style.whiteSpace = 'pre-wrap'; evidence.append(evidenceText); card.append(evidence);
