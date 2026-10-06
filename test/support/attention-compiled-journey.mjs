@@ -20,7 +20,7 @@ import { producerSourceExternalId } from '../../src/open-loops/intake-retry.mjs'
 import { producerIntakePlanDigest } from '../../src/open-loops/producer-intake-plan.mjs';
 import { assertFastHostAdmission, assertCandidatePluginPermissions } from './isolated-acceptance-preflight.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
-import { readAttentionStartupReadiness } from './attention-startup-readiness.mjs';
+import { readAttentionStartupReadiness, readAttentionControlUiBuildId } from './attention-startup-readiness.mjs';
 import { createGatewayDeviceIdentity, requestAuthenticatedGateway, withDeadline,
   launchManagedBrowser, closeManagedBrowser, configureEvidencePage } from './real-host-runtime.mjs';
 
@@ -72,13 +72,22 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
     config.plugins.entries.workboard = { enabled: true };
     config.agents.defaults.userTimezone = 'Australia/Brisbane';
     await writeFile(world.manifest.configPath, `${JSON.stringify(config)}\n`);
-    let host, browser;
+    let host, browser, controlUiBuildId;
     const deviceIdentity = createGatewayDeviceIdentity();
-    const rpc = async (method, params = {}, scopes = ['operator.read', 'operator.write', 'operator.admin']) => unwrap(await requestAuthenticatedGateway({
-      gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, scopes, deviceIdentity, signal, responseTimeoutMs: 30_000
-    }));
+    const rpc = async (method, params = {}, scopes = ['operator.read', 'operator.write', 'operator.admin']) => {
+      assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim(), 'Attention RPC requires the current host-issued Control UI build identity.');
+      return unwrap(await requestAuthenticatedGateway({
+        gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, scopes, deviceIdentity,
+        controlUiBuildId, signal, responseTimeoutMs: 30_000
+      }));
+    };
     const ready = async () => {
-      await waitForConsecutiveReadiness(probeSignal => readAttentionStartupReadiness({ world, signal: probeSignal }), host.earlyExit,
+      controlUiBuildId = undefined;
+      await waitForConsecutiveReadiness(async probeSignal => {
+        if (!await readAttentionStartupReadiness({ world, signal: probeSignal })) return false;
+        controlUiBuildId = await readAttentionControlUiBuildId({ world, signal: probeSignal });
+        return true;
+      }, host.earlyExit,
         { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
       await rpc('workboard.cards.list', { boardId: 'default' });
     };
