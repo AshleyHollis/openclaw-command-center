@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { assertAcceptedChatEffect } from '../open-loops/accepted-chat-scope.mjs';
 import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
@@ -1227,6 +1228,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     try { result = JSON.parse(resultIdentity); } catch { throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result is invalid.'); }
     if (!result || result.schemaVersion !== 1 || result.sourceKind !== match[2] || result.sourceVersion !== observedRevision) throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result does not match its operation identity.');
     return mutate(null, db => {
+      if (result.sourceKind === 'chat') assertAcceptedChatEffect(service, result, match[1] === 'intake-source' ? 'plan' : 'outcome');
       const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
       if (existing) {
         if (existing.operation_kind !== operationKind || existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Intake accounting identity was reused with a different result.');
@@ -1247,7 +1249,14 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const evidence = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
             WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
               AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
-          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
+          if (result.sourceKind === 'chat' && result.status === 'pending-decision') {
+            const captureHex = createHash('sha256').update(['command-center.source-capture.v1', 'chat', result.sourceExternalId, result.sourceVersion, result.outcomeId].join('\0')).digest('hex');
+            const captureId = `${captureHex.slice(0, 8)}-${captureHex.slice(8, 12)}-4${captureHex.slice(13, 16)}-${(Number.parseInt(captureHex[16], 16) & 3 | 8).toString(16)}${captureHex.slice(17, 20)}-${captureHex.slice(20, 32)}`;
+            let captured;
+            try { captured = JSON.parse(db.prepare("SELECT result_json FROM open_loop_operations WHERE logical_operation_id = ? AND state = 'applied'").get(captureId)?.result_json ?? 'null'); } catch { captured = null; }
+            if (captured?.loop?.loopId !== result.loopId || !['suggested', 'decision-needed', 'uncertain'].includes(captured.loop.state) || captured.observation?.source?.kind !== 'chat' || captured.observation.source.externalId !== result.sourceExternalId || captured.observation.facts?.sourceVersion !== result.sourceVersion || captured.observation.facts?.obligationId !== result.outcomeId || captured.observation.facts?.classification !== 'decision') throw new CommandCenterMetadataError('conflict', 'The accepted Chat decision lacks its original pending capture receipt.');
+          }
+          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && result.sourceKind !== 'chat' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
           const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
             LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id

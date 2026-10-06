@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto';
+import { createCommitmentCaptureService } from './commitment-capture.mjs';
+import { sourceNoteOperationId } from './source-intake-tool.mjs';
+import { loadIntakeSourceAccount, recordIntakeOutcome } from './intake-accounting.mjs';
+import { requireAcceptedChatScope } from './accepted-chat-scope.mjs';
 import { normalizeAcceptedExtraction } from './intake-accounting.mjs';
 
 const kinds = new Set(['email', 'chat', 'note']);
@@ -138,4 +143,43 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
       }
     }
   });
+}
+
+function captureId(plan, outcomeId) {
+  const hex = createHash('sha256').update(['command-center.source-capture.v1', 'chat', plan.sourceExternalId, plan.sourceVersion, outcomeId].join('\0')).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16], 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+// Explicit capture-only replay: no scan, extraction, scheduler or producer-health receipt.
+export async function processAcceptedChatPlan({ metadata, sourceService, plan, assertCurrent }) {
+  requireAcceptedChatScope(metadata);
+  const extraction = plan.acceptedExtraction;
+  let evidence;
+  const information = plan.outcomes.find(item => item.kind === 'information');
+  const current = () => loadIntakeSourceAccount(metadata, plan).account;
+  const missing = id => current().outcomes.find(item => item.outcomeId === id)?.status === 'missing';
+  if (information) {
+    const retained = current().outcomes.find(item => item.outcomeId === information.outcomeId);
+    if (retained.status === 'quiet') evidence = retained;
+    else if (missing(information.outcomeId)) {
+      const logicalOperationId = sourceNoteOperationId({ ...plan, topicId: plan.acceptedChat.topicId });
+      const saved = await sourceService.notesCreate({ schemaVersion: 1, topicId: plan.acceptedChat.topicId, referenceId: plan.acceptedChat.noteFolderReferenceId, path: extraction.notePath, text: extraction.knowledgeMarkdown, sourceKind: 'note', logicalOperationId, requestId: logicalOperationId });
+      assertCurrent();
+      const note = saved?.value?.note ?? saved?.note;
+      const reference = note?.sourceReference;
+      if (!reference || reference.sourceKind !== 'note' || reference.topicId !== plan.acceptedChat.topicId || note.path !== extraction.notePath || reference.observedRevision !== note.revision) fail('unknown', 'The created Note did not return its exact accepted reference.');
+      evidence = { topicId: plan.acceptedChat.topicId, sourceReferenceId: reference.referenceId, sourcePath: note.path, sourceReferenceVersion: note.revision };
+      recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'chat', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, outcomeId: information.outcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', ...evidence, recordedAt: plan.observedAt });
+    }
+  }
+  for (const obligation of extraction.obligations) {
+    if (!missing(obligation.obligationId)) continue;
+    const { classification, ...intent } = obligation;
+    const captured = await createCommitmentCaptureService({ metadata, sourceService }).capture({ schemaVersion: 1, logicalOperationId: captureId(plan, obligation.obligationId), sourceKind: 'chat', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, topicId: plan.acceptedChat.topicId, ...intent, ...(classification === 'decision' ? { classification } : {}), ...(evidence ? { sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceReferenceVersion } : {}), occurredAt: plan.observedAt, observedAt: plan.observedAt, historicalBaseline: false });
+    assertCurrent();
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'chat', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, outcomeId: obligation.obligationId, kind: classification, status: classification === 'decision' ? 'pending-decision' : 'applied', summary: obligation.title, loopId: captured.loop.loopId, recordedAt: plan.observedAt });
+  }
+  if (extraction.noAction && missing(extraction.noAction.outcomeId)) recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'chat', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, ...extraction.noAction, kind: 'no-action', status: 'no-action', recordedAt: plan.observedAt });
+  assertCurrent();
+  return loadIntakeSourceAccount(metadata, plan);
 }

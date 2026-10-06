@@ -12,7 +12,9 @@ test('registers the complete closed versioned bridge inventory with least-privil
   const registered = registerBridgeMethods(api, service);
   assert.deepEqual(registered, [...READ_METHODS, ...WRITE_METHODS]);
   assert.deepEqual(registrations.map(([method, , options]) => [method, options.scope]), [
-    ...READ_METHODS.map((method) => [method, 'operator.read']),
+    // Saved Chat plan reads require fresh capture write authority, even though
+    // load itself creates no effect and accepts no mutation operation UUID.
+    ...READ_METHODS.map((method) => [method, method === 'command-center.v1.chat-capture.load' ? 'operator.write' : 'operator.read']),
     ...WRITE_METHODS.map((method) => [method, ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write'])
   ]);
   for (const [, , options] of registrations) assert.equal(options.gatewayMethodDispatchMethods, undefined);

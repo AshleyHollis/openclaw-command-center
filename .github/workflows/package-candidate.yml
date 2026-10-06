@@ -52,6 +52,11 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
+              node --test test/accepted-chat-replay.test.mjs test/accepted-chat-note.integration.test.mjs test/accepted-chat-bridge.test.mjs \
+                test/commitment-capture.test.mjs test/source-intake-tool.test.mjs \
+                test/producer-intake.test.mjs test/producer-intake-accounted.integration.test.mjs \
+                test/intake-accounting.test.mjs test/bridge-contract.test.mjs \
+                test/open-loop-bridge.test.mjs test/first-live-registration.test.mjs test/dashboard-service.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs

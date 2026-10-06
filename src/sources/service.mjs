@@ -1,5 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { assertAcceptedChatNote } from '../open-loops/accepted-chat-scope.mjs';
 import { lstat, realpath } from 'node:fs/promises';
 import { createActivityService } from '../activity/service.mjs';
 import { createAnalysisAdapter } from './analysis.mjs';
@@ -274,6 +275,7 @@ export class AuthoritativeSourceService {
     };
   }
   async guardedNoteMutation(input, operationKind, method, { reconcileOnly = false, recoveryChecked = false } = {}) {
+    if (method === 'create') assertAcceptedChatNote(this.metadata, input);
     const service = this.requireTopicService(input, { write: !reconcileOnly, requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     // Re-enter policy validation after obtaining cross-process ownership, and
@@ -285,7 +287,7 @@ export class AuthoritativeSourceService {
     }
     if (service.notes.recovery && !service.notes.recovery.owned) return service.notes.recovery.run(() => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly, recoveryChecked }));
     this.assertExactNoteReference(input, { create: method === 'create' });
-    const execute = () => service.notes[method](adapterInput(input));
+    const execute = () => { if (method === 'create') assertAcceptedChatNote(this.metadata, input); return service.notes[method](adapterInput(input)); };
     if (!this.coordinator) {
       if (reconcileOnly) throw sourceError('unknown', 'The durable mutation coordinator is unavailable.');
       return execute();
@@ -299,8 +301,10 @@ export class AuthoritativeSourceService {
       intent: intentInput,
       execute,
       reconcile: async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
+        if (method === 'create') assertAcceptedChatNote(this.metadata, input);
         if (service.notes.recovery?.enabled) {
           const recovered = await service.notes.recovery.reconcile(adapterInput(input), method);
+          if (method === 'create') assertAcceptedChatNote(this.metadata, input);
           if (recovered) return recovered;
           if (method === 'create') return { outcome: 'unknown' };
           // Without an inode-proven effect receipt, equal bytes are not evidence
@@ -430,6 +434,28 @@ export class AuthoritativeSourceService {
     const navigation = await service.sessions.navigate(adapterInput(input));
     this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
     return navigation;
+  }
+  assertAcceptedChatBinding(binding) {
+    if (this.closed || !binding || binding.version !== 1) throw sourceError('source-recovery', 'Accepted Chat source ownership is unavailable.');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    this.requireTopicService({ topicId: binding.topicId }, { write: true, requiredSourceKinds: ['session'] });
+    const reference = this.metadata.getSourceReference(binding.referenceId);
+    const topic = this.metadata.getTopic(binding.topicId);
+    const matches = this.metadata.listSourceReferences().filter(item => item.sourceSystem === 'openclaw' && item.sourceKind === 'session' && effectiveSourceLocator(this.metadata, item) === binding.sessionKey);
+    if (matches.length !== 1 || matches[0].referenceId !== binding.referenceId || !same(reference, binding.sessionReference) || !same(this.metadata.getSessionState(binding.referenceId), binding.sessionState) || !same(this.metadata.getSourceLocator(binding.referenceId), binding.sessionLocator) || topic?.revision !== binding.topicRevision) throw sourceError('conflict', 'The accepted Chat Conversation or Topic binding changed.');
+    const store = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
+    const rows = store?.listSessionEntries?.({ agentId: 'main', readOnly: true });
+    if (!Array.isArray(rows) || rows.filter(row => row.sessionKey === binding.sessionKey && (row.entry?.sessionId ?? row.sessionId) === binding.sessionId).length !== 1) throw sourceError('source-recovery', 'The exact accepted native Conversation is unavailable.');
+    if (binding.noteFolderReferenceId && (!same(this.metadata.getSourceReference(binding.noteFolderReferenceId), binding.noteFolderReference) || !same(this.metadata.getSourceLocator(binding.noteFolderReferenceId), binding.noteFolderLocator))) throw sourceError('conflict', 'The accepted Chat Note Folder binding changed.');
+  }
+  async verifyAcceptedChatBinding(binding) {
+    this.assertAcceptedChatBinding(binding);
+    if (binding.noteFolderReferenceId) {
+      const service = this.requireTopicService({ topicId: binding.topicId }, { requiredSourceKinds: ['note_folder'] });
+      if (!service.notes) throw sourceError('capability-unavailable', 'The accepted Chat Note owner is unavailable.');
+      await service.notes.resolveRoot();
+      this.assertAcceptedChatBinding(binding);
+    }
   }
   async sessionTopicContext(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'sessionKey', 'requestId'], 'Session Topic context request');

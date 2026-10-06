@@ -130,6 +130,9 @@ export default definePluginEntry({
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
         if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
         if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
+        if (property === 'acceptedChatCaptureAccept') return (input, runtime) => service.acceptedChatCaptureAccept(input, runtime);
+        if (property === 'acceptedChatCaptureLoad') return (input, runtime) => service.acceptedChatCaptureLoad(input, runtime);
+        if (property === 'acceptedChatCaptureReplay') return (input, runtime) => service.acceptedChatCaptureReplay(input, runtime);
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
         if (property === 'openLoopsClarify') return (input) => service.openLoopsClarify(input);
