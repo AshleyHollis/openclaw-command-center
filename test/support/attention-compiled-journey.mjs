@@ -19,7 +19,8 @@ import { loadIntakeSourceAccount } from '../../src/open-loops/intake-accounting.
 import { producerSourceExternalId } from '../../src/open-loops/intake-retry.mjs';
 import { producerIntakePlanDigest } from '../../src/open-loops/producer-intake-plan.mjs';
 import { assertFastHostAdmission, assertCandidatePluginPermissions } from './isolated-acceptance-preflight.mjs';
-import { seedNativeExistingTopic, readNativeControlUiReadiness } from './first-live-native-journey.mjs';
+import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
+import { readAttentionStartupReadiness } from './attention-startup-readiness.mjs';
 import { createGatewayDeviceIdentity, requestAuthenticatedGateway, withDeadline,
   launchManagedBrowser, closeManagedBrowser, configureEvidencePage } from './real-host-runtime.mjs';
 
@@ -59,7 +60,7 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
   const candidateRoot = await verifyPluginArtifact({ archivePath, expectedReceipt: packageReceipt,
     destinationDirectory: path.join(validationRoot, 'candidate') });
   await assertCandidatePluginPermissions(candidateRoot);
-  const fixtureFiles = await Promise.all(['attention-compiled-pair.test.mjs', 'support/attention-compiled-journey.mjs'].map(async name => ({
+  const fixtureFiles = await Promise.all(['attention-compiled-pair.test.mjs', 'support/attention-compiled-journey.mjs', 'support/attention-startup-readiness.mjs'].map(async name => ({
     path: `test/${name}`, sha256: createHash('sha256').update(await readFile(new URL(`../${name}`, import.meta.url))).digest('hex')
   })));
   const acceptedPlanDigests = [];
@@ -77,7 +78,7 @@ export async function exerciseAttentionCompiledJourney({ signal }) {
       gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, scopes, deviceIdentity, signal, responseTimeoutMs: 30_000
     }));
     const ready = async () => {
-      await waitForConsecutiveReadiness(probeSignal => readNativeControlUiReadiness({ world, signal: probeSignal }), host.earlyExit,
+      await waitForConsecutiveReadiness(probeSignal => readAttentionStartupReadiness({ world, signal: probeSignal }), host.earlyExit,
         { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
       await rpc('workboard.cards.list', { boardId: 'default' });
     };
