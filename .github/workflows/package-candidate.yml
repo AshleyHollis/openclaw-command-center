@@ -52,6 +52,8 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
+              node --test test/capture-tool-replay.test.mjs test/commitment-capture.test.mjs \
+                test/source-intake-tool.test.mjs test/producer-intake-accounted.integration.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs

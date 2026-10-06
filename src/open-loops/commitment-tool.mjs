@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createCommitmentCaptureService } from './commitment-capture.mjs';
+import { createCommitmentCaptureService, retainCommitmentCaptureTimestamps } from './commitment-capture.mjs';
 import { sourceError } from '../sources/errors.mjs';
 
 function operationId(context, toolCallId) {
@@ -36,7 +36,7 @@ export function commitmentCaptureToolFactory({ getOwners } = {}) {
       const sourceKind = params.sourceKind ?? 'chat';
       if (sourceKind !== 'chat' && !params.sourceReferenceId) throw sourceError('source-recovery', 'Note and email capture require an exact Topic Source Reference.');
       const capture = createCommitmentCaptureService({ metadata, sourceService });
-      const result = await capture.capture({ schemaVersion: 1, logicalOperationId, sourceKind, sourceExternalId: params.sourceExternalId ?? context.sessionKey, sourceVersion: params.sourceVersion ?? `tool:${logicalOperationId}`, ...(params.sourceReferenceId ? { sourceReferenceId: params.sourceReferenceId } : {}), topicId: binding.topicId, title: params.title, obligationId: params.obligationId, provenance: params.provenance, ...(params.confidence === undefined ? {} : { confidence: params.confidence }), occurredAt: now, observedAt: now, historicalBaseline: false, ...Object.fromEntries(['correlationNamespace', 'correlationId', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'].flatMap(key => params[key] === undefined ? [] : [[key, params[key]]])) });
+      const result = await capture.capture(retainCommitmentCaptureTimestamps(metadata, { schemaVersion: 1, logicalOperationId, sourceKind, sourceExternalId: params.sourceExternalId ?? context.sessionKey, sourceVersion: params.sourceVersion ?? `tool:${logicalOperationId}`, ...(params.sourceReferenceId ? { sourceReferenceId: params.sourceReferenceId } : {}), topicId: binding.topicId, title: params.title, obligationId: params.obligationId, provenance: params.provenance, ...(params.confidence === undefined ? {} : { confidence: params.confidence }), occurredAt: now, observedAt: now, historicalBaseline: false, ...Object.fromEntries(['correlationNamespace', 'correlationId', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'].flatMap(key => params[key] === undefined ? [] : [[key, params[key]]])) }));
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, loopId: result.loop?.loopId, state: result.loop?.state }) }], details: result });
     }
   });

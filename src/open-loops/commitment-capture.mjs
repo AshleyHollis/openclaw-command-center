@@ -75,6 +75,16 @@ export function normalizeCommitmentCapture(input) {
   });
 }
 
+// Tool retries observe the same source again at a later wall-clock time. Keep
+// the timestamps of its immutable evidence; all other intent still passes the
+// owner's existing digest checks. This also preserves pre-existing receipts.
+export function retainCommitmentCaptureTimestamps(metadata, input) {
+  const value = normalizeCommitmentCapture(input);
+  const observationId = `commitment-observation:${stable([value.sourceKind, value.sourceExternalId, value.sourceVersion, value.obligationId])}`;
+  const retained = metadata.getOpenLoopObservation?.(observationId);
+  return retained ? { ...value, occurredAt: retained.occurredAt, observedAt: retained.observedAt } : value;
+}
+
 export function planCommitmentCapture(input, existingLoop = null) {
   const value = normalizeCommitmentCapture(input);
   const loopKind = value.obligationKind === 'payment' ? 'payment' : 'general';
