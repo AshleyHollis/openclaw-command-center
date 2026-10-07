@@ -53,7 +53,9 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
   const reading = page.getByRole('region', { name: 'Note content', exact: true });
   const tableScroll = reading.getByRole('region', { name: 'Table 1', exact: true });
   await tableScroll.waitFor();
-  for (const width of [320, 360, 412, 160, 180, 206]) {
+  for (const width of [320, 360, 412]) {
+    for (const fontSize of [16, 32]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = size + 'px'; document.body.style.fontSize = size + 'px'; }, fontSize);
     await page.setViewportSize({ width, height: 740 });
     for (const filesVisible of [true, false]) {
       const toggle = page.getByRole('button', { name: filesVisible ? 'Show Files' : 'Hide Files', exact: true });
@@ -81,6 +83,8 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
       assert.equal(endVisible, true, 'the final column is reachable');
     }
   }
+  }
+  await page.evaluate(() => { document.documentElement.style.fontSize = '16px'; document.body.style.fontSize = '16px'; });
   await page.setViewportSize({ width: 360, height: 740 });
   await page.getByRole('button', { name: 'Source', exact: true }).click();
   assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), await page.evaluate(() => window.noteText));
