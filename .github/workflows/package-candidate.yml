@@ -55,12 +55,12 @@ jobs:
           # confined to this networkless test container, not an import profile.
           docker run --rm --init --network none --read-only \
             --env COMMAND_CENTER_SOURCE_COMMIT \
-            --env COMMAND_CENTER_TEST_SQLITE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/sqlite-runtime.js 
-            --env COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/file-access-runtime.js 
-            --env COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-store-runtime.js 
-            --env COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-transcript-runtime.js 
-            --env NODE_OPTIONS=--import=/workspace/test/fixtures/note-runtime-loader.mjs 
-            --mount "type=bind,src=$RUNNER_TEMP/pinned-native-sdk/runtime,dst=/native-sdk,readonly" 
+            --env COMMAND_CENTER_TEST_SQLITE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/sqlite-runtime.js \
+            --env COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/file-access-runtime.js \
+            --env COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-store-runtime.js \
+            --env COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-transcript-runtime.js \
+            --env NODE_OPTIONS=--import=/workspace/test/fixtures/note-runtime-loader.mjs \
+            --mount "type=bind,src=$RUNNER_TEMP/pinned-native-sdk/runtime,dst=/native-sdk,readonly" \
             --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
             --cpus 2 --memory 8g --pids-limit 256 \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=1073741824,mode=1777 \
