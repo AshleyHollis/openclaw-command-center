@@ -227,7 +227,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await laterPageFile.click();
     await page.getByRole('heading', { name: 'receipt-109.md', exact: true }).waitFor();
     await nativeFilter.fill('');
-    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120).catch(async error => { error.message += JSON.stringify(await page.evaluate(() => ({ query: window.nativeExplorerProps.query, entries: window.nativeExplorerProps.entries.length }))); throw error; });
     assert.equal(await page.evaluate(() => window.nativeExplorerProps.entries.length), 120, 'native Files receives the complete bounded cursor catalog');
     const promotionsBeforeRestore = await page.evaluate(() => window.promoted);
     await page.evaluate(() => window.mountNativeExplorer());
@@ -244,7 +244,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 0);
     assert.equal(await nativeExplorer.getByRole('button').count(), 0, 'disconnect must clear the prior native Files catalog');
     await page.evaluate(() => window.setReaderAccess(true));
-    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120).catch(async error => { error.message += JSON.stringify(await page.evaluate(() => ({ query: window.nativeExplorerProps.query, entries: window.nativeExplorerProps.entries.length }))); throw error; });
     await page.evaluate(() => { window.duplicateCatalog = true; });
     await page.evaluate(() => window.nativeExplorerProps.onRefresh());
     await page.getByText('The exact Note catalogue is unavailable.', { exact: true }).waitFor();

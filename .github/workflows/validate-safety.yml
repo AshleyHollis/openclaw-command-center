@@ -24,6 +24,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
+      - run: npm run check
       - run: npx playwright install --with-deps chromium
       - name: Topic reader regression
         env:

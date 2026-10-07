@@ -33,7 +33,7 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
     const { mountTopicPage } = await import('/topic-page.mjs');
     window.noteText = '# Fictional decisions\n\n| Date | Area | Decision | Notes |\n| --- | --- | --- | --- |\n| 2026-10-07 | Kitchen | Keep existing shelving | Compare two fictional quotations before ordering. |\n| 2026-10-08 | Study | Defer desk replacement | This is the final reachable cell. |\n\n[Unsafe](javascript:alert(1))\n\n![remote](https://example.invalid/pixel.png)';
     const signal = new AbortController().signal;
-    const host = { signal, connection: { connected: true, canRead: true, canWrite: false }, sessions: {}, redact: text => text,
+    const host = { signal, connection: { connected: true, canRead: true, canWrite: false }, sessions: {}, redact: text => text, subscribe: () => () => {},
       components: { mountFileExplorer(container, initial) {
         let props = initial; const explorer = document.createElement('div'); explorer.className = 'control-ui-file-explorer';
         const render = () => { const button = document.createElement('button'); button.textContent = 'Read decisions.md'; button.addEventListener('click', () => props.onSelect('decisions.md')); explorer.replaceChildren(button); };
