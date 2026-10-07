@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { createNativeAttachmentReader } from './native-attachments.mjs';
 import { sourceError, assertNoUnexpectedKeys, nonBlank } from '../sources/errors.mjs';
 import { revisionForBytes } from '../sources/reference.mjs';
 
@@ -79,11 +80,12 @@ function publicReceipt({ topicId, sourceReference, document, mediaRef, contentTy
  * delegates durable file publication/recovery to the existing Note owner.
  */
 export class TopicDocumentFilingService {
-  constructor({ sourceService, metadata, mediaLoader } = {}) {
+  constructor({ sourceService, metadata, mediaLoader, attachmentReader } = {}) {
     if (!sourceService || !metadata || typeof mediaLoader !== 'function') throw new TypeError('Topic document filing requires source, metadata, and managed-media capabilities.');
     this.sourceService = sourceService;
     this.metadata = metadata;
     this.mediaLoader = mediaLoader;
+    this.attachmentReader = attachmentReader ?? createNativeAttachmentReader();
   }
 
   async resolveBoundConversation({ sessionKey, sessionId }) {
@@ -96,9 +98,54 @@ export class TopicDocumentFilingService {
     return Object.freeze({ ...binding, folderReferenceId: folders[0].referenceId, notes: service.notes });
   }
 
+  assertReviewCurrent(runtime) {
+    if (typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw sourceError('unauthenticated', 'Current synchronous native request authority is required.');
+  }
+
+  attachmentIdentity(binding) {
+    const agentId = binding.sessionKey.split(':')[1];
+    return { agentId, sessionKey: binding.sessionKey, sessionId: binding.sessionId };
+  }
+
+  async listAttachments(input = {}, runtime) {
+    assertNoUnexpectedKeys(input, ['sessionKey', 'sessionId', 'offset'], 'Conversation attachment selection');
+    nonBlank(input.sessionId, 'sessionId');
+    this.assertReviewCurrent(runtime);
+    const binding = await this.resolveBoundConversation(input);
+    const page = await this.attachmentReader.list(this.attachmentIdentity(binding), { offset: input.offset });
+    const latest = await this.resolveBoundConversation(input);
+    if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment selection.');
+    this.assertReviewCurrent(runtime);
+    return Object.freeze({ ...page, topicId: binding.topicId, topicName: binding.name, sessionKey: binding.sessionKey, sessionId: binding.sessionId });
+  }
+
+  async reviewAttachment(input = {}, runtime) {
+    assertNoUnexpectedKeys(input, ['sessionKey', 'sessionId', 'selection', 'subfolder'], 'Topic attachment review');
+    nonBlank(input.sessionId, 'sessionId');
+    const destination = safeSubfolder(input.subfolder);
+    this.assertReviewCurrent(runtime);
+    const binding = await this.resolveBoundConversation(input);
+    const identity = this.attachmentIdentity(binding);
+    const attachment = await this.attachmentReader.resolve(identity, input.selection);
+    this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
+    const source = await this.loadExactMedia(attachment.mediaRef);
+    if (attachment.sizeBytes !== null && attachment.sizeBytes !== source.bytes.length || attachment.contentType && source.contentType && attachment.contentType !== source.contentType) throw sourceError('conflict', 'The original managed attachment no longer matches its accepted native media fact.');
+    const latest = await this.resolveBoundConversation(input);
+    await this.attachmentReader.resolve(identity, attachment.selection);
+    if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment review.');
+    this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
+    this.assertReviewCurrent(runtime);
+    const filename = filedName(safeFilename(attachment.fileName ?? source.fileName, `attachment-${sourceToken(attachment.mediaRef)}`), sourceToken(attachment.mediaRef));
+    return Object.freeze({ schemaVersion: 1, status: 'review', topicId: binding.topicId, topicName: binding.name,
+      selection: attachment.selection,
+      source: Object.freeze({ sessionKey: binding.sessionKey, sessionId: binding.sessionId, referenceId: binding.referenceId, entryId: attachment.selection.entryId, createdAt: attachment.createdAt }),
+      document: Object.freeze({ path: `${destination}/${filename}`, revision: source.digest, contentType: attachment.contentType ?? source.contentType, sizeBytes: source.bytes.length }) });
+  }
+
   async loadExactMedia(mediaRef) {
     const loaded = await this.mediaLoader(mediaRef, { maxBytes: MAX_ATTACHMENT_BYTES, optimizeImages: false });
     if (!loaded || !Buffer.isBuffer(loaded.buffer)) throw sourceError('unavailable', 'The managed attachment could not be read.');
+    if (loaded.buffer.length > MAX_ATTACHMENT_BYTES) throw sourceError('response-too-large', 'The managed original exceeds the bounded filing limit.');
     return Object.freeze({
       bytes: Buffer.from(loaded.buffer),
       digest: revisionForBytes(loaded.buffer),

@@ -29,7 +29,7 @@ test('real pinned native SDK retains scoped accepted media facts through bounded
   for (const [eventId, message] of [
     ['fictional-accepted', { role: 'user', content: 'A fictional document', __openclaw: { media: [media] }, timestamp: 1767225600000 }],
     ['fictional-model', { role: 'assistant', content: 'media://inbound/model-guessed', __openclaw: { media: [media] }, timestamp: 1767225600001 }],
-    ['fictional-legacy', { role: 'user', content: 'media://inbound/guessed', media: [media], timestamp: 1767225600002 }],
+    ['fictional-legacy', { role: 'user', content: 'media://inbound/guessed', timestamp: 1767225600002 }],
   ]) {
     assert.equal((await nativeTranscript.appendSessionTranscriptMessageByIdentityStrict({ ...identity, config: {}, eventId, message, now: 1767225600000 })).kind, 'result');
   }
@@ -39,7 +39,11 @@ test('real pinned native SDK retains scoped accepted media facts through bounded
   const attachment = page.attachments[0];
   assert.equal(attachment.mediaRef, media.url);
   assert.equal(attachment.fileName, media.fileName);
-  assert.equal(attachment.selection.entryId, 'fictional-accepted');
+  const nativePage = await nativeTranscript.readSessionTranscriptVisibleMessageDelta({ ...identity, offset: 0, maxMessages: 50, maxBytes: 1024 * 1024 });
+  assert.equal(nativePage.kind, 'page');
+  const accepted = nativePage.entries.filter(row => row.role === 'user' && row.message.__openclaw?.media?.some(fact => fact.url === media.url));
+  assert.equal(accepted.length, 1);
+  assert.equal(attachment.selection.entryId, accepted[0].entryId);
   assert.deepEqual(await reader.resolve(identity, attachment.selection), attachment);
   await assert.rejects(() => reader.resolve({ ...identity, sessionId: 'foreign-incarnation' }, attachment.selection));
   await assert.rejects(() => reader.resolve(identity, { ...attachment.selection, entryId: 'fictional-model' }));
