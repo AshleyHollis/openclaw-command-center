@@ -224,7 +224,7 @@ export class TopicDocumentFilingService {
         if (checked.status !== 'applied') throw sourceError('source-recovery', 'The original completed filing no longer has causal publication proof.');
         return checked.value;
       }
-      return Object.freeze({ ...this.preparedReceipt(retained), canFile: retained.currentStep === 'prepared' && typeof runtime.admitAttachment === 'function' });
+      return Object.freeze({ ...this.preparedReceipt(retained), canFile: retained.currentStep === 'prepared' && retained.intent.sizeBytes <= MAX_ORIGINAL_FILING_BYTES && typeof runtime.admitAttachment === 'function' });
     }
     const binding = await this.resolveBoundConversation(request);
     const targetBasis = this.reviewTargetBasis(binding);
@@ -301,6 +301,7 @@ export class TopicDocumentFilingService {
       // host runtime, never JSON or configuration. No fallback promotes a read
       // snapshot into source commit authority.
       if (typeof runtime.admitAttachment !== 'function') throw sourceError('capability-unavailable', 'Native accepted attachment admission is unavailable.');
+      if (record.intent.sizeBytes > MAX_ORIGINAL_FILING_BYTES) throw sourceError('response-too-large', 'Original filing supports attachments up to 5 MiB.');
       const claim = this.metadata.claimDocumentFiling({ logicalOperationId: current.logicalOperationId }, assertCurrent);
       if (!claim.dispatch) return this.checkPreparedAttachment(input, runtime, true);
       const admission = await runtime.admitAttachment({ ...this.attachmentIdentity(binding), selection: record.intent.request.selection,
