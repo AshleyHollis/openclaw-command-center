@@ -80,6 +80,18 @@ test('filing rejects a changed native original copy and closes custody without p
   assert.equal(f.metadata.getTopicOperation(input.logicalOperationId).state, 'unknown');
 });
 
+test('the real filing and Note owners refuse a retained oversized original before claiming dispatch', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  const original = f.metadata.getTopicOperation(input.logicalOperationId);
+  const logicalOperationId = '00000000-0000-4000-8000-000000000790';
+  f.metadata.prepareDocumentFiling({ logicalOperationId, topicId: original.topicId, operationKind: 'documents.file.v2', state: 'pending', currentStep: 'prepared',
+    intent: { ...original.intent, sizeBytes: 5 * 1024 * 1024 + 1, noteLogicalOperationId: '00000000-0000-4000-8000-000000000791' } }, () => {});
+  runtime.admitAttachment = () => { throw new Error('Oversized original cannot enter native admission.'); };
+  await assert.rejects(() => f.service.documents.filePreparedAttachment({ ...input, logicalOperationId }, runtime), { code: 'response-too-large' });
+  assert.equal(f.metadata.getTopicOperation(logicalOperationId).currentStep, 'prepared');
+});
+
 test('original filing interrupted after publication recovers the frozen receipt without reading the original or creating again', linux, async t => {
   const f = await fixture(t, { afterAtomicPublish: async () => { throw new Error('fictional interrupted original'); } });
   const { input, runtime } = await prepareOriginal(f);
