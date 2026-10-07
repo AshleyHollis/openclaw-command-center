@@ -178,7 +178,7 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body, createConversationRuntime, retainDocumentAuthority) {
+async function execute(service, body, createConversationRuntime, retainDocumentAuthority, deliverDocumentResult) {
   const { action } = body;
   if (action.startsWith('documents.')) {
     if (!createConversationRuntime) throw Object.assign(new Error('Attachment review requires authenticated native request authority.'), { code: 'unauthenticated' });
@@ -187,6 +187,7 @@ async function execute(service, body, createConversationRuntime, retainDocumentA
     const nativeAuthority = runtime.creationAuthority;
     const targetFences = [];
     const reviewAuthority = Object.freeze({ principalId: nativeAuthority.principalId,
+      deliverResult(value) { reviewAuthority.assertCurrent(); deliverDocumentResult(value); },
       ...(typeof runtime.admitAttachment === 'function' ? { admitAttachment: runtime.admitAttachment.bind(runtime) } : {}),
       assertCurrent() {
         if (nativeAuthority.assertCurrent()?.then || targetFences.some(fence => fence()?.then)) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
@@ -239,6 +240,7 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
   return async (req, res) => {
     if (req.method !== 'POST') { sendJson(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Topic Page actions are POST-only.' }); return true; }
     let noteSave = false;
+    let documentDelivered = false;
     try {
       if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw invalid('JSON content type is required.');
       const request = await readJson(req);
@@ -249,7 +251,14 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       noteSave = createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile';
       assertRequestBounds(body, request.bytes);
       let documentAuthority;
-      const result = await execute(service, body, createConversationRuntime, authority => { documentAuthority = authority; });
+      const deliverDocumentResult = value => {
+        if (documentDelivered) throw invalid('The original document response was already delivered.');
+        documentAuthority.assertCurrent();
+        sendJson(res, 200, { schemaVersion: 1, status: value.status ?? 'ready', result: value });
+        documentDelivered = true;
+      };
+      const result = await execute(service, body, createConversationRuntime, authority => { documentAuthority = authority; }, deliverDocumentResult);
+      if (documentDelivered) return true;
       if (body.action.startsWith('documents.')) {
         if (typeof documentAuthority?.assertCurrent !== 'function') throw invalid('Captured attachment response authority is required.');
         documentAuthority.assertCurrent();
@@ -270,6 +279,7 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       }
       sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result) } });
     } catch (error) {
+      if (documentDelivered) return true;
       const code = String(error?.code ?? 'invalid-request');
       if (code === 'feature-unavailable') {
         sendJson(res, 501, { schemaVersion: 1, status: 'error', code, retryable: false, message: 'This feature is not available in the first live release.' });

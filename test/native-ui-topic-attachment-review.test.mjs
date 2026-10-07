@@ -36,7 +36,7 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
             : { schemaVersion: 2, status: 'prepared', logicalOperationId: input.logicalOperationId, canFile: ['file and reopen', 'unknown and check'].includes(scenario), topicId: binding.topicId, topicName: binding.name, source: { sessionId: binding.sessionId, entryId: selection.entryId }, document: { path: 'Documents/Reference/original--fixture.pdf', sizeBytes: 123, contentType: 'application/pdf' } };
           return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result }) };
         } };
-      window.review = mountTopicAttachmentReview(document.querySelector('#mount'), { host, signal: lifetime.signal, binding, onFiled: document => { window.openedDocument = document; }, verifyContext: async () => { if (!window.current) throw new Error('The Conversation changed.'); } });
+      window.review = mountTopicAttachmentReview(document.querySelector('#mount'), { host, signal: lifetime.signal, binding, onFiled: document => { window.openedDocument = document; }, onSource: source => { window.openedSource = source; }, verifyContext: async () => { if (!window.current) throw new Error('The Conversation changed.'); } });
     }, scenario);
     if (scenario === 'read-only') { assert.equal(await page.getByRole('button', { name: 'File Chat attachment' }).isDisabled(), true); assert.equal(await page.evaluate(() => window.calls.length), 0); return; }
     assert.equal(await page.getByRole('region', { name: 'Review Chat attachment filing' }).count(), 0);
@@ -54,6 +54,7 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
       assert.match(await page.locator('body').innerText(), /Fictional project \/ Documents\/Reference\/original--fixture.pdf/u);
       if (['file and reopen', 'unknown and check'].includes(scenario)) {
         const originalId = await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue();
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).getAttribute('readonly') !== null, true);
         await page.getByRole('button', { name: 'File original', exact: true }).click();
         if (scenario === 'unknown and check') {
           await page.getByRole('status').filter({ hasText: 'lost response' }).waitFor();
@@ -63,8 +64,14 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
         await page.getByRole('status').filter({ hasText: 'Original filed' }).waitFor();
         await page.getByRole('button', { name: 'Open filed document', exact: true }).click();
         await page.waitForFunction(() => window.openedDocument?.referenceId === 'document:fictional');
+        await page.getByRole('button', { name: 'Open source Conversation', exact: true }).click();
+        await page.waitForFunction(() => window.openedSource?.sessionId === 'fictional-incarnation');
         assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), originalId);
         assert.equal(await page.evaluate(() => window.calls.filter(input => input.action === 'documents.attachment.file').length), 1);
+        await page.getByRole('button', { name: 'New filing', exact: true }).click();
+        assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isEnabled(), true);
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), '');
+        assert.match(await page.getByLabel('Previous filing receipt').innerText(), new RegExp(originalId));
         return;
       }
       assert.equal(await page.getByRole('button', { name: 'File original' }).isDisabled(), true);

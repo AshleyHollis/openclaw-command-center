@@ -225,7 +225,7 @@ export class AuthoritativeSourceService {
   }
   async documentsPrepareAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.prepareAttachment(input, runtime); }
   async documentsPublishAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.filePreparedAttachment(input, runtime); }
-  async documentsCheckAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.checkPreparedAttachment(input, runtime); }
+  async documentsCheckAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.checkPreparedAttachment(input, runtime, true); }
   async documentsReopenAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.reopenPreparedAttachment(input, runtime); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);

@@ -272,7 +272,7 @@ export class TopicDocumentFilingService {
       referenceId: record.intent.folderReferenceId, path: record.intent.documentPath, sourceKind: 'document', contentRevision: record.intent.sourceDigest };
   }
 
-  async checkPreparedAttachment(input, runtime) {
+  async checkPreparedAttachment(input, runtime, deliver = false) {
     const { record, binding, assertCurrent } = await this.resolveOriginalFiling(input, runtime);
     const noteInput = this.noteIntent(record);
     return binding.notes.recovery.runExactReconciliation(noteInput, 'create', async () => {
@@ -281,10 +281,14 @@ export class TopicDocumentFilingService {
       const outcome = recovered?.outcome ?? (record.currentStep === 'prepared' ? 'not-applied' : 'unknown');
       if (outcome !== 'applied') return Object.freeze({ schemaVersion: 2, status: outcome, logicalOperationId: record.logicalOperationId, value: null });
       const fence = await binding.notes.recovery.captureCreateCompletionFence(noteInput);
-      let value;
-      try { value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, () => { assertCurrent(); fence.assertCurrent(); }); }
+      let result;
+      try {
+        const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, () => { assertCurrent(); fence.assertCurrent(); });
+        result = Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
+        if (deliver) { assertCurrent(); fence.assertCurrent(); if (runtime.deliverResult?.(result)?.then) throw sourceError('unauthenticated', 'Synchronous document delivery is required.'); }
+      }
       finally { await fence.close(); }
-      return Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
+      return result;
     });
   }
 
@@ -293,13 +297,13 @@ export class TopicDocumentFilingService {
     const noteInput = this.noteIntent(record);
     return binding.notes.recovery.runExactReconciliation(noteInput, 'create', async () => {
       const current = this.metadata.getTopicOperation(record.logicalOperationId);
-      if (current.currentStep !== 'prepared') return this.checkPreparedAttachment(input, runtime);
+      if (current.currentStep !== 'prepared') return this.checkPreparedAttachment(input, runtime, true);
       // The native implementation is deliberately supplied by authenticated
       // host runtime, never JSON or configuration. No fallback promotes a read
       // snapshot into source commit authority.
       if (typeof runtime.admitAttachment !== 'function') throw sourceError('capability-unavailable', 'Native accepted attachment admission is unavailable.');
       const claim = this.metadata.claimDocumentFiling({ logicalOperationId: current.logicalOperationId }, assertCurrent);
-      if (!claim.dispatch) return this.checkPreparedAttachment(input, runtime);
+      if (!claim.dispatch) return this.checkPreparedAttachment(input, runtime, true);
       const source = await this.loadExactMedia(record.intent.mediaRef);
       if (source.digest !== record.intent.sourceDigest || source.bytes.length !== record.intent.sizeBytes) throw sourceError('conflict', 'The original attachment bytes changed.');
       const admission = await runtime.admitAttachment({ ...this.attachmentIdentity(binding), selection: record.intent.request.selection,
@@ -307,7 +311,7 @@ export class TopicDocumentFilingService {
       if (typeof admission?.withCommit !== 'function') throw sourceError('capability-unavailable', 'Native synchronous attachment admission is unavailable.');
       assertCurrent();
       await binding.notes.create({ ...noteInput, content: source.bytes }, { commit: effect => admission.withCommit(() => { assertCurrent(); return effect(); }) });
-      return this.checkPreparedAttachment(input, runtime);
+      return this.checkPreparedAttachment(input, runtime, true);
     });
   }
 
@@ -322,11 +326,15 @@ export class TopicDocumentFilingService {
     const final = await binding.notes.recovery.reconcile(this.noteIntent(record), 'create');
     if (final?.outcome !== 'applied') throw sourceError('conflict', 'The original document was replaced during reopening.');
     const fence = await binding.notes.recovery.captureCreateCompletionFence(this.noteIntent(record));
-    try { assertCurrent(); fence.assertCurrent(); }
+    const result = Object.freeze({ schemaVersion: 2, status: 'filed', logicalOperationId: record.logicalOperationId, source: record.result.value.source, document: record.result.value.document });
+    try {
+      assertCurrent(); fence.assertCurrent();
+      if (runtime.deliverResult?.(result)?.then) throw sourceError('unauthenticated', 'Synchronous original document delivery is required.');
+    }
     finally { await fence.close(); }
     // Existing reader APIs own content/preview delivery. This command returns
     // their exact Source Reference plus retained Conversation/message lineage.
-    return Object.freeze({ schemaVersion: 2, status: 'filed', logicalOperationId: record.logicalOperationId, source: record.result.value.source, document: record.result.value.document });
+    return result;
     });
   }
 

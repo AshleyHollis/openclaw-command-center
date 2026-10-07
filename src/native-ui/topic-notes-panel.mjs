@@ -1,10 +1,12 @@
 import { mountTopicPage } from './topic-page.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { mountTopicAttachmentReview } from './topic-attachment-review.mjs';
+import { createNativeTopicNavigation } from './topic-navigation.mjs';
 
 /** The native pane supplies a locator; only the source owner resolves Topic identity. */
 export function mountTopicNotesPanel(container, context, state) {
   const host = context.host;
+  const sourceNavigation = createNativeTopicNavigation(host);
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let currentContext = context;
@@ -82,6 +84,7 @@ export function mountTopicNotesPanel(container, context, state) {
       if (FIRST_LIVE_FEATURES.topicDocuments) {
         attachmentReview = mountTopicAttachmentReview(controls, { host, signal: AbortSignal.any([signal, childLifetime.signal]), binding: value,
           onFiled: document => child?.openFiledDocument(document),
+          onSource: source => sourceNavigation.open({ topicId: value.topicId, referenceId: source.referenceId, expectedSessionId: source.sessionId, expectedSessionKey: source.sessionKey }),
           verifyContext: async () => {
             const response = await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey });
             const latest = response?.result ?? response;

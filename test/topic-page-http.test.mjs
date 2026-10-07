@@ -354,3 +354,22 @@ test('attachment review actions refuse an asynchronous authority contract before
   assert.equal(response.statusCode, 422);
   assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
 });
+
+test('attachment review actions deliver causal result synchronously inside the owning exclusion and do not send twice after release', async () => {
+  let held = false; let deliveredWhileHeld = false;
+  const service = { async documentsReopenAttachment(input, runtime) {
+    held = true;
+    runtime.deliverResult({ schemaVersion: 2, status: 'filed', logicalOperationId: input.logicalOperationId, topicId, source: { entryId: 'fictional-message' }, document: { path: 'Documents/fictional.pdf' } });
+    await Promise.resolve(); held = false;
+    throw new Error('Fictional cleanup failure after completed response');
+  } };
+  const req = Readable.from([JSON.stringify(base('documents.attachment.reopen', { sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' }))]);
+  req.method = 'POST'; req.headers = { 'content-type': 'application/json' };
+  let sends = 0;
+  const res = { setHeader() {}, end(body) { sends++; deliveredWhileHeld = held; this.body = JSON.parse(body); } };
+  const handler = createTopicPageActionsHandler(service, { createConversationRuntime: async () => ({ creationAuthority: { principalId: 'fictional-principal', assertCurrent() {} } }) });
+  await handler(req, res);
+  assert.equal(deliveredWhileHeld, true);
+  assert.equal(sends, 1);
+  assert.equal(res.body.result.source.entryId, 'fictional-message');
+});

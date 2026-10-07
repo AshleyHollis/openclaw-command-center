@@ -85,7 +85,7 @@ test('prepared replay and reopen refuse equal-byte replacement of the original i
   await assert.rejects(() => f.service.documents.reopenPreparedAttachment(input, runtime), { code: 'conflict' });
   f.service.documents.attachmentReader = { resolve: async () => { throw new Error('Retained preparation must not reread attachment'); } };
   const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
-  await assert.rejects(() => f.service.documents.prepareAttachment({ ...input, selection }, runtime), { code: 'conflict' });
+  await assert.rejects(() => f.service.documents.prepareAttachment({ ...input, selection }, runtime), { code: 'source-recovery' });
 });
 
 async function fixture(t, hooks = {}) {

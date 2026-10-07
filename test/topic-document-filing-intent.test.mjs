@@ -64,3 +64,19 @@ test('filing binding and original lineage receipt roll back together when comple
   assert.throws(() => f.metadata.completeTopicProvisioning({ logicalOperationId: parent.logicalOperationId, topicId: parent.topicId }), { code: 'filing-owner-required' });
   assert.deepEqual(f.metadata.completeDocumentFiling({ logicalOperationId: parent.logicalOperationId }, () => {}), receipt);
 });
+
+test('late identical preparation cannot reset a claimed original dispatch', async t => {
+  const f = await fixture(t);
+  const [first, second] = await Promise.all([f.service().prepareAttachment(f.input, f.runtime), f.service().prepareAttachment(f.input, f.runtime)]);
+  assert.deepEqual(first, second);
+  const prepared = f.metadata.getTopicOperation(f.input.logicalOperationId);
+  const claimed = f.metadata.claimDocumentFiling({ logicalOperationId: f.input.logicalOperationId }, f.runtime.assertCurrent);
+  assert.equal(claimed.dispatch, true);
+  const late = f.metadata.prepareDocumentFiling(prepared, f.runtime.assertCurrent);
+  assert.equal(late.currentStep, 'dispatch-claimed');
+  assert.equal(late.state, 'unknown');
+  assert.equal(f.metadata.claimDocumentFiling({ logicalOperationId: f.input.logicalOperationId }, f.runtime.assertCurrent).dispatch, false);
+  const replay = await f.service().prepareAttachment(f.input, f.runtime);
+  assert.equal(replay.status, 'unknown');
+  assert.equal(replay.canFile, false);
+});

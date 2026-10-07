@@ -52,3 +52,12 @@ prove only the database transaction. Linux real Note/SQLite tests cover original
 publication, restart, interrupted publication, Check result and lineage reopening;
 their source admission is an explicit fixture until the native delta is available.
 No installed upload/publication demo or release qualification is claimed.
+
+The supported UI now saves the UUID before preparation/submission, freezes fields
+once File original starts, and permits only Check result after a lost response.
+Closed prepare/file/check/reopen HTTP actions preserve captured native authority
+outside JSON. Successful reopen refreshes the existing Files reader and opens
+the exact document Source Reference. Conversation/message lineage is retained
+and visible; no unsupported native message navigation API is invented.
+The unsafe optional v1 model tool registration is retired; source and historical
+recovery tests remain. Filing never schedules automatic Note maintenance.
