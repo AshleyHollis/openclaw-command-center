@@ -55,7 +55,7 @@ jobs:
             [[ "$NATIVE_RUN" =~ ^[0-9]+$ ]]
             [[ "$NATIVE_ARTIFACT" =~ ^[a-zA-Z0-9._-]+$ ]]
             [[ "$NATIVE_SHA256" =~ ^[a-f0-9]{64}$ ]]
-            expected_native=a20ac2967ee3786475ae55b612513868ea261a86
+            expected_native=9241376d656e372ac1ce0c4a48fc432cf48a4c9b
             echo 'COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION=1' >> "$GITHUB_ENV"
           else
             NATIVE_RUN=37398915447

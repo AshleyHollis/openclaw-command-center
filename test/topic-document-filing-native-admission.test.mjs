@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createRequestScopedConversationRuntime } from '../src/bridge/gateway-method-dispatch.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
@@ -14,15 +16,44 @@ import { installHostFileAccessFixture } from './support/host-file-access-fixture
 const linux = { skip: process.platform !== 'linux' && 'The real Note descriptor boundary requires Linux.' };
 const bytes = Buffer.from('%PDF-1.4\nFictional original\n%%EOF\n');
 
+// The public SDK has no database shutdown facade. Each scenario owns a process;
+// its parent removes the isolated state only after all SDK handles have exited.
+function nativeTest(name, options, body) {
+  if (process.env.COMMAND_CENTER_NATIVE_ADMISSION_CHILD === '1') return test(name, options, body);
+  return test(name, options, async t => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'filing-native-admission-'));
+    const nativeDir = path.join(directory, 'native');
+    const pattern = `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+    const env = { ...process.env, COMMAND_CENTER_NATIVE_ADMISSION_CHILD: '1', COMMAND_CENTER_NATIVE_ADMISSION_DIRECTORY: directory,
+      OPENCLAW_STATE_DIR: nativeDir, OPENCLAW_CONFIG_PATH: path.join(nativeDir, 'openclaw.json') };
+    delete env.NODE_TEST_CONTEXT;
+    const child = spawn(process.execPath, ['--test', '--test-isolation=none', '--test-reporter=tap', '--test-name-pattern', pattern, fileURLToPath(import.meta.url)], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '', timedOut = false;
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 60000);
+    try {
+      const result = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); });
+      assert.equal(timedOut, false, `SDK scenario timed out:\n${output}`);
+      assert.equal(result.code, 0, `SDK scenario failed (${result.signal ?? result.code}):\n${output}`);
+      assert.match(output, /# pass 1\n/, `The SDK child must actually execute its selected scenario:\n${output}`);
+      assert.match(output, /# skipped 0\n/, `SDK admission evidence cannot be skipped:\n${output}`);
+      t.diagnostic(output);
+    } finally { clearTimeout(timer); await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
 async function fixture(t, beforeAtomicCommit) {
   const sdk = await import('openclaw/plugin-sdk/session-transcript-runtime');
   assert.equal(sdk.ACCEPTED_SESSION_ATTACHMENT_ADMISSION_VERSION, 1, 'PR67 packaged native SDK is required; pinned26a9 is insufficient.');
   assert.equal(sdk.ACCEPTED_SESSION_ATTACHMENT_MAX_BYTES, 5 * 1024 * 1024);
   const nativeStore = await import('openclaw/plugin-sdk/session-store-runtime');
   const nativeSqlite = await import('openclaw/plugin-sdk/sqlite-runtime');
-  const nativeTesting = await import(new URL('./sqlite-runtime-testing.js', process.env.COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME).href);
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'filing-native-admission-'));
-  const prior = { state: process.env.OPENCLAW_STATE_DIR, config: process.env.OPENCLAW_CONFIG_PATH };
+  const directory = process.env.COMMAND_CENTER_NATIVE_ADMISSION_DIRECTORY;
+  assert.ok(directory, 'Scenario state must be owned by the parent process.');
   const nativeDir = path.join(directory, 'native');
   process.env.OPENCLAW_STATE_DIR = nativeDir;
   process.env.OPENCLAW_CONFIG_PATH = path.join(nativeDir, 'openclaw.json');
@@ -34,13 +65,8 @@ async function fixture(t, beforeAtomicCommit) {
       await Promise.allSettled(admissions.map(cap => cap.close()));
       for (const topic of service?.topicServices.values() ?? []) topic.notes?.close();
       metadata?.close();
-      await nativeTesting.closeOpenClawAgentDatabasesAsync();
-      await nativeTesting.closeOpenClawStateDatabaseAsync();
     } finally {
       release();
-      if (prior.state === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = prior.state;
-      if (prior.config === undefined) delete process.env.OPENCLAW_CONFIG_PATH; else process.env.OPENCLAW_CONFIG_PATH = prior.config;
-      await rm(directory, { recursive: true, force: true });
     }
   });
   const identity = { agentId: 'main', sessionKey: 'agent:main:fictional-native-filing', sessionId: 'fictional-native-incarnation' };
@@ -79,7 +105,7 @@ async function fixture(t, beforeAtomicCommit) {
 
 function identityWithoutAgent({ sessionKey, sessionId }) { return { sessionKey, sessionId }; }
 
-test('real native admission joins Note publication, synchronous Session readback, atomic receipt and Check result', linux, async t => {
+nativeTest('real native admission joins Note publication, synchronous Session readback, atomic receipt and Check result', linux, async t => {
   const f = await fixture(t);
   const admit = f.runtime.admitAttachment;
   let effects = 0;
@@ -100,19 +126,22 @@ test('real native admission joins Note publication, synchronous Session readback
   assert.equal((await f.service.documents.reopenPreparedAttachment(f.input, f.runtime)).document.referenceId, result.value.document.referenceId);
 });
 
-for (const change of ['principal', 'session', 'media']) test(`real admission refuses ${change} retired after Note staging`, linux, async t => {
+for (const change of ['principal', 'session', 'media']) nativeTest(`real admission refuses ${change} retired after Note staging`, linux, async t => {
   let f;
+  let staged = 0;
   f = await fixture(t, async () => {
+    staged++;
     if (change === 'principal') f.scope.client.authenticatedUserProfile = { profileId: 'fictional-other-principal' };
     if (change === 'session') await f.nativeStore.upsertSessionEntry({ ...f.identity, entry: { sessionId: 'fictional-replaced', updatedAt: 20 } });
     if (change === 'media') { await rename(f.mediaPath, `${f.mediaPath}.retired`); await writeFile(f.mediaPath, bytes); }
   });
   await assert.rejects(() => f.service.documents.filePreparedAttachment(f.input, f.runtime));
+  assert.equal(staged, 1, 'Retirement must exercise the boundary after actual Note staging.');
   assert.ok((await readdir(path.join(f.root, 'Documents'))).every(name => name.startsWith('.')));
   assert.equal(f.metadata.getTopicOperation(f.input.logicalOperationId).state, 'unknown');
 });
 
-test('native completed publication followed by response loss retains causal Check without another file effect', linux, async t => {
+nativeTest('native completed publication followed by response loss retains causal Check without another file effect', linux, async t => {
   const f = await fixture(t);
   const admit = f.runtime.admitAttachment;
   let effects = 0;
