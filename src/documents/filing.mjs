@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createNativeAttachmentReader } from './native-attachments.mjs';
 import { sourceError, assertNoUnexpectedKeys, nonBlank } from '../sources/errors.mjs';
 import { revisionForBytes } from '../sources/reference.mjs';
+import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
@@ -186,6 +187,128 @@ export class TopicDocumentFilingService {
       contentType: typeof loaded.contentType === 'string' ? loaded.contentType : null,
       fileName: typeof loaded.fileName === 'string' ? loaded.fileName : null,
     });
+  }
+
+  frozenRequest(input, runtime) {
+    assertNoUnexpectedKeys(input, ['topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder', 'logicalOperationId'], 'Prepared attachment filing');
+    assertNoUnexpectedKeys(input.selection, ['entryId', 'mediaIndex', 'offset', 'generation'], 'Native attachment selection');
+    const { entryId, mediaIndex, offset, generation } = input.selection;
+    if (!Number.isSafeInteger(mediaIndex) || mediaIndex < 0 || !Number.isSafeInteger(offset) || offset < 0) throw sourceError('invalid-request', 'The exact bounded attachment selection is required.');
+    return { principalId: nonBlank(runtime?.principalId, 'principalId'), topicId: nonBlank(input.topicId, 'topicId'),
+      sessionKey: nonBlank(input.sessionKey, 'sessionKey'), sessionId: nonBlank(input.sessionId, 'sessionId'),
+      selection: { entryId: nonBlank(entryId, 'entryId'), mediaIndex, offset, generation: nonBlank(generation, 'generation') },
+      subfolder: safeSubfolder(input.subfolder) };
+  }
+
+  preparedReceipt(record) {
+    const { intent } = record;
+    return Object.freeze({ schemaVersion: 2, status: record.state === 'applied' ? 'filed' : 'prepared', logicalOperationId: record.logicalOperationId,
+      topicId: record.topicId, topicName: intent.topicName, source: Object.freeze({ referenceId: intent.sessionReferenceId, sessionKey: intent.request.sessionKey,
+        sessionId: intent.request.sessionId, entryId: intent.request.selection.entryId, createdAt: intent.sourceCreatedAt }),
+      document: Object.freeze({ path: intent.documentPath, revision: intent.sourceDigest, contentType: intent.contentType, sizeBytes: intent.sizeBytes }) });
+  }
+
+  async prepareAttachment(input = {}, runtime) {
+    this.assertReviewCurrent(runtime);
+    const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
+    const request = this.frozenRequest(input, runtime);
+    const retained = this.metadata.getTopicOperation(logicalOperationId);
+    if (retained) {
+      if (retained.operationKind !== 'documents.file.v2' || JSON.stringify(retained.intent.request) !== JSON.stringify(request)) throw sourceError('intent-mismatch', 'The filing operation retains its original principal, source and destination request.');
+      const binding = await this.resolveBoundConversation(request);
+      if (this.reviewTargetBasis(binding) !== retained.intent.targetBasis) throw sourceError('conflict', 'The original filing destination changed.');
+      this.assertReviewCurrent(runtime);
+      return this.preparedReceipt(retained);
+    }
+    const binding = await this.resolveBoundConversation(request);
+    const targetBasis = this.reviewTargetBasis(binding);
+    const { logicalOperationId: _id, ...reviewInput } = input;
+    const review = await this.reviewAttachment(reviewInput, runtime);
+    const attachment = await this.attachmentReader.resolve(this.attachmentIdentity(binding), request.selection);
+    if (this.reviewTargetBasis(binding) !== targetBasis) throw sourceError('conflict', 'The original filing destination changed during preparation.');
+    this.sourceService.assertDocumentReviewConversation?.(binding);
+    this.assertReviewCurrent(runtime);
+    const intent = { version: 2, request, topicName: review.topicName, targetBasis, sessionReferenceId: binding.referenceId,
+      folderReferenceId: binding.folderReferenceId, mediaRef: attachment.mediaRef, sourceDigest: review.document.revision,
+      documentPath: review.document.path, contentType: review.document.contentType, sizeBytes: review.document.sizeBytes, sourceCreatedAt: review.source.createdAt,
+      noteLogicalOperationId: stableUuid('command-center.documents.file.v2.note', logicalOperationId) };
+    const record = this.metadata.recordTopicOperation({ logicalOperationId, topicId: binding.topicId, operationKind: 'documents.file.v2', intent, state: 'pending', currentStep: 'prepared' });
+    return this.preparedReceipt(record);
+  }
+
+  async resolveOriginalFiling(input, runtime) {
+    assertNoUnexpectedKeys(input, ['logicalOperationId', 'topicId', 'sessionKey', 'sessionId'], 'Retained attachment filing');
+    this.assertReviewCurrent(runtime);
+    const id = assertLogicalOperationId(input.logicalOperationId);
+    const record = this.metadata.getTopicOperation(id);
+    if (record?.operationKind !== 'documents.file.v2' || record.intent?.version !== 2) throw sourceError('source-recovery', 'This is not an original v2 filing intent; legacy attempts require their original recovery path.');
+    const { request } = record.intent;
+    if (request.principalId !== runtime?.principalId || request.topicId !== input.topicId || request.sessionKey !== input.sessionKey || request.sessionId !== input.sessionId) throw sourceError('cross-topic', 'The original filing principal and Conversation scope are required.');
+    const binding = await this.resolveBoundConversation(request);
+    const assertCurrent = () => {
+      this.assertReviewCurrent(runtime);
+      if (this.reviewTargetBasis(binding) !== record.intent.targetBasis) throw sourceError('conflict', 'The original filing destination changed.');
+      this.sourceService.assertDocumentReviewConversation?.(binding);
+      this.readOwnedAttachmentReference({ topicId: record.topicId, mediaRef: record.intent.mediaRef });
+    };
+    assertCurrent();
+    if (!binding.notes.recovery?.enabled) throw sourceError('capability-unavailable', 'Durable Note recovery is required for original filing.');
+    return { record, binding, assertCurrent };
+  }
+
+  noteIntent(record) {
+    return { logicalOperationId: record.intent.noteLogicalOperationId, requestId: record.logicalOperationId,
+      referenceId: record.intent.folderReferenceId, path: record.intent.documentPath, sourceKind: 'document', contentRevision: record.intent.sourceDigest };
+  }
+
+  async checkPreparedAttachment(input, runtime) {
+    const { record, binding, assertCurrent } = await this.resolveOriginalFiling(input, runtime);
+    const noteInput = this.noteIntent(record);
+    return binding.notes.recovery.runExactReconciliation(noteInput, 'create', async () => {
+      const recovered = await binding.notes.recovery.reconcile(noteInput, 'create');
+      assertCurrent();
+      const outcome = recovered?.outcome ?? (record.currentStep === 'prepared' ? 'not-applied' : 'unknown');
+      if (outcome !== 'applied') return Object.freeze({ schemaVersion: 2, status: outcome, logicalOperationId: record.logicalOperationId, value: null });
+      const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, assertCurrent);
+      return Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
+    });
+  }
+
+  async filePreparedAttachment(input, runtime) {
+    const { record, binding, assertCurrent } = await this.resolveOriginalFiling(input, runtime);
+    const noteInput = this.noteIntent(record);
+    return binding.notes.recovery.runExactReconciliation(noteInput, 'create', async () => {
+      const current = this.metadata.getTopicOperation(record.logicalOperationId);
+      if (current.currentStep !== 'prepared') return this.checkPreparedAttachment(input, runtime);
+      // The native implementation is deliberately supplied by authenticated
+      // host runtime, never JSON or configuration. No fallback promotes a read
+      // snapshot into source commit authority.
+      if (typeof runtime.admitAttachment !== 'function') throw sourceError('capability-unavailable', 'Native accepted attachment admission is unavailable.');
+      this.metadata.recordTopicOperation({ ...current, state: 'unknown', currentStep: 'dispatch-claimed' });
+      const source = await this.loadExactMedia(record.intent.mediaRef);
+      if (source.digest !== record.intent.sourceDigest || source.bytes.length !== record.intent.sizeBytes) throw sourceError('conflict', 'The original attachment bytes changed.');
+      const admission = await runtime.admitAttachment({ ...this.attachmentIdentity(binding), selection: record.intent.request.selection,
+        mediaRef: record.intent.mediaRef, sourceDigest: record.intent.sourceDigest, sizeBytes: record.intent.sizeBytes });
+      if (typeof admission?.withCommit !== 'function') throw sourceError('capability-unavailable', 'Native synchronous attachment admission is unavailable.');
+      assertCurrent();
+      await binding.notes.create({ ...noteInput, content: source.bytes }, { commit: effect => admission.withCommit(() => { assertCurrent(); return effect(); }) });
+      assertCurrent();
+      const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, assertCurrent);
+      return Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
+    });
+  }
+
+  async reopenPreparedAttachment(input, runtime) {
+    const { record, binding, assertCurrent } = await this.resolveOriginalFiling(input, runtime);
+    if (record.state !== 'applied' || !record.result?.value) throw sourceError('source-recovery', 'Only a completed original filing can be reopened.');
+    const checked = await this.checkPreparedAttachment(input, runtime);
+    if (checked.status !== 'applied') throw sourceError('source-recovery', 'The original document no longer has causal publication proof.');
+    const document = await binding.notes.read({ path: record.intent.documentPath, referenceId: record.result.value.document.referenceId, sourceKind: 'document', observe: false });
+    if (document.revision !== record.intent.sourceDigest) throw sourceError('conflict', 'The original filed document changed.');
+    assertCurrent();
+    // Existing reader APIs own content/preview delivery. This command returns
+    // their exact Source Reference plus retained Conversation/message lineage.
+    return Object.freeze({ schemaVersion: 2, status: 'filed', logicalOperationId: record.logicalOperationId, source: record.result.value.source, document: record.result.value.document });
   }
 
   readOwnedAttachmentReference({ topicId, mediaRef }) {

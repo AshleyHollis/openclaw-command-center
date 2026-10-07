@@ -13,6 +13,60 @@ test.after(release);
 const linux = { skip: process.platform !== 'linux' && 'Descriptor-relative Note publication requires Linux.' };
 const bytes = Buffer.from('fictional original attachment bytes');
 
+async function prepareOriginal(f) {
+  const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
+  f.service.documents.attachmentReader = { resolve: async () => ({ selection, mediaRef: f.input.mediaRef, fileName: 'original.pdf', contentType: 'application/pdf', sizeBytes: bytes.length, createdAt: '2026-01-01T00:00:00Z' }) };
+  const runtime = { principalId: 'fictional-principal', assertCurrent() {}, admitAttachment: async () => ({ withCommit: effect => effect() }) };
+  const input = { topicId: 'fictional-filing', sessionKey: f.input.sessionKey, sessionId: f.input.sessionId, logicalOperationId: '00000000-0000-4000-8000-000000000456' };
+  await f.service.documents.prepareAttachment({ ...input, selection }, runtime);
+  return { input, runtime };
+}
+
+test('original filing freezes intent, synchronously publishes once, atomically retains binding and lineage, and reopens after restart', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  const result = await f.service.documents.filePreparedAttachment(input, runtime);
+  assert.equal(result.status, 'applied');
+  assert.equal(result.value.source.entryId, 'fictional-accepted-user');
+  assert.equal(f.metadata.getTopicOperation(input.logicalOperationId).currentStep, 'complete');
+  assert.ok(f.metadata.getSourceReference(result.value.source.attachmentReferenceId));
+  const names = await readdir(path.join(f.root, 'Documents'));
+  f.reopen();
+  f.service.documents.mediaLoader = async () => { throw new Error('Original is unavailable; reconciliation must not read media'); };
+  const checked = await f.service.documents.checkPreparedAttachment(input, runtime);
+  assert.deepEqual(checked.value, result.value);
+  assert.deepEqual(await readdir(path.join(f.root, 'Documents')), names);
+  const reopened = await f.service.documents.reopenPreparedAttachment(input, runtime);
+  assert.deepEqual(reopened.source, result.value.source);
+  assert.deepEqual(reopened.document, result.value.document);
+  assert.deepEqual(await readFile(path.join(f.root, reopened.document.path)), bytes);
+});
+
+test('original filing interrupted after publication recovers the frozen receipt without reading the original or creating again', linux, async t => {
+  const f = await fixture(t, { afterAtomicPublish: async () => { throw new Error('fictional interrupted original'); } });
+  const { input, runtime } = await prepareOriginal(f);
+  await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), /fictional interrupted original/);
+  const names = await readdir(path.join(f.root, 'Documents'));
+  f.reopen();
+  f.service.documents.mediaLoader = async () => { throw new Error('No reread allowed'); };
+  const checked = await f.service.documents.checkPreparedAttachment(input, runtime);
+  assert.equal(checked.status, 'applied');
+  assert.deepEqual(await readdir(path.join(f.root, 'Documents')), names);
+});
+
+test('original filing refuses native admission lost during staging and never creates on Check result', linux, async t => {
+  let admitted = true;
+  const f = await fixture(t, { beforeAtomicCommit: async () => { admitted = false; } });
+  const { input, runtime } = await prepareOriginal(f);
+  runtime.admitAttachment = async () => ({ withCommit: effect => { if (!admitted) throw Object.assign(new Error('fictional retired admission'), { code: 'unauthenticated' }); return effect(); } });
+  await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'unauthenticated' });
+  const names = await readdir(path.join(f.root, 'Documents'));
+  assert.ok(names.every(name => name.startsWith('.')));
+  const checked = await f.service.documents.checkPreparedAttachment(input, runtime);
+  assert.equal(checked.status, 'unknown');
+  assert.deepEqual(await readdir(path.join(f.root, 'Documents')), names);
+});
+
 async function fixture(t, hooks = {}) {
   const { mediaLoader, ...noteHooks } = hooks;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'topic-filing-recovery-'));

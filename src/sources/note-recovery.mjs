@@ -70,7 +70,7 @@ export class NoteRecovery {
     const { intent, result } = record;
     const sourcePath = input.path ?? input.sourcePath ?? input.notePath;
     const destinationPath = ['create', 'edit'].includes(operation) ? sourcePath : input.destinationPath ?? input.newPath;
-    const desiredRevision = ['create', 'edit'].includes(operation) ? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision;
+    const desiredRevision = ['create', 'edit'].includes(operation) ? input.contentRevision ?? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision;
     if (record.topicId !== this.adapter.topicId || intent.operation !== operation || intent.sourcePath !== sourcePath || intent.destinationPath !== destinationPath || (intent.sourceKind ?? 'note') !== (input.sourceKind ?? 'note') || intent.expectedRevision !== input.expectedRevision || intent.desiredRevision !== desiredRevision) throw sourceError('intent-mismatch', 'Note filesystem operation ID was reused with a different intent.');
     await this.adapter.resolveRoot();
     if (!this.matchesBinding(result)) return { outcome: 'conflict' };

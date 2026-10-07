@@ -2147,6 +2147,33 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   }
   service.recordTopicOperation = (input = {}) => mutate(null, db => recordTopicOperation(db, input));
 
+  // Complete only the original filing whose existing Note owner has already
+  // recorded causal publication. Binding and retained public receipt share the
+  // same SQLite transaction; callers retain the Note filesystem exclusion.
+  service.completeDocumentFiling = ({ logicalOperationId }, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous filing completion authority is required.');
+    const parent = service.getTopicOperation(logicalOperationId);
+    if (parent?.operationKind !== 'documents.file.v2' || parent.intent?.version !== 2) throw new CommandCenterMetadataError('source-recovery', 'The original filing intent is unavailable.');
+    const intent = parent.intent;
+    const child = service.getTopicOperation(`notes.fs:${intent.noteLogicalOperationId}`);
+    const note = child?.result?.sourceReference;
+    if (child?.operationKind !== 'notes.filesystem-effect' || child.state !== 'applied' || child.topicId !== parent.topicId || child.intent.operation !== 'create' || child.intent.destinationPath !== intent.documentPath || child.intent.desiredRevision !== intent.sourceDigest || child.intent.sourceKind !== 'document' || !child.result.publishedIdentity || child.result.noteFolderReferenceId !== intent.folderReferenceId || note?.topicId !== parent.topicId || note.sourceKind !== 'document' || note.observedRevision !== intent.sourceDigest) throw new CommandCenterMetadataError('conflict', 'The causal Note publication does not match the original filing.');
+    const document = db.prepare('SELECT * FROM source_references WHERE reference_id=?').get(note.referenceId);
+    if (!document || document.topic_id !== parent.topicId || document.source_system !== 'obsidian' || document.source_kind !== 'document' || document.external_source_id !== note.externalSourceId || document.last_observed_revision !== intent.sourceDigest) throw new CommandCenterMetadataError('conflict', 'The exact document binding changed before completion.');
+    const referenceId = `attachment:${createHash('sha256').update(intent.mediaRef).digest('hex')}`;
+    const existing = db.prepare('SELECT * FROM source_references WHERE reference_id=? OR (source_system=? AND source_kind=? AND external_source_id=?)').all(referenceId, 'openclaw', 'attachment', intent.mediaRef);
+    if (existing.some(row => row.reference_id !== referenceId || row.topic_id !== parent.topicId || row.source_system !== 'openclaw' || row.source_kind !== 'attachment' || row.external_source_id !== intent.mediaRef || row.last_observed_revision !== intent.sourceDigest)) throw new CommandCenterMetadataError('cross-topic', 'The original attachment binding is foreign or changed.');
+    const now = timestamp(undefined, 'updatedAt');
+    if (!existing.length) insertSourceReference(db, { referenceId, topicId: parent.topicId, sourceSystem: 'openclaw', sourceKind: 'attachment', externalSourceId: intent.mediaRef, observedRevision: intent.sourceDigest }, now);
+    const receipt = { schemaVersion: 2, status: 'filed', logicalOperationId, topicId: parent.topicId, topicName: intent.topicName,
+      source: { referenceId: intent.sessionReferenceId, attachmentReferenceId: referenceId, sessionKey: intent.request.sessionKey, sessionId: intent.request.sessionId, entryId: intent.request.selection.entryId, mediaIndex: intent.request.selection.mediaIndex, generation: intent.request.selection.generation, createdAt: intent.sourceCreatedAt },
+      document: { referenceId: note.referenceId, path: intent.documentPath, revision: intent.sourceDigest, contentType: intent.contentType, sizeBytes: intent.sizeBytes } };
+    if (parent.state === 'applied' && JSON.stringify(parent.result?.value) !== JSON.stringify(receipt)) throw new CommandCenterMetadataError('conflict', 'The retained original filing receipt changed.');
+    recordTopicOperation(db, { ...parent, state: 'applied', currentStep: 'complete', result: { value: receipt }, updatedAt: now });
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Asynchronous completion authority is unsupported.');
+    return receipt;
+  });
+
   // Retained Conversation creation has no executable replay. Its local claim,
   // native result evidence, and atomic attachment use the existing two ledgers.
   const conversationKind = 'sessions.create.once';

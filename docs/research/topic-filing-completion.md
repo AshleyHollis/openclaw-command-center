@@ -1,0 +1,54 @@
+# Original attachment filing completion successor
+
+This independent Class 3 successor starts at PR372 head
+93b7b8888b1f034fb80885e48714aebbb8b84415. All feature flags remain false.
+Native26a qualification, NAS jobs and deployments are untouched.
+
+The existing filing owner freezes one v2 original intent in topic_operations,
+using a client-chosen canonical UUID independent of the filename and destination.
+The request retains the authenticated principal, exact Topic and Conversation,
+native entry/media index/transcript generation and requested subfolder. Preparation
+captures the original digest, destination and Topic/Folder locator basis. Retried
+preparation compares the original request before any attachment/media read.
+
+The existing Note owner accepts a separate trusted synchronous commit callback
+for conditional no-replace create. Original filing requires durable Note recovery,
+claims dispatch before awaited work and never uses a read snapshot as admission.
+The existing Note exclusion spans effect, causal verification and an atomic
+SQLite attachment binding plus original filing receipt. Check result and reopen
+use retained original intent and Note inode provenance without rereading media
+or creating another file. Legacy v1 remains on its own recovery path.
+
+## Exact native worker coordination delta
+
+The accepted-Conversation-plan worker owns a different source predicate. Reuse
+its existing native admission/lifetime mechanics, without calling an attachment
+an accepted plan. Filing needs a bounded resolver for exact agentId, sessionKey,
+sessionId, accepted user entryId, mediaIndex, visible transcript generation and
+canonical inbound mediaRef, plus original digest/size. Resolve canonical native
+media custody and Session protection/incarnation; no consumer filesystem locator.
+Return only an opaque authenticated runtime capability with synchronous
+withCommit(effect) admission. It must reject retired invocation, replaced or
+protected Session, rewritten/removed entry/media/generation, foreign custody and
+changed original bytes. Reject async effect callbacks; invalidate retained
+callbacks when admission returns. No JSON/config/tool argument can provide this
+capability. Keep source admission valid through the exact file effect; metadata
+completion after verified effect retains original causal lineage, not a fresh
+read or a new acceptance decision.
+
+Suggested owning-native fixtures: real upload PDF and image facts; assistant and
+guessed URL refusal; foreign/replaced/protected Session; entry rewrite/truncation;
+media replacement/removal; retired invocation after staging; synchronous callback
+once and retained/Promise callback refusal. The native source admission extension
+is still absent from pinned26a9. The successor's injected admission fixture tests
+CC/Note integration only and cannot qualify this missing native predicate.
+
+## In-progress evidence
+
+Real SQLite frozen preparation survives restart and filename changes; changed
+request/principal conflicts. Atomic completion rolls back binding and receipt
+together when authority retires. Synthetic causal rows in that metadata test
+prove only the database transaction. Linux real Note/SQLite tests cover original
+publication, restart, interrupted publication, Check result and lineage reopening;
+their source admission is an explicit fixture until the native delta is available.
+No installed upload/publication demo or release qualification is claimed.
