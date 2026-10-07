@@ -25,3 +25,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
       - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - name: Topic reader regression
+        env:
+          COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/topic-reader-tables.png
+        run: node --test --test-concurrency=1 test/native-reader-tables.test.mjs test/note-render.test.mjs test/native-reader-workspace.test.mjs test/native-document-preview.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: topic-reader-fictional-ui
+          path: |
+            ${{ runner.temp }}/topic-reader-tables.png
+            ${{ runner.temp }}/topic-reader-tables-files.png
+          if-no-files-found: error
+          retention-days: 14

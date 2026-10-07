@@ -56,6 +56,10 @@ export function readerStyles(document) {
     [data-topic-reader-page] .reader-body { min-block-size:0; overflow:auto; overscroll-behavior:contain; flex:1; padding:.5rem; }
     [data-topic-reader-page] .reader-body article { margin:0; }
     [data-topic-reader-page] .reader-body :is(pre,table) { max-inline-size:100%; overflow:auto; }
+    [data-topic-reader-page] .reader-table-scroll { max-inline-size:100%; overflow:auto; overscroll-behavior-inline:contain; margin-block:.5rem; }
+    [data-topic-reader-page] .reader-table-scroll table { inline-size:max-content; min-inline-size:100%; max-inline-size:none; border-collapse:collapse; }
+    [data-topic-reader-page] .reader-table-scroll :is(th,td) { box-sizing:content-box; min-inline-size:6rem; max-inline-size:24rem; padding:.5rem; overflow-wrap:break-word; word-break:normal; white-space:normal; border:1px solid color-mix(in srgb,currentColor 20%,transparent); text-align:start; vertical-align:top; }
+    [data-topic-reader-page] .reader-table-scroll th { white-space:nowrap; }
     [data-topic-reader-page] .reader-footer { font-size:.75rem; margin:.4rem 0 0; flex:none; }
     [data-topic-reader-page] .reader-pane-help { font-size:.75rem; color:var(--muted,inherit); margin:.25rem 0 .4rem; flex:none; }
     [data-topic-reader-page] .reader-pane-help summary { cursor:pointer; inline-size:fit-content; }
