@@ -68,3 +68,23 @@ test('filing retry completes its interrupted publication and missing attachment 
   assert.equal(retry.logicalOperationId, recovered.logicalOperationId);
   assert.deepEqual(retry.value, recovered.value);
 });
+
+test('filing refuses an already foreign-owned attachment before creating a second Topic document', linux, async t => {
+  const f = await fixture(t);
+  const filed = await f.service.documentsFileAttachment(f.input);
+  const otherRoot = path.join(f.directory, 'other-vault');
+  await mkdir(otherRoot);
+  const topicId = 'fictional-other-topic';
+  const sessionKey = 'agent:main:fictional-other-topic';
+  const sessionId = 'fictional-other-incarnation';
+  f.metadata.createTopic({ topicId, name: 'Fictional other', paraCategory: 'project', lifecycle: 'active' });
+  f.metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-other', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: otherRoot, observedRevision: null });
+  await enrollFixtureFolder(f.metadata, 'folder:fictional-other', otherRoot);
+  f.metadata.createSessionBinding({ reference: { version: 1, referenceId: 'session:fictional-other', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: '10' }, state: { referenceId: 'session:fictional-other', sessionId, status: 'open', isPrimary: true, displayName: 'Fictional other' } });
+  const other = createAuthoritativeSourceService({ metadata: f.metadata, root: otherRoot, noteRecoveryEffects: false, capabilities: { notes: true, sessions: true },
+    sessionStore: { getSessionEntry: () => ({ sessionId, updatedAt: 10 }), listSessionEntries: () => [{ sessionKey, entry: { sessionId, updatedAt: 10 } }] },
+    api: { runtime: { media: { loadWebMedia: async () => ({ buffer: bytes, contentType: 'application/pdf', fileName: 'original.pdf' }) } } } });
+  await assert.rejects(() => other.documentsFileAttachment({ sessionKey, sessionId, mediaRef: f.input.mediaRef }), { code: 'cross-topic' });
+  await assert.rejects(readFile(path.join(otherRoot, filed.value.document.path)), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(path.join(f.root, filed.value.document.path)), bytes);
+});
