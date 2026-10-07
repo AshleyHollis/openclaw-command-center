@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only']) test(`Topic attachment review: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only', 'file and reopen', 'unknown and check']) test(`Topic attachment review: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional Topic Files</title><style>body{font:16px system-ui;margin:28px;background:#f8fafc;color:#172033}main{max-width:760px}button,input,select{font:inherit;padding:8px;margin:4px}section{border-top:1px solid #cbd5e1}p{line-height:1.6}</style><main><h1>Fictional project Files</h1><div id="mount"></div><p>Existing Topic Files reader</p></main></html>'); return; }
     if (req.url !== '/topic-attachment-review.mjs') { res.writeHead(404); res.end(); return; }
@@ -25,13 +25,19 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: scenario !== 'read-only' }, redact: text => text, subscribe: () => () => {},
         httpRequest: async ({ body }) => {
           const input = JSON.parse(body); window.calls.push(input);
-          if (input.action === 'documents.attachment.review' && scenario === 'replaced Conversation') await new Promise(resolve => { window.finishReview = resolve; });
+          if (input.action === 'documents.attachment.prepare' && scenario === 'replaced Conversation') await new Promise(resolve => { window.finishReview = resolve; });
+          if (input.action === 'documents.attachment.file' && scenario === 'unknown and check') throw new Error('Fictional lost response');
+          if (input.action === 'documents.attachment.check' && !window.calls.some(call => call.action === 'documents.attachment.file')) return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result: { schemaVersion: 2, status: 'not-applied', logicalOperationId: input.logicalOperationId, value: null } }) };
+          if (['documents.attachment.file', 'documents.attachment.check', 'documents.attachment.reopen'].includes(input.action)) {
+            const value = { schemaVersion: 2, status: 'filed', logicalOperationId: input.logicalOperationId, topicId: binding.topicId, source: { sessionId: binding.sessionId, entryId: selection.entryId }, document: { referenceId: 'document:fictional', path: 'Documents/Reference/original--fixture.pdf', revision: 'sha256:fictional' } };
+            return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result: input.action.endsWith('.reopen') ? value : { schemaVersion: 2, status: 'applied', logicalOperationId: input.logicalOperationId, value } }) };
+          }
           const result = input.action === 'documents.attachments.list'
             ? { schemaVersion: 1, topicId: binding.topicId, topicName: binding.name, sessionId: binding.sessionId, nextOffset: null, attachments: [{ selection, fileName: 'original.pdf' }] }
-            : { schemaVersion: 1, status: 'review', topicId: binding.topicId, topicName: binding.name, source: { sessionId: binding.sessionId, entryId: selection.entryId }, document: { path: 'Documents/Reference/original--fixture.pdf', sizeBytes: 123, contentType: 'application/pdf' } };
+            : { schemaVersion: 2, status: 'prepared', logicalOperationId: input.logicalOperationId, canFile: ['file and reopen', 'unknown and check'].includes(scenario), topicId: binding.topicId, topicName: binding.name, source: { sessionId: binding.sessionId, entryId: selection.entryId }, document: { path: 'Documents/Reference/original--fixture.pdf', sizeBytes: 123, contentType: 'application/pdf' } };
           return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result }) };
         } };
-      window.review = mountTopicAttachmentReview(document.querySelector('#mount'), { host, signal: lifetime.signal, binding, verifyContext: async () => { if (!window.current) throw new Error('The Conversation changed.'); } });
+      window.review = mountTopicAttachmentReview(document.querySelector('#mount'), { host, signal: lifetime.signal, binding, onFiled: document => { window.openedDocument = document; }, onSource: source => { window.openedSource = source; }, verifyContext: async () => { if (!window.current) throw new Error('The Conversation changed.'); } });
     }, scenario);
     if (scenario === 'read-only') { assert.equal(await page.getByRole('button', { name: 'File Chat attachment' }).isDisabled(), true); assert.equal(await page.evaluate(() => window.calls.length), 0); return; }
     assert.equal(await page.getByRole('region', { name: 'Review Chat attachment filing' }).count(), 0);
@@ -41,18 +47,47 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
     await page.getByRole('button', { name: 'Review destination' }).click();
     if (scenario === 'replaced Conversation') {
       await page.waitForFunction(() => typeof window.finishReview === 'function');
+      assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isDisabled(), true);
+      assert.equal(await page.getByRole('textbox', { name: 'Subfolder below Documents' }).isDisabled(), true);
+      assert.match(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), /^[0-9a-f-]{36}$/u);
       await page.evaluate(() => { window.current = false; window.finishReview(); });
       await page.getByRole('status').filter({ hasText: 'changed' }).waitFor();
       assert.equal(await page.getByRole('button', { name: 'File original' }).isVisible(), false);
     } else {
       await page.getByRole('status').filter({ hasText: 'Destination reviewed' }).waitFor();
       assert.match(await page.locator('body').innerText(), /Fictional project \/ Documents\/Reference\/original--fixture.pdf/u);
+      if (['file and reopen', 'unknown and check'].includes(scenario)) {
+        const originalId = await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue();
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).getAttribute('readonly') !== null, true);
+        await page.getByRole('button', { name: 'Check result', exact: true }).click();
+        await page.getByRole('status').filter({ hasText: 'Original was not filed' }).waitFor();
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).getAttribute('readonly') !== null, true);
+        assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isDisabled(), true);
+        await page.getByRole('button', { name: 'File original', exact: true }).click();
+        if (scenario === 'unknown and check') {
+          await page.getByRole('status').filter({ hasText: 'lost response' }).waitFor();
+          assert.equal(await page.getByRole('button', { name: 'File original', exact: true }).isDisabled(), true);
+          await page.getByRole('button', { name: 'Check result', exact: true }).click();
+        }
+        await page.getByRole('status').filter({ hasText: 'Original filed' }).waitFor();
+        await page.getByRole('button', { name: 'Open filed document', exact: true }).click();
+        await page.waitForFunction(() => window.openedDocument?.referenceId === 'document:fictional');
+        await page.getByRole('button', { name: 'Open source Conversation', exact: true }).click();
+        await page.waitForFunction(() => window.openedSource?.sessionId === 'fictional-incarnation');
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), originalId);
+        assert.equal(await page.evaluate(() => window.calls.filter(input => input.action === 'documents.attachment.file').length), 1);
+        await page.getByRole('button', { name: 'New filing', exact: true }).click();
+        assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isEnabled(), true);
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), '');
+        assert.match(await page.getByLabel('Previous filing receipt').innerText(), new RegExp(originalId));
+        return;
+      }
       assert.equal(await page.getByRole('button', { name: 'File original' }).isDisabled(), true);
       if (process.env.COMMAND_CENTER_FILING_DEMO_DIR) { await mkdir(process.env.COMMAND_CENTER_FILING_DEMO_DIR, { recursive: true }); await page.screenshot({ path: path.join(process.env.COMMAND_CENTER_FILING_DEMO_DIR, 'attachment-review.png'), fullPage: true }); }
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       assert.equal(await page.getByRole('button', { name: 'File original' }).isVisible(), false);
       assert.equal(await page.getByRole('button', { name: 'File Chat attachment' }).isEnabled(), true);
     }
-    assert.equal(await page.evaluate(() => window.calls.some(input => !['documents.attachments.list', 'documents.attachment.review'].includes(input.action))), false);
+    assert.equal(await page.evaluate(() => window.calls.some(input => !['documents.attachments.list', 'documents.attachment.prepare'].includes(input.action))), false);
   } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
 });

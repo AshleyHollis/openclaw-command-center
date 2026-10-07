@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, linkSync, lstatSync } from 'node:fs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +6,7 @@ import { createSourceReference, effectiveSourceLocator, revisionForBytes } from 
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
-import { readNoteFolderIdentity } from './note-folder-identity.mjs';
+import { readNoteFolderIdentity, withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { sameTransientFilesystemIdentity } from './filesystem-object-identity.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
@@ -512,8 +512,12 @@ export class NoteAdapter {
     return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }
 
-  async create(input = {}) {
-    if (!this.recovery.owned) return this.recovery.run(() => this.create(input));
+  async create(input = {}, runtime) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.create(input, runtime));
+    if (runtime !== undefined && !runtime.folderWitness) {
+      const root = await this.resolveRoot();
+      return withVerifiedNoteFolderIdentity(root, this.rootObservedRevision, folderWitness => this.create(input, { ...runtime, folderWitness }));
+    }
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
     if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
@@ -553,7 +557,25 @@ export class NoteAdapter {
       // cannot distinguish an unstarted create from a published-then-deleted one.
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
-        await link(temporary, parent.target);
+        if (runtime !== undefined) {
+          if (typeof runtime.commit !== 'function') throw sourceError('unauthenticated', 'Trusted synchronous create admission is required.');
+          let published = false;
+          let active = true;
+          const publish = () => {
+            if (!active) throw sourceError('unauthenticated', 'The create admission callback expired.');
+            if (published) throw sourceError('conflict', 'The create admission callback was already consumed.');
+            this.assertCurrentRoot(root);
+            runtime.folderWitness.assertCurrent();
+            for (const part of parent.chain) if (!sameIdentity(lstatSync(part.namedPath), part.stat)) throw sourceError('conflict', 'The destination directory changed before publication.');
+            const staged = lstatSync(temporary);
+            if (!sameStat(staged, temporaryStat)) throw sourceError('conflict', 'The staged original changed before publication.');
+            linkSync(temporary, parent.target);
+            published = true;
+          };
+          let result;
+          try { result = runtime.commit(publish); } finally { active = false; }
+          if (result?.then || !published) throw sourceError('unauthenticated', 'Create admission must synchronously publish exactly once.');
+        } else await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {
         if (error?.code === 'EEXIST') throw await this.pathConflict(parent.target, notePath, 'The destination Note appeared before commit.');

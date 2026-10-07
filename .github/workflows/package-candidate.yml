@@ -73,7 +73,7 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
-              node --test test/native-attachment-selection.test.mjs test/native-attachment-sdk.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing.test.mjs test/topic-document-filing-recovery.test.mjs test/note-process-death.test.mjs test/mutation-reconciliation.test.mjs test/mutation-architecture.test.mjs
+              node --test test/native-attachment-selection.test.mjs test/native-attachment-sdk.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs test/topic-document-filing.test.mjs test/topic-document-filing-recovery.test.mjs test/note-process-death.test.mjs test/mutation-reconciliation.test.mjs test/mutation-architecture.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs

@@ -10,6 +10,10 @@ const MAX_RESPONSE_BYTES = 32 * 1024;
 const ACTION_FIELDS = Object.freeze({
   'documents.attachments.list': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'offset'],
   'documents.attachment.review': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder'],
+  'documents.attachment.prepare': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder', 'logicalOperationId'],
+  'documents.attachment.file': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
+  'documents.attachment.check': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
+  'documents.attachment.reopen': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
   'conversations.create': ['schemaVersion', 'action', 'topicId', 'label', 'expectedRevision', 'logicalOperationId', 'authoritativeSession'],
   'conversations.creation.inspect': ['schemaVersion', 'action', 'topicId'],
   'conversations.creation.reconcile': ['schemaVersion', 'action', 'topicId', 'logicalOperationId'],
@@ -119,6 +123,7 @@ function validateBody(body) {
   if (!isCanonicalUuid(body.topicId)) throw invalid('A canonical topicId is required.');
   if (body.action.startsWith('documents.')) {
     nonBlank(body.sessionKey, 'sessionKey'); nonBlank(body.sessionId, 'sessionId');
+    if (!['documents.attachments.list', 'documents.attachment.review'].includes(body.action) && !isCanonicalUuid(body.logicalOperationId)) throw invalid('The original canonical filing UUID is required.');
     if (body.action === 'documents.attachment.review' && (!body.selection || typeof body.selection !== 'object' || Array.isArray(body.selection))) throw invalid('An exact native attachment selection is required.');
     return body;
   }
@@ -173,22 +178,27 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body, createConversationRuntime, retainDocumentAuthority) {
+async function execute(service, body, createConversationRuntime, retainDocumentAuthority, deliverDocumentResult) {
   const { action } = body;
   if (action.startsWith('documents.')) {
     if (!createConversationRuntime) throw Object.assign(new Error('Attachment review requires authenticated native request authority.'), { code: 'unauthenticated' });
     const runtime = await createConversationRuntime();
     if (typeof runtime?.creationAuthority?.assertCurrent !== 'function') throw invalid('Captured native request authority is required.');
     const nativeAuthority = runtime.creationAuthority;
-    let targetFence;
+    const targetFences = [];
     const reviewAuthority = Object.freeze({ principalId: nativeAuthority.principalId,
+      deliverResult(value) { reviewAuthority.assertCurrent(); deliverDocumentResult(value); },
+      ...(typeof runtime.admitAttachment === 'function' ? { admitAttachment: runtime.admitAttachment.bind(runtime) } : {}),
       assertCurrent() {
-        if (nativeAuthority.assertCurrent()?.then || targetFence?.()?.then) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
+        if (nativeAuthority.assertCurrent()?.then || targetFences.some(fence => fence()?.then)) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
       },
-      captureReviewFence(fence) { if (typeof fence !== 'function' || targetFence) throw invalid('One owner review fence is required.'); targetFence = fence; } });
+      captureReviewFence(fence) { if (typeof fence !== 'function' || targetFences.length >= 8) throw invalid('Bounded owner review fences are required.'); targetFences.push(fence); } });
     retainDocumentAuthority(reviewAuthority);
     const { action: _action, ...input } = body;
-    return service[action === 'documents.attachments.list' ? 'documentsListAttachments' : 'documentsReviewAttachment'](input, reviewAuthority);
+    const methods = { 'documents.attachments.list': 'documentsListAttachments', 'documents.attachment.review': 'documentsReviewAttachment',
+      'documents.attachment.prepare': 'documentsPrepareAttachment', 'documents.attachment.file': 'documentsPublishAttachment',
+      'documents.attachment.check': 'documentsCheckAttachment', 'documents.attachment.reopen': 'documentsReopenAttachment' };
+    return service[methods[action]](input, reviewAuthority);
   }
   if (Object.hasOwn(conversationRecoveryMethods, action)) {
     if (!createConversationRuntime) throw invalid('Conversation recovery requires authenticated native request authority.');
@@ -230,6 +240,7 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
   return async (req, res) => {
     if (req.method !== 'POST') { sendJson(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Topic Page actions are POST-only.' }); return true; }
     let noteSave = false;
+    let documentDelivered = false;
     try {
       if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw invalid('JSON content type is required.');
       const request = await readJson(req);
@@ -240,7 +251,14 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       noteSave = createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile';
       assertRequestBounds(body, request.bytes);
       let documentAuthority;
-      const result = await execute(service, body, createConversationRuntime, authority => { documentAuthority = authority; });
+      const deliverDocumentResult = value => {
+        if (documentDelivered) throw invalid('The original document response was already delivered.');
+        documentAuthority.assertCurrent();
+        sendJson(res, 200, { schemaVersion: 1, status: value.status ?? 'ready', result: value });
+        documentDelivered = true;
+      };
+      const result = await execute(service, body, createConversationRuntime, authority => { documentAuthority = authority; }, deliverDocumentResult);
+      if (documentDelivered) return true;
       if (body.action.startsWith('documents.')) {
         if (typeof documentAuthority?.assertCurrent !== 'function') throw invalid('Captured attachment response authority is required.');
         documentAuthority.assertCurrent();
@@ -261,6 +279,7 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       }
       sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result) } });
     } catch (error) {
+      if (documentDelivered) return true;
       const code = String(error?.code ?? 'invalid-request');
       if (code === 'feature-unavailable') {
         sendJson(res, 501, { schemaVersion: 1, status: 'error', code, retryable: false, message: 'This feature is not available in the first live release.' });

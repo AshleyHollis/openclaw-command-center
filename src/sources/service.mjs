@@ -223,6 +223,10 @@ export class AuthoritativeSourceService {
     if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
     return result;
   }
+  async documentsPrepareAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.prepareAttachment(input, runtime); }
+  async documentsPublishAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.filePreparedAttachment(input, runtime); }
+  async documentsCheckAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.checkPreparedAttachment(input, runtime, true); }
+  async documentsReopenAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.reopenPreparedAttachment(input, runtime); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled
@@ -261,14 +265,15 @@ export class AuthoritativeSourceService {
   historiesList(input, runtime) { return this.readImportedHistory('list', input, runtime); }
   historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
   historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
-  async notesRead(input = {}) {
+  async notesRead(input = {}, originalReadOwned = false) {
+    if (input.sourceKind === 'document' && !originalReadOwned) return this.documents.readOriginalDocument(input, owned => this.notesRead(input, owned || 'legacy'));
     const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     this.assertExactNoteReference(input, { read: true });
     const { offset: _offset, ...noteInput } = adapterInput(input);
     // Original attachments are opaque bytes, not UTF-8 Notes. This internal
     // option never crosses the public bridge boundary.
-    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}) });
+    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}), ...(originalReadOwned === true ? { observe: false } : {}) });
     if (input.offset === undefined) return note;
     if (!Number.isInteger(input.offset) || input.offset < 0) throw sourceError('invalid-request', 'A non-negative byte offset is required.');
     if (input.offset > 0 && (typeof input.observedRevision !== 'string' || input.observedRevision !== note.revision)) throw sourceError('conflict', 'The Note changed during chunk retrieval.');
