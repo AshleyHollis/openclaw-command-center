@@ -87,11 +87,16 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
   await page.evaluate(() => { document.body.style.fontSize = '16px'; });
   await page.setViewportSize({ width: 360, height: 740 });
   await page.getByRole('button', { name: 'Source', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="Note source"]')?.textContent === window.noteText);
   assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), await page.evaluate(() => window.noteText));
   await page.getByRole('button', { name: 'Reading', exact: true }).click();
   await tableScroll.waitFor();
   assert.equal(await reading.locator('img,script,textarea,input').count(), 0);
   assert.equal(await reading.locator('a[href^="javascript:"]').count(), 0);
   assert.equal(await page.getByRole('textbox', { name: 'Native Chat draft', exact: true }).inputValue(), 'Fictional unsent draft');
-  if (process.env.COMMAND_CENTER_VISUAL_OUTPUT) await page.screenshot({ path: process.env.COMMAND_CENTER_VISUAL_OUTPUT });
+  if (process.env.COMMAND_CENTER_VISUAL_OUTPUT) {
+    await page.screenshot({ path: process.env.COMMAND_CENTER_VISUAL_OUTPUT });
+    await page.getByRole('button', { name: 'Show Files', exact: true }).click();
+    await page.screenshot({ path: process.env.COMMAND_CENTER_VISUAL_OUTPUT.replace(/\.png$/u, '-files.png') });
+  }
 });
