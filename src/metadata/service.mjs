@@ -2211,7 +2211,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (applied && !operation.result?.value?.sourceReference?.referenceId) throw new CommandCenterMetadataError('source-recovery', 'Conversation completion receipt is unavailable.');
       result = { schemaVersion: 1, status: applied ? 'applied' : 'unknown', logicalOperationId: operation.logicalOperationId,
         expectedTopicRevision: operation.intent.request.expectedTopicRevision, label: operation.intent.request.label,
-        ...(applied ? { referenceId: operation.result.value.sourceReference.referenceId } : {}) };
+        ...(applied ? { referenceId: operation.result.value.sourceReference.referenceId, sessionId: operation.result.nativeResult.sessionId } : {}) };
     }
     assertCurrent();
     return result;

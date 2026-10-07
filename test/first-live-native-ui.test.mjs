@@ -511,7 +511,10 @@ test('large Notes page through one cursor-pinned catalog and retain exact revisi
   await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-50.md', exact: true }).click();
   await page.getByText('Note opened · r1', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('region', { name: 'Note content' }).textContent(), 'Large authoritative Note.\n'.repeat(50000));
+  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  const sourceViewer = page.getByRole('region', { name: 'Note source', exact: true }).getByRole('textbox', { name: 'Large Note content', exact: true });
+  assert.equal(await sourceViewer.inputValue(), 'Large authoritative Note.\n'.repeat(50000));
+  assert.equal(await sourceViewer.evaluate(node => node.readOnly), true, 'the bounded source viewer preserves raw bytes without authoring');
   const requests = await page.evaluate(() => window.requests);
   assert.ok(requests.some(row => row.method.endsWith('notes.browse') && row.params.offset === 50 && row.params.cursor === 'fictional-cursor'));
   const reads = requests.filter(row => row.method.endsWith('notes.read'));
@@ -521,7 +524,7 @@ test('large Notes page through one cursor-pinned catalog and retain exact revisi
   await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
-  assert.equal(await page.locator('textarea').count(), 0);
+  assert.equal(await page.locator('textarea:not([readonly])').count(), 0);
 }, { start: 'topic', large: true, paginated: true }));
 
 test('wrong Note identity cannot publish content', { timeout: 30000 }, () => fixture(async page => {
