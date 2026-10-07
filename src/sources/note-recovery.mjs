@@ -5,6 +5,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from './note-filesystem-owner.mjs';
 import { revisionForBytes } from './reference.mjs';
 import { sourceError } from './errors.mjs';
+import { withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { persistentFilesystemIdentity as identity, samePersistentFilesystemIdentity as sameIdentity } from './filesystem-object-identity.mjs';
 
 const KIND = 'notes.filesystem-effect';
@@ -128,6 +129,16 @@ export class NoteRecovery {
         if (!sameIdentity(identity(named), record.result.publishedIdentity) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || `sha256:${hash.digest('hex')}` !== record.intent.desiredRevision) throw sourceError('conflict', 'The original document bytes changed.');
       } finally { closeSync(fd); }
     }, async close() { active = false; await parent.handle.close(); } };
+  }
+
+  async withCreateCompletionFence(input, action) {
+    const record = this.metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`);
+    if (!record?.result?.folderBinding?.observedRevision) throw sourceError('conflict', 'The retained original Folder witness is unavailable.');
+    return withVerifiedNoteFolderIdentity(record.result.root, record.result.folderBinding.observedRevision, async folder => {
+      const file = await this.captureCreateCompletionFence(input);
+      try { return await action(() => { folder.assertCurrent(); file.assertCurrent(); }); }
+      finally { await file.close(); }
+    });
   }
 
   async prepareCreate({ input, root, parent, bytes, sourceReference }) {

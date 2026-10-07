@@ -6,7 +6,7 @@ import { createSourceReference, effectiveSourceLocator, revisionForBytes } from 
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
-import { readNoteFolderIdentity, NOTE_FOLDER_IDENTITY_FILE } from './note-folder-identity.mjs';
+import { readNoteFolderIdentity, withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { sameTransientFilesystemIdentity } from './filesystem-object-identity.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
@@ -514,6 +514,10 @@ export class NoteAdapter {
 
   async create(input = {}, runtime) {
     if (!this.recovery.owned) return this.recovery.run(() => this.create(input, runtime));
+    if (runtime !== undefined && !runtime.folderWitness) {
+      const root = await this.resolveRoot();
+      return withVerifiedNoteFolderIdentity(root, this.rootObservedRevision, folderWitness => this.create(input, { ...runtime, folderWitness }));
+    }
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
     if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
@@ -545,8 +549,6 @@ export class NoteAdapter {
         temporary = this.descriptorPath(parent.handle, recoveryRecord.result.temporaryName);
         sourceReference = recoveryRecord.result.sourceReference;
       } else await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
-      const markerPath = runtime === undefined ? null : this.descriptorPath({ fd: this.rootDescriptor }, NOTE_FOLDER_IDENTITY_FILE);
-      const markerStat = markerPath ? lstatSync(markerPath) : null;
       await this.beforeAtomicCommit?.({ operation: 'create', path: notePath });
       await this.assertChainStable(parent.chain);
       const temporaryStat = await lstat(temporary);
@@ -563,7 +565,7 @@ export class NoteAdapter {
             if (!active) throw sourceError('unauthenticated', 'The create admission callback expired.');
             if (published) throw sourceError('conflict', 'The create admission callback was already consumed.');
             this.assertCurrentRoot(root);
-            if (!markerStat?.isFile() || markerStat.isSymbolicLink() || !sameStat(lstatSync(markerPath), markerStat)) throw sourceError('source-recovery', 'The verified Note Folder marker changed before publication.');
+            runtime.folderWitness.assertCurrent();
             for (const part of parent.chain) if (!sameIdentity(lstatSync(part.namedPath), part.stat)) throw sourceError('conflict', 'The destination directory changed before publication.');
             const staged = lstatSync(temporary);
             if (!sameStat(staged, temporaryStat)) throw sourceError('conflict', 'The staged original changed before publication.');

@@ -100,6 +100,18 @@ test('original filing refuses a Folder marker retired inside its final publicati
   assert.ok((await readdir(path.join(f.root, 'Documents'))).every(name => name.startsWith('.')));
 });
 
+test('original filing retains its verified Folder witness through awaited staging', linux, async t => {
+  let retired = false;
+  const f = await fixture(t, { beforePathIo: async ({ operation }) => {
+    if (operation !== 'create' || retired) return;
+    retired = true;
+    await writeFile(path.join(f.root, '.command-center-folder-identity'), 'fictional retired staging marker');
+  } });
+  const { input, runtime } = await prepareOriginal(f);
+  await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'source-recovery' });
+  assert.ok((await readdir(path.join(f.root, 'Documents'))).every(name => name.startsWith('.')));
+});
+
 async function fixture(t, hooks = {}) {
   const { mediaLoader, ...noteHooks } = hooks;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'topic-filing-recovery-'));

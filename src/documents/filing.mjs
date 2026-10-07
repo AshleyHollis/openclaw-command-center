@@ -280,15 +280,12 @@ export class TopicDocumentFilingService {
       assertCurrent();
       const outcome = recovered?.outcome ?? (record.currentStep === 'prepared' ? 'not-applied' : 'unknown');
       if (outcome !== 'applied') return Object.freeze({ schemaVersion: 2, status: outcome, logicalOperationId: record.logicalOperationId, value: null });
-      const fence = await binding.notes.recovery.captureCreateCompletionFence(noteInput);
-      let result;
-      try {
-        const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, () => { assertCurrent(); fence.assertCurrent(); });
-        result = Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
-        if (deliver) { assertCurrent(); fence.assertCurrent(); const delivered = typeof deliver === 'function' ? deliver(result) : runtime.deliverResult?.(result); if (delivered?.then) throw sourceError('unauthenticated', 'Synchronous document delivery is required.'); }
-      }
-      finally { await fence.close(); }
-      return result;
+      return binding.notes.recovery.withCreateCompletionFence(noteInput, fence => {
+        const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, () => { assertCurrent(); fence(); });
+        const result = Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
+        if (deliver) { assertCurrent(); fence(); const delivered = typeof deliver === 'function' ? deliver(result) : runtime.deliverResult?.(result); if (delivered?.then) throw sourceError('unauthenticated', 'Synchronous document delivery is required.'); }
+        return result;
+      });
     });
   }
 
@@ -325,16 +322,14 @@ export class TopicDocumentFilingService {
     if (document.revision !== record.intent.sourceDigest) throw sourceError('conflict', 'The original filed document changed.');
     const final = await binding.notes.recovery.reconcile(this.noteIntent(record), 'create');
     if (final?.outcome !== 'applied') throw sourceError('conflict', 'The original document was replaced during reopening.');
-    const fence = await binding.notes.recovery.captureCreateCompletionFence(this.noteIntent(record));
     const result = Object.freeze({ schemaVersion: 2, status: 'filed', logicalOperationId: record.logicalOperationId, source: record.result.value.source, document: record.result.value.document });
-    try {
-      assertCurrent(); fence.assertCurrent();
+    return binding.notes.recovery.withCreateCompletionFence(this.noteIntent(record), fence => {
+      assertCurrent(); fence();
       if (runtime.deliverResult?.(result)?.then) throw sourceError('unauthenticated', 'Synchronous original document delivery is required.');
-    }
-    finally { await fence.close(); }
     // Existing reader APIs own content/preview delivery. This command returns
     // their exact Source Reference plus retained Conversation/message lineage.
     return result;
+    });
     });
   }
 

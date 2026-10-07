@@ -61,3 +61,10 @@ the exact document Source Reference. Conversation/message lineage is retained
 and visible; no unsupported native message navigation API is invented.
 The unsafe optional v1 model tool registration is retired; source and historical
 recovery tests remain. Filing never schedules automatic Note maintenance.
+
+The existing Folder identity owner now offers a retained verified read callback,
+using its existing directory/marker descriptors and synchronous same-snapshot
+identity/stat/byte fence. Original publication and causal completion hold this
+witness across awaited staging rather than adopting a later marker snapshot.
+Private response delivery occurs synchronously inside the existing Note
+exclusion after Folder/file proof, before any descriptor cleanup await.
