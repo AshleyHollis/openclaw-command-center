@@ -108,10 +108,11 @@ export class TopicDocumentFilingService {
   }
 
   async listAttachments(input = {}, runtime) {
-    assertNoUnexpectedKeys(input, ['sessionKey', 'sessionId', 'offset'], 'Conversation attachment selection');
+    assertNoUnexpectedKeys(input, ['topicId', 'sessionKey', 'sessionId', 'offset'], 'Conversation attachment selection');
     nonBlank(input.sessionId, 'sessionId');
     this.assertReviewCurrent(runtime);
     const binding = await this.resolveBoundConversation(input);
+    if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
     const page = await this.attachmentReader.list(this.attachmentIdentity(binding), { offset: input.offset });
     const latest = await this.resolveBoundConversation(input);
     if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment selection.');
@@ -120,11 +121,12 @@ export class TopicDocumentFilingService {
   }
 
   async reviewAttachment(input = {}, runtime) {
-    assertNoUnexpectedKeys(input, ['sessionKey', 'sessionId', 'selection', 'subfolder'], 'Topic attachment review');
+    assertNoUnexpectedKeys(input, ['topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder'], 'Topic attachment review');
     nonBlank(input.sessionId, 'sessionId');
     const destination = safeSubfolder(input.subfolder);
     this.assertReviewCurrent(runtime);
     const binding = await this.resolveBoundConversation(input);
+    if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
     const identity = this.attachmentIdentity(binding);
     const attachment = await this.attachmentReader.resolve(identity, input.selection);
     this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });

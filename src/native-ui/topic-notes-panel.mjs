@@ -1,4 +1,6 @@
 import { mountTopicPage } from './topic-page.mjs';
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountTopicAttachmentReview } from './topic-attachment-review.mjs';
 
 /** The native pane supplies a locator; only the source owner resolves Topic identity. */
 export function mountTopicNotesPanel(container, context, state) {
@@ -9,6 +11,7 @@ export function mountTopicNotesPanel(container, context, state) {
   let generation = 0;
   let child;
   let childLifetime;
+  let attachmentReview;
   let defaultFiles;
   const shell = container.ownerDocument.createElement('section');
   const controls = container.ownerDocument.createElement('div');
@@ -21,7 +24,7 @@ export function mountTopicNotesPanel(container, context, state) {
   shell.append(controls, content); container.replaceChildren(shell);
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && currentContext.presented && readable() && generation === pending;
-  function clear() { defaultFiles?.(); defaultFiles = undefined; childLifetime?.abort(); child?.dispose(); child = undefined; controls.replaceChildren(); content.replaceChildren(); }
+  function clear() { attachmentReview?.dispose(); attachmentReview = undefined; defaultFiles?.(); defaultFiles = undefined; childLifetime?.abort(); child?.dispose(); child = undefined; controls.replaceChildren(); content.replaceChildren(); }
   function filesLocation(location) {
     const select = container.ownerDocument.createElement('select');
     select.setAttribute('aria-label', 'Files location');
@@ -35,6 +38,7 @@ export function mountTopicNotesPanel(container, context, state) {
   }
   function openDefaultFiles() {
     if (signal.aborted || !currentContext.presented || typeof currentContext.mountDefault !== 'function') return;
+    attachmentReview?.dispose(); attachmentReview = undefined;
     childLifetime?.abort(); child?.dispose(); child = undefined;
     defaultFiles?.(); defaultFiles = currentContext.mountDefault(content);
     controls.replaceChildren(filesLocation('session'));
@@ -75,6 +79,14 @@ export function mountTopicNotesPanel(container, context, state) {
         const latest = response?.result ?? response;
         if (!current(pending) || latest?.status !== 'bound' || latest.sessionKey !== value.sessionKey || latest.sessionId !== value.sessionId || latest.topicId !== value.topicId || latest.referenceId !== value.referenceId) throw new Error('The Conversation’s exact Topic binding changed. Refresh Topic Notes.');
       } });
+      if (FIRST_LIVE_FEATURES.topicDocuments) {
+        attachmentReview = mountTopicAttachmentReview(controls, { host, signal: AbortSignal.any([signal, childLifetime.signal]), binding: value,
+          verifyContext: async () => {
+            const response = await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey });
+            const latest = response?.result ?? response;
+            if (!current(pending) || latest?.status !== 'bound' || latest.sessionKey !== value.sessionKey || latest.sessionId !== value.sessionId || latest.topicId !== value.topicId || latest.referenceId !== value.referenceId) throw new Error('The Conversation Topic changed. Refresh Files.');
+          } });
+      }
     } catch (error) {
       if (current(pending) && error?.name !== 'AbortError') message(host.redact(error?.message || 'Topic Notes are unavailable.'));
     }

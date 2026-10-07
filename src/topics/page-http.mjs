@@ -8,6 +8,8 @@ const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024;
 
 const ACTION_FIELDS = Object.freeze({
+  'documents.attachments.list': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'offset'],
+  'documents.attachment.review': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder'],
   'conversations.create': ['schemaVersion', 'action', 'topicId', 'label', 'expectedRevision', 'logicalOperationId', 'authoritativeSession'],
   'conversations.creation.inspect': ['schemaVersion', 'action', 'topicId'],
   'conversations.creation.reconcile': ['schemaVersion', 'action', 'topicId', 'logicalOperationId'],
@@ -113,8 +115,13 @@ function validateBody(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid('A closed Topic Page action request is required.');
   const fields = ACTION_FIELDS[body.action];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) throw invalid('The Topic Page action contains unsupported fields.');
-  if (body.schemaVersion !== 1 || body.action !== 'conversations.creation.inspect' && !isCanonicalUuid(body.logicalOperationId)) throw invalid('schemaVersion 1 and a canonical logicalOperationId are required.');
+  if (body.schemaVersion !== 1 || body.action !== 'conversations.creation.inspect' && !body.action.startsWith('documents.') && !isCanonicalUuid(body.logicalOperationId)) throw invalid('schemaVersion 1 and a canonical logicalOperationId are required.');
   if (!isCanonicalUuid(body.topicId)) throw invalid('A canonical topicId is required.');
+  if (body.action.startsWith('documents.')) {
+    nonBlank(body.sessionKey, 'sessionKey'); nonBlank(body.sessionId, 'sessionId');
+    if (body.action === 'documents.attachment.review' && (!body.selection || typeof body.selection !== 'object' || Array.isArray(body.selection))) throw invalid('An exact native attachment selection is required.');
+    return body;
+  }
   if (Object.hasOwn(conversationRecoveryMethods, body.action)) {
     if (body.action === 'conversations.creation.acknowledge') nonBlank(body.referenceId, 'referenceId');
     return body;
@@ -168,6 +175,13 @@ function mutationValue(value) {
 
 async function execute(service, body, createConversationRuntime) {
   const { action } = body;
+  if (action.startsWith('documents.')) {
+    if (!createConversationRuntime) throw Object.assign(new Error('Attachment review requires authenticated native request authority.'), { code: 'unauthenticated' });
+    const runtime = await createConversationRuntime();
+    if (typeof runtime?.creationAuthority?.assertCurrent !== 'function') throw invalid('Captured native request authority is required.');
+    const { action: _action, ...input } = body;
+    return service[action === 'documents.attachments.list' ? 'documentsListAttachments' : 'documentsReviewAttachment'](input, runtime.creationAuthority);
+  }
   if (Object.hasOwn(conversationRecoveryMethods, action)) {
     if (!createConversationRuntime) throw invalid('Conversation recovery requires authenticated native request authority.');
     const runtime = await createConversationRuntime();
@@ -218,6 +232,11 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       noteSave = createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile';
       assertRequestBounds(body, request.bytes);
       const result = await execute(service, body, createConversationRuntime);
+      if (body.action.startsWith('documents.')) {
+        // The filing owner already projects only reviewed, Topic-relative facts.
+        sendJson(res, 200, { schemaVersion: 1, status: result.status ?? 'ready', result });
+        return true;
+      }
       if (body.action === 'conversations.creation.inspect') {
         // Only the closed owner projection is exposed. Never return the journal,
         // principal, native locator or a different operator's stored intent.

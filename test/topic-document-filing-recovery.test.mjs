@@ -129,3 +129,11 @@ test('simultaneous identical filing requests retain one original document and ca
   const names = await readdir(path.join(f.root, 'Documents'));
   assert.deepEqual(names.filter(name => !name.startsWith('.')), [path.basename(first.value.document.path)]);
 });
+
+test('filing alone does not schedule disabled automatic Note maintenance', linux, async t => {
+  let scheduled = 0;
+  const f = await fixture(t, { maintenanceSchedule: { schedule: async () => { scheduled++; } } });
+  const result = await f.service.documentsFileAttachment(f.input);
+  assert.equal(result.status, 'applied');
+  assert.equal(scheduled, 0);
+});

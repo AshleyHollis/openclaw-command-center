@@ -88,3 +88,9 @@ That makes a resolver feasible; it is not yet a passing real native SDK test,
 actual upload demo, final synchronous publication proof or installed admission.
 The old implementation brief's missing mapping concern is superseded only after
 that test passes. No API availability is inferred from a service double.
+
+The bounded native SDK proof now passes at f1c01c6123fb10de99ccf0868e1b98d958d2695e
+(run37595114716). See topic-filing-native-admission-boundary.md for the verified
+publication boundary and the remaining source/native release pair. Read-only
+selection and review, closed gated APIs and Files review controls are implemented;
+publication/retained-intent/atomic completion/lineage reopening remain blocked.
