@@ -8,16 +8,23 @@ import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { writeFileSync } from 'node:fs';
+import { revisionForBytes } from '../src/sources/reference.mjs';
 
 const release = installHostFileAccessFixture();
 test.after(release);
 const linux = { skip: process.platform !== 'linux' && 'Descriptor-relative Note publication requires Linux.' };
 const bytes = Buffer.from('fictional original attachment bytes');
 
+// CC owner fixture only; the separate SDK integration test uses real admission.
+function admissionFixture(publish = effect => effect()) {
+  return { originalDigest: revisionForBytes(bytes), sizeBytes: bytes.length,
+    getOriginalBytes: () => Buffer.from(bytes), publish: async effect => publish(effect), close: async () => {} };
+}
+
 async function prepareOriginal(f) {
   const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
   f.service.documents.attachmentReader = { resolve: async () => ({ selection, mediaRef: f.input.mediaRef, fileName: 'original.pdf', contentType: 'application/pdf', sizeBytes: bytes.length, createdAt: '2026-01-01T00:00:00Z' }) };
-  const runtime = { principalId: 'fictional-principal', assertCurrent() {}, admitAttachment: async () => ({ withCommit: effect => effect() }) };
+  const runtime = { principalId: 'fictional-principal', assertCurrent() {}, admitAttachment: async () => admissionFixture() };
   const input = { topicId: 'fictional-filing', sessionKey: f.input.sessionKey, sessionId: f.input.sessionId, logicalOperationId: '00000000-0000-4000-8000-000000000456' };
   await f.service.documents.prepareAttachment({ ...input, selection }, runtime);
   return { input, runtime };
@@ -45,6 +52,34 @@ test('original filing freezes intent, synchronously publishes once, atomically r
   assert.deepEqual(Buffer.from(read.contentBase64, 'base64'), bytes);
 });
 
+test('Note publication waits for native admission and expires its retained callback after settlement', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  let retained;
+  let closed = 0;
+  runtime.admitAttachment = async () => ({ ...admissionFixture(async effect => {
+    retained = effect;
+    await Promise.resolve();
+    effect();
+  }), close: async () => { closed++; } });
+  const result = await f.service.documents.filePreparedAttachment(input, runtime);
+  assert.equal(result.status, 'applied');
+  assert.equal(closed, 1);
+  assert.throws(() => retained(), { code: 'unauthenticated' });
+});
+
+test('filing rejects a changed native original copy and closes custody without publishing', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  let effects = 0, closed = 0;
+  runtime.admitAttachment = async () => ({ ...admissionFixture(() => { effects++; }),
+    getOriginalBytes: () => Buffer.alloc(bytes.length), close: async () => { closed++; } });
+  await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'conflict' });
+  assert.equal(effects, 0);
+  assert.equal(closed, 1);
+  assert.equal(f.metadata.getTopicOperation(input.logicalOperationId).state, 'unknown');
+});
+
 test('original filing interrupted after publication recovers the frozen receipt without reading the original or creating again', linux, async t => {
   const f = await fixture(t, { afterAtomicPublish: async () => { throw new Error('fictional interrupted original'); } });
   const { input, runtime } = await prepareOriginal(f);
@@ -61,7 +96,7 @@ test('original filing refuses native admission lost during staging and never cre
   let admitted = true;
   const f = await fixture(t, { beforeAtomicCommit: async () => { admitted = false; } });
   const { input, runtime } = await prepareOriginal(f);
-  runtime.admitAttachment = async () => ({ withCommit: effect => { if (!admitted) throw Object.assign(new Error('fictional retired admission'), { code: 'unauthenticated' }); return effect(); } });
+  runtime.admitAttachment = async () => admissionFixture(effect => { if (!admitted) throw Object.assign(new Error('fictional retired admission'), { code: 'unauthenticated' }); return effect(); });
   await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'unauthenticated' });
   const names = await readdir(path.join(f.root, 'Documents'));
   assert.ok(names.every(name => name.startsWith('.')));
@@ -95,10 +130,10 @@ test('prepared replay and reopen refuse equal-byte replacement of the original i
 test('original filing refuses a Folder marker retired inside its final publication callback', linux, async t => {
   const f = await fixture(t);
   const { input, runtime } = await prepareOriginal(f);
-  runtime.admitAttachment = async () => ({ withCommit: effect => {
+  runtime.admitAttachment = async () => admissionFixture(effect => {
     writeFileSync(path.join(f.root, '.command-center-folder-identity'), 'fictional retired marker');
     return effect();
-  } });
+  });
   await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'source-recovery' });
   assert.ok((await readdir(path.join(f.root, 'Documents'))).every(name => name.startsWith('.')));
 });
