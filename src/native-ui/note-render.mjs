@@ -64,6 +64,17 @@ export function renderReadOnlyMarkdown(container, text) {
   if (body.startsWith(renderedText) && /^\s*$/u.test(body.slice(renderedText.length))) {
     container.append(container.ownerDocument.createTextNode(body.slice(renderedText.length)));
   }
+  // Keep semantic table markup; wide content scrolls inside this Reading view
+  // instead of squeezing short columns or extending the native pane.
+  for (const [index, table] of [...container.querySelectorAll('table')].entries()) {
+    const region = container.ownerDocument.createElement('div');
+    region.className = 'reader-table-scroll';
+    region.setAttribute('role', 'region');
+    region.setAttribute('aria-label', `Table ${index + 1}`);
+    region.setAttribute('aria-description', 'Scroll horizontally to read all columns.');
+    region.tabIndex = 0;
+    table.before(region); region.append(table);
+  }
   if (envelope) {
     const metadata = container.ownerDocument.createElement('details');
     const summary = container.ownerDocument.createElement('summary'); summary.textContent = 'Document metadata';
