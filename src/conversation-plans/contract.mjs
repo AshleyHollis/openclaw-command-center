@@ -15,9 +15,13 @@ export function validatePlan(input) {
   closed(input, ['family', 'logicalOperationId', 'source', 'destination', 'snapshot']);
   if (input.family !== PLAN_FAMILY) fail('Unsupported plan family.');
   assertLogicalOperationId(input.logicalOperationId);
-  closed(input.source, ['topicId', 'referenceId', 'sessionId', 'sessionKey', 'membershipRevision', 'messageId', 'messageDigest']);
+  closed(input.source, ['topicId', 'referenceId', 'sessionId', 'sessionKey', 'membershipRevision', 'messageId', 'messageDigest', ...(Object.hasOwn(input.source ?? {}, 'nativeAdmission') ? ['nativeAdmission'] : [])]);
   for (const key of ['topicId', 'referenceId', 'sessionId', 'sessionKey', 'messageId']) text(input.source[key], 500);
   if (!Number.isSafeInteger(input.source.membershipRevision) || input.source.membershipRevision < 0 || !/^[a-f0-9]{64}$/u.test(input.source.messageDigest)) fail('Exact source revision and message digest are required.');
+  if (input.source.nativeAdmission !== undefined) {
+    closed(input.source.nativeAdmission, ['generation', 'digest']); text(input.source.nativeAdmission.generation, 4096);
+    if (!/^sha256-public-message-v1:[a-f0-9]{64}$/u.test(input.source.nativeAdmission.digest)) fail('Unsupported native public-message digest.');
+  }
   closed(input.destination, ['tenantId', 'boardId']);
   Object.values(input.destination).forEach(value => text(value, 80));
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/u.test(input.destination.boardId)) fail('An exact canonical native board is required.');

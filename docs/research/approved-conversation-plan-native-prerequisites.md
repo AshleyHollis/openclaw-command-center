@@ -1,5 +1,21 @@
 # Native prerequisites for approved Conversation plan v1
 
+## Current inspected successor and authenticated handoff gap
+
+Native [#66](https://github.com/AshleyHollis/openclaw/pull/66), exact `6b4702dd57a94f9e425113bfa0a9ce8418587cb1`, supplies cross-plugin targets and fresh scoped card-detail navigation. CC now invokes its declared host target, preserving the exact board/card/tenant. Native draft/save defer and scope verification stay with Workboard. Installed-pair proof is still pending.
+
+Native [#67](https://github.com/AshleyHollis/openclaw/pull/67), exact `a20ac2967ee3786475ae55b612513868ea261a86`, supplies `createSessionTranscriptVisibleMessageDigest(entry)` and `prepareSessionTranscriptSourceAdmission(selection, capturedNativeAuthority)` in the public transcript runtime SDK. Selection is `{ agentId, sessionKey, sessionId, entryId, generation, digest }`, digest version `sha256-public-message-v1`. Preparation retains a branded single-use capability with `close()`; it is not a JSON descriptor. Native source/destination workers hold the source writer lock through actual Workboard COMMIT. Captured guards must check current identity/revocation synchronously, without querying the paused source worker. Do not substitute the historical process-local lock or a consumer-written digest.
+
+The destination contract is the fourth argument to `WorkboardCoreStore.create(input, scope, assertOwnerCurrent, sourceAdmission)`. However, #67's unchanged `extensions/workboard/src/gateway-workspace-methods.ts` still calls `store.create(input, undefined, request.sessionMutationAuthorization?.assertCurrent)` with three arguments. CC uses this authenticated Gateway owner; it cannot transfer the branded native capability through JSON, add an undeclared request-context field, or call a direct store to bypass authentication.
+
+The remaining narrow native work is a declared captured-authority handoff from the authenticated create invocation to Workboard's existing prepared-custody create path, rejecting stale/wrong invocation, serialized capabilities and unsupported hosts, and joining cleanup on all refusal/response-loss paths. Test it through the actual authenticated handler and Topic/principal/reset/permission/tenant guards, including real transaction and COMMIT rollback. A standalone store test is not that integration proof. CC production Track refuses before its journal/native effects until this handoff is implemented and qualified. No new native RPC is asserted by this brief.
+
+CC freezes the native generation/digest alongside its existing accepted source/snapshot, uses the SDK's generation-aware recent source window, and fences rewrite generation, visible count and active leaf around exact-entry reads. The optional real-SDK contract test requires `COMMAND_CENTER_NATIVE_PLAN_SDK` to identify the exact built native entrypoint; it remains explicitly skipped while the artifact is unavailable. No fake SDK is used. #66/#67 have separate heads, so package/build/IPC and a combined installed pair still require native-lane qualification. Result-review has no verified native owner.
+
+## Historical baseline design brief
+
+The sections below document the original `26a9c0f` gap. The inspected successor above replaces the proposed synchronous predicate with native retained writer-lock custody; these historical proposals are not additional APIs to invent.
+
 Exact source inspected: AshleyHollis/openclaw `26a9c0faa4124e53ae2eab34291d68a7245f630c`; consumer CC #370/#371, baseline `2253d49b5b90c8c1c8c506a0a38efe300c389da4`. This is an implementation brief, not an implemented native API, permission change or deployment request. Official 2026.9.8 is not equivalent to this fork's guarded create/update admission.
 
 ## Bounded visible-message admission

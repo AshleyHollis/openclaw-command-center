@@ -94,7 +94,10 @@ test('fictional rendered plan uses real CC journal owner, preserves draft/focus 
   await page.getByRole('button', { name: 'Track this plan' }).click();
   await page.getByRole('status').filter({ hasText: 'Native status: done' }).waitFor();
   assert.equal(writes, 1); assert.equal(await page.locator('#native-draft').inputValue(), 'Unsent fictional draft');
-  assert.equal(await page.getByRole('button', { name: 'Open native card' }).count(), 0);
+  await page.evaluate(() => { window.nativeTargets = []; window.fixtureHost.navigation = { openPage: target => window.nativeTargets.push(target) }; });
+  await page.getByRole('button', { name: 'Open native card' }).last().click();
+  assert.deepEqual(await page.evaluate(() => window.nativeTargets), [{ pluginId: 'workboard', id: 'workboard', path: [input.destination.boardId], params: { cardId: 'fictional-card', tenant: input.destination.tenantId } }]);
+  assert.equal(writes, 1); assert.equal(await page.locator('#native-draft').inputValue(), 'Unsent fictional draft');
   await page.evaluate(() => { window.fixtureHost.connection.canRead = false; window.changedAccess(); });
   await page.getByText('Conversation plan authority changed. Reopen to review.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Track this plan' }).count(), 0);

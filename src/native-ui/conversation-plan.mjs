@@ -1,5 +1,9 @@
 // Candidate component. Production registration waits for exact source-message,
 // cross-plugin card navigation and human-request owner qualification (#370).
+export function nativeWorkboardCardTarget({ boardId, tenantId, cardId }) {
+  if (![boardId, tenantId, cardId].every(value => typeof value === 'string' && value.trim() === value && value.length > 0) || !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(boardId)) throw new Error('Exact native card destination is unavailable.');
+  return { pluginId: 'workboard', id: 'workboard', path: [boardId], params: { cardId, tenant: tenantId } };
+}
 export function mountConversationPlan(container, { input, owner, openNativeCard, signal }) {
   const document = container.ownerDocument;
   const accepted = structuredClone(input);
@@ -31,7 +35,11 @@ export function mountConversationPlan(container, { input, owner, openNativeCard,
       track.hidden = true;
       if (typeof openNativeCard === 'function') {
         open.hidden = false;
-        open.onclick = () => { if (!signal?.aborted && version === generation) openNativeCard({ ...accepted.destination, cardId: result.card.id }); };
+        open.onclick = async () => {
+          if (signal?.aborted || version !== generation) return;
+          try { await openNativeCard({ ...accepted.destination, cardId: result.card.id }); }
+          catch { if (!signal?.aborted && version === generation) status.textContent = 'The exact native card destination is unavailable.'; }
+        };
       }
     } catch (error) {
       if (!signal?.aborted && version === generation) {

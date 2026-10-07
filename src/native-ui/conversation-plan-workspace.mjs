@@ -1,4 +1,4 @@
-import { mountConversationPlan } from './conversation-plan.mjs';
+import { mountConversationPlan, nativeWorkboardCardTarget } from './conversation-plan.mjs';
 
 // Hosted by the existing Topic/dashboard; never mounts or owns native Chat.
 export function mountConversationPlanWorkspace(container, { host, signal, topicId, referenceId, attentionContainer = container, current = () => true }) {
@@ -39,8 +39,18 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
           };
           const human = el('article'); human.append(el('h3', row.input.snapshot.outcome), open); humanRequests.append(human);
         }
-        // Exact-card navigation is a declared fork prerequisite, not a guessed URL.
-        article.append(el('p', `Workboard card ${row.card.id} · ${row.input.destination.boardId}. Exact-card navigation awaits the native route contract.`)); rows.append(article);
+        const nativeCard = el('button', 'Open native card'); nativeCard.type = 'button';
+        nativeCard.onclick = async () => {
+          if (!live(version)) return; nativeCard.disabled = true;
+          try {
+            const currentRow = await request('reconcile', { input: row.input, logicalOperationId: row.input.logicalOperationId });
+            if (!live(version)) return;
+            if (currentRow.availability !== 'available' || currentRow.card?.id !== row.card.id) throw new Error('Exact native card unavailable');
+            host.navigation.openPage(nativeWorkboardCardTarget({ ...row.input.destination, cardId: currentRow.card.id }));
+          } catch { if (live(version)) status.textContent = 'The exact native card destination is unavailable.'; }
+          finally { if (live(version)) nativeCard.disabled = false; }
+        };
+        article.append(el('p', `Workboard card ${row.card.id} · ${row.input.destination.boardId}.`), nativeCard); rows.append(article);
       }
       status.textContent = `${result.rows?.length ?? 0} tracked plans. Coverage: ${result.coverage}.`;
     } catch { if (live(version)) { rows.replaceChildren(); humanRequests.replaceChildren(); status.textContent = 'Authorized native plan status is unavailable.'; } }
@@ -62,7 +72,7 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
         const origin = result.messages[Number(choice.value)]; if (!origin) return;
         const input = { family: 'approved-conversation-plan.v1', logicalOperationId: crypto.randomUUID(), source: structuredClone(origin.source), destination: { tenantId: fields.tenant.value, boardId: fields.board.value }, snapshot: { outcome: fields.outcome.value, steps: fields.steps.value.split('\n'), completionCriteria: fields.criteria.value.split('\n') } };
         form.inert = true;
-        review = mountConversationPlan(editor, { input, signal: activeSignal, owner: Object.fromEntries(['track', 'reconcile'].map(action => [action, accepted => { if (!live(version)) throw new Error('Current source unavailable'); return request(action, { logicalOperationId: accepted.logicalOperationId, input: accepted }); }])) });
+        review = mountConversationPlan(editor, { input, signal: activeSignal, openNativeCard: target => { if (!live(version)) throw new Error('Current destination unavailable'); host.navigation.openPage(nativeWorkboardCardTarget(target)); }, owner: Object.fromEntries(['track', 'reconcile'].map(action => [action, accepted => { if (!live(version)) throw new Error('Current source unavailable'); return request(action, { logicalOperationId: accepted.logicalOperationId, input: accepted }); }])) });
       };
       if (!result.messages.length) { editor.append(el('p', 'No authoritative assistant message is available.')); return; }
       editor.append(form);

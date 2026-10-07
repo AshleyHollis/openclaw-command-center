@@ -70,6 +70,17 @@ test('snapshot, destination, message revision and reused operation identity are 
   }
   assert.equal(f.writes, 1);
 });
+test('native generation and versioned digest remain frozen under exact retries', async t => {
+  const f = fixture(t);
+  f.input.source.nativeAdmission = { generation: 'fictional-native-generation', digest: `sha256-public-message-v1:${'a'.repeat(64)}` };
+  await f.owner().track(f.input);
+  for (const field of ['generation', 'digest']) {
+    const changed = structuredClone(f.input);
+    changed.source.nativeAdmission[field] = field === 'generation' ? 'different-generation' : `sha256-public-message-v1:${'b'.repeat(64)}`;
+    await assert.rejects(f.owner().track(changed), error => error.code === 'intent-mismatch');
+  }
+  f.reopen(); await f.owner().track(f.input); assert.equal(f.writes, 1);
+});
 test('queued authority loss and source reset/reassignment fail before native effect', async t => {
   for (const change of ['revoke', 'sourceChanged']) {
     const f = fixture(t); f.hook(() => f[change]());

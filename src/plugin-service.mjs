@@ -27,6 +27,7 @@ import { createConversationPlanOwner } from './conversation-plans/owner.mjs';
 import { createConversationPlanSource } from './conversation-plans/source.mjs';
 import { readPlanHumanRequests, verifyPlanHumanRequest } from './conversation-plans/human-requests.mjs';
 import { createPlanRequestEpisodeOwner } from './conversation-plans/request-episodes.mjs';
+import { createNativePlanTranscriptAdapter, nativePlanSourceSelection } from './conversation-plans/native-source.mjs';
 import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
@@ -187,8 +188,16 @@ export function createMetadataService(api) {
     };
     assertCurrent();
     const transcripts = await import('openclaw/plugin-sdk/session-transcript-runtime'); assertCurrent();
+    const nativeTranscript = createNativePlanTranscriptAdapter(transcripts);
     const source = createConversationPlanSource({ metadata, sources, assertCurrent,
-      readEntries: transcripts.readVisibleSessionTranscriptMessageEntries,
+      readEntries: nativeTranscript.readEntries, readRecentEntries: nativeTranscript.readRecentEntries,
+      assertCreateAdmissionAvailable(origin) {
+        nativePlanSourceSelection(origin);
+        // PR67 transfers custody through WorkboardCoreStore.create's fourth
+        // argument. Its Gateway handler still passes only input/scope/guard;
+        // never serialize custody or bypass authenticated native transport.
+        throw new SourceServiceError('capability-unavailable', 'Retained native source custody has no authenticated Workboard create handoff.');
+      },
       withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
     const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,
       verifyRequest: ({ card, request, known, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;

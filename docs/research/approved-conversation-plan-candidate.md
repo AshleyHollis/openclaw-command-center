@@ -1,6 +1,16 @@
 # Track an approved Conversation plan — bounded candidate
 
-Owner: [#370](https://github.com/AshleyHollis/openclaw-command-center/issues/370), draft [#371](https://github.com/AshleyHollis/openclaw-command-center/pull/371), within #248 and the manual-request design in #313/#331. Delivery class: **3** (journal correlation and external card creation). This is a disabled source candidate with concrete Topic/dashboard composition. Production Track fails closed on a proven missing native exact-message commit capability; this is not a complete or release-qualified feature.
+Owner: [#370](https://github.com/AshleyHollis/openclaw-command-center/issues/370), draft [#371](https://github.com/AshleyHollis/openclaw-command-center/pull/371), within #248 and the manual-request design in #313/#331. Delivery class: **3** (journal correlation and external card creation). This is a disabled source candidate with concrete Topic/dashboard composition. Production Track fails closed on the missing authenticated native-source-custody handoff; this is not a complete or release-qualified feature.
+
+## Native prerequisite consumer successor
+
+Inspected exact native navigation [#66](https://github.com/AshleyHollis/openclaw/pull/66) at `6b4702dd57a94f9e425113bfa0a9ce8418587cb1` and source admission [#67](https://github.com/AshleyHollis/openclaw/pull/67) at `a20ac2967ee3786475ae55b612513868ea261a86`; both independently based on `26a9c0f`. These commits are not a combined installed pair.
+
+The CC consumer now uses the declared `{ pluginId: 'workboard', id: 'workboard', path: [boardId], params: { cardId, tenant } }` target through host navigation. The native owner performs its fresh card/scope read and draft/save defer. CC rechecks current tracking before opening a dashboard row and catches unavailable destinations. Native Start/review remains separate.
+
+Source choices now carry optional native-issued `nativeAdmission: { generation, digest }`, where digest has native version `sha256-public-message-v1`. Existing CC message digest and accepted snapshot/source binding are preserved; retries cannot change either native generation or digest, or silently upgrade an earlier acceptance. Production recent choices use the native generation-aware visible page (last 50 messages, 1 MiB); reconciliation reads the exact accepted entry with generation fencing through the real SDK. Only the real native digest helper hashes public message payload; CC does not duplicate it. The preparer can mint a native capability outside JSON with a synchronous captured guard, but it is not yet invoked by Track.
+
+**Authenticated handoff is still absent:** #67 extends `WorkboardCoreStore.create` with a fourth retained `sourceAdmission` argument. Its unchanged `gateway-workspace-methods.ts` calls only `store.create(input, undefined, sessionMutationAuthorization.assertCurrent)`. CC cannot transfer native custody through its existing authenticated `workboard.cards.create` transport. Track explicitly refuses before journal reservation/native effects; no serialized authority, direct-store bypass or fake SDK is introduced. The exact built SDK contract test is explicitly skipped until its artifact exists. Native package/build/IPC and installed-pair qualification remain outside this candidate's passing evidence. The baseline facts below are historical and are superseded by this inspected successor where noted.
 
 ## Concrete fictional journey
 

@@ -38,6 +38,15 @@ test('a different Topic revision fails exact source admission', async t => {
   message.source.membershipRevision++;
   await assert.rejects(f.source.readSource(message.source), /ownership changed/);
 });
+test('native source generation and versioned digest are copied and exact read rejects a changed projection', async t => {
+  const f = fixture(t), nativeAdmission = { generation: 'fictional-native-generation', digest: `sha256-public-message-v1:${'a'.repeat(64)}` };
+  const entry = { entryId: 'fictional-message', role: 'assistant', message: { role: 'assistant', content: 'Fictional agreed plan' }, nativeAdmission };
+  f.replace([entry]); const [message] = await f.source.messages(f);
+  assert.deepEqual(message.source.nativeAdmission, nativeAdmission);
+  await f.source.readSource(message.source);
+  entry.nativeAdmission.generation = 'changed';
+  await assert.rejects(f.source.readSource(message.source), /generation or digest changed/);
+});
 test('native question and nested approval requests require exact linked run; generic states remain quiet', async () => {
   const card = { status: 'blocked', sessionKey: 'fictional-session', runId: 'fictional-run' };
   const common = { createdAtMs: 10, expiresAtMs: 100 };
