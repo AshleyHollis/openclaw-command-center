@@ -107,12 +107,18 @@ export class TopicDocumentFilingService {
     });
   }
 
-  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+  readOwnedAttachmentReference({ topicId, mediaRef }) {
     const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const existing = this.metadata.getSourceReference?.(referenceId);
     if (existing && (existing.topicId !== topicId || existing.sourceSystem !== 'openclaw' || existing.sourceKind !== 'attachment' || existing.externalSourceId !== mediaRef)) {
       throw sourceError('cross-topic', 'This managed attachment is already owned by another source binding.');
     }
+    return existing ?? null;
+  }
+
+  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+    const existing = this.readOwnedAttachmentReference({ topicId, mediaRef });
+    const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const reference = { version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'attachment', externalSourceId: mediaRef, observedRevision: digest };
     return existing ? this.metadata.observeSourceReference(reference) : this.metadata.createSourceReference(reference);
   }
@@ -122,6 +128,7 @@ export class TopicDocumentFilingService {
     const sessionKey = nonBlank(input.sessionKey, 'sessionKey');
     const mediaRef = canonicalInboundMediaRef(input.mediaRef);
     const firstBinding = await this.resolveBoundConversation({ sessionKey, sessionId: input.sessionId });
+    this.readOwnedAttachmentReference({ topicId: firstBinding.topicId, mediaRef });
     const source = await this.loadExactMedia(mediaRef);
     const filename = filedName(safeFilename(source.fileName, `attachment-${sourceToken(mediaRef)}`), sourceToken(mediaRef));
     const documentPath = `${safeSubfolder(input.subfolder)}/${filename}`;
@@ -133,6 +140,7 @@ export class TopicDocumentFilingService {
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) throw sourceError('source-recovery', 'Topic ownership changed before attachment filing.');
       const currentSource = await this.loadExactMedia(mediaRef);
       if (currentSource.digest !== source.digest || currentSource.bytes.length !== source.bytes.length) throw sourceError('conflict', 'The managed attachment changed before filing.');
+      this.readOwnedAttachmentReference({ topicId: current.topicId, mediaRef });
       const created = await current.notes.create({ logicalOperationId, requestId, referenceId: current.folderReferenceId, path: documentPath, content: currentSource.bytes, sourceKind: 'document' });
       const document = created.note;
       if (!document || document.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') throw sourceError('conflict', 'The filed document did not retain its verified identity.');
