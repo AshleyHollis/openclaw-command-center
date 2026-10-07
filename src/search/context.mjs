@@ -150,3 +150,81 @@ export function createTopicContextPolicy({ metadata, searchService } = {}) {
 
 export const createAutomaticContextPolicy = createTopicContextPolicy;
 export const topicContextLimits = Object.freeze({ maxExcerpts: MAX_EXCERPTS, maxExcerptChars: MAX_EXCERPT_CHARS, maxExcerptCharacters: MAX_EXCERPT_CHARACTERS, maxOutputBytes: MAX_OUTPUT_BYTES });
+
+// This on-demand path deliberately has no target-Topic or transcript arguments.
+export function createCurrentTopicNoteRecallPolicy({ metadata, searchService, assertActive = () => {} } = {}) {
+  async function retrieve(input = {}) {
+    for (const key of Object.keys(input)) if (!['query', 'limit', 'sessionKey', 'sessionId', 'signal'].includes(key)) throw sourceError('invalid-request', 'Note recall contains unsupported fields.');
+    const { query, limit = MAX_EXCERPTS, sessionKey, sessionId, signal } = input;
+    if (typeof sessionId !== 'string' || !sessionId.trim()) throw sourceError('source-recovery', 'Note recall requires the native Session incarnation.');
+    const binding = currentBinding(metadata, sessionKey, sessionId);
+    if (!binding) throw sourceError('source-recovery', 'The current Session has no exact Topic binding.');
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXCERPTS) throw sourceError('invalid-request', 'Recall limit must be between 1 and 8.');
+    const normalized = normalizeSearchQuery(query);
+    const tokens = parseLexicalQuery(normalized);
+    const folders = () => (metadata.listSourceReferences(binding.topic.topicId) ?? []).filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+    const folder = folders();
+    if (folder.length !== 1) throw sourceError('source-recovery', 'Recall requires one exact Topic Note Folder.');
+    const folderFence = JSON.stringify([folder[0], metadata.getSourceLocator?.(folder[0].referenceId)]);
+    const assertCurrent = () => {
+      signal?.throwIfAborted(); assertActive();
+      searchService.assertRecallAuthority(binding.topic.topicId);
+      const current = currentBinding(metadata, sessionKey, sessionId);
+      const currentFolders = folders();
+      if (!current || current.referenceId !== binding.referenceId || current.sessionId !== binding.sessionId || current.topic.topicId !== binding.topic.topicId
+        || currentFolders.length !== 1 || JSON.stringify([currentFolders[0], metadata.getSourceLocator?.(currentFolders[0].referenceId)]) !== folderFence)
+        throw sourceError('source-recovery', 'The Session or Topic Folder changed during Note recall.');
+    };
+    const leases = [];
+    let result;
+    let retained = false;
+    const close = () => { for (const lease of leases) lease.close(); };
+    const publication = value => {
+      retained = true;
+      return Object.freeze({ result: value, assertCurrent: () => { assertCurrent(); for (const lease of leases) lease.assertCurrent(); }, close });
+    };
+    try {
+      assertCurrent();
+      result = await searchService.queryNotes({ schemaVersion: 1, topicId: binding.topic.topicId, query: normalized, limit });
+      assertCurrent();
+      const excerpts = [];
+      let stale = result.stale === true;
+      for (const item of result.results) {
+        assertCurrent();
+        let lease;
+        try { lease = await searchService.prepareNoteRecall(item.navigation); }
+        catch (error) {
+          assertCurrent();
+          if (!['conflict', 'source-recovery', 'not-found', 'ENOENT', 'EACCES', 'source-unavailable'].includes(error.code)) throw error;
+          stale = true; continue;
+        }
+        leases.push(lease);
+        assertCurrent(); lease.assertCurrent();
+        const section = lease.section.text;
+        const term = tokens[0].value.toLocaleLowerCase();
+        const match = section.toLocaleLowerCase().indexOf(term);
+        const start = Math.max(0, match < 0 ? 0 : match - 80);
+        const raw = bounded(section.slice(start), MAX_EXCERPT_CHARS);
+        const offset = lease.section.start;
+        const text = bounded(redactCredentialText(raw), MAX_EXCERPT_CHARS);
+        assertCredentialFreeIdentity(item.navigation);
+        excerpts.push(Object.freeze({ originatingTopic: identity(metadata, binding.topic), sourceReference: compactReference(item.sourceReference),
+          label: bounded(redactCredentialText(item.heading ?? item.path), 256), excerpt: text, redacted: text !== raw,
+          citation: Object.freeze({ revision: lease.note.revision, start: offset + start, end: offset + start + raw.length }),
+          navigation: safeNavigation(item.navigation) }));
+      }
+      assertCurrent();
+      for (const lease of leases) lease.assertCurrent();
+      const topic = identity(metadata, binding.topic);
+      return publication(fitOutput({ schemaVersion: 1, status: stale ? 'partial' : excerpts.length ? 'available' : 'no-matches',
+        currentTopic: topic, retrievedTopic: topic, selectionBasis: 'current-topic-notes',
+        groups: { notes: excerpts, conversations: [] }, truncation: { notes: result.truncated === true, conversations: false } }));
+    } catch (error) {
+      assertCurrent();
+      if (['projection-unavailable', 'capability-unavailable', 'ENOENT'].includes(error.code)) return publication(fitOutput({ schemaVersion: 1, status: 'unavailable',
+        currentTopic: identity(metadata, binding.topic), selectionBasis: 'current-topic-notes', groups: { notes: [], conversations: [] }, truncation: { notes: false, conversations: false } }));
+      throw error;
+    } finally { if (!retained) close(); }
+  }
+  return Object.freeze({ retrieve });
+}

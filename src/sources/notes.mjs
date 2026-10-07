@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, readFileSync, openSync } from 'node:fs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -307,6 +307,50 @@ export class NoteAdapter {
       revision,
       sourceReference
     });
+  }
+
+  // Internal read lease: retain descriptor identities until the model publication
+  // fence. No new filesystem writes or projection observations are performed.
+  async prepareRecallRead(input = {}) {
+    const note = await this.read({ ...input, observe: false });
+    const root = this.fsSafeRoot.rootReal;
+    const parent = await this.openParent(root, input.path, { operation: 'read' });
+    const descriptors = [];
+    let closed = false;
+    try {
+      await this.assertChainStable(parent.chain);
+      const fd = openSync(parent.target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptors.push(fd);
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1 || revisionForBytes(readFileSync(fd)) !== note.revision) throw sourceError('conflict', 'The Note changed before recall publication.');
+      const markerPath = this.descriptorPath({ fd: this.rootDescriptor }, '.command-center-folder-identity');
+      const markerFd = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptors.push(markerFd);
+      const markerStat = fstatSync(markerFd);
+      readFileSync(markerFd);
+      const rootRevision = this.rootObservedRevision;
+      const locatorVersion = this.rootLocatorVersion;
+      const rootStat = this.rootStat;
+      const assertCurrent = () => {
+        if (closed) throw sourceError('source-recovery', 'The Note recall lease ended.');
+        this.assertCurrentRoot(root);
+        if (this.rootObservedRevision !== rootRevision || this.rootLocatorVersion !== locatorVersion || !sameStat(rootStat, lstatSync(root)) || rootStat.mode !== lstatSync(root).mode) throw sourceError('source-recovery', 'The recall folder was replaced.');
+        for (const component of parent.chain) {
+          const named = lstatSync(component.namedPath);
+          if (!named.isDirectory() || named.isSymbolicLink() || !sameIdentity(component.stat, named) || component.stat.mode !== named.mode || component.stat.uid !== named.uid || component.stat.gid !== named.gid || component.stat.ctimeMs !== named.ctimeMs) throw sourceError('source-recovery', 'The recall directory was replaced.');
+        }
+        const named = lstatSync(path.join(root, ...note.path.split('/')));
+        if (!sameStat(stat, fstatSync(fd)) || !sameStat(stat, named) || named.isSymbolicLink() || named.nlink !== 1) throw sourceError('conflict', 'The recall Note changed.');
+        if (!sameStat(markerStat, fstatSync(markerFd)) || !sameStat(markerStat, lstatSync(markerPath))) throw sourceError('source-recovery', 'The recall folder witness changed.');
+      };
+      await parent.handle.close();
+      assertCurrent();
+      return Object.freeze({ note, assertCurrent, close() { if (!closed) { closed = true; for (const descriptor of descriptors) closeSync(descriptor); } } });
+    } catch (error) {
+      for (const descriptor of descriptors) closeSync(descriptor);
+      await parent.handle.close().catch(() => {});
+      throw error;
+    }
   }
 
   async browse(input = {}) {
