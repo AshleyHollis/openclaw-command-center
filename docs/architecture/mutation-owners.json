@@ -41,6 +41,10 @@
   "httpCommands": [
     {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachments.list","owner":"topic-document-filing","mode":"prepare"},
     {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachment.review","owner":"topic-document-filing","mode":"prepare"},
+    {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachment.prepare","owner":"topic-document-filing","mode":"prepare"},
+    {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachment.file","owner":"topic-document-filing","mode":"mutate"},
+    {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachment.check","owner":"topic-document-filing","mode":"reconcile"},
+    {"route":"/plugins/command-center/api/topic/actions","action":"documents.attachment.reopen","owner":"topic-document-filing","mode":"prepare"},
     {"route":"/plugins/command-center/api/dashboard/actions","action":"settings.update","owner":"notification-settings","mode":"write"},
     {"route":"/plugins/command-center/api/topics/actions","action":"create","owner":"topic-provisioning","mode":"write"},
     {"route":"/plugins/command-center/api/topics/actions","action":"provisioning.retry","owner":"topic-provisioning","mode":"write"},

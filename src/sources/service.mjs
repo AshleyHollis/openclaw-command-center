@@ -223,6 +223,10 @@ export class AuthoritativeSourceService {
     if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
     return result;
   }
+  async documentsPrepareAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.prepareAttachment(input, runtime); }
+  async documentsPublishAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.filePreparedAttachment(input, runtime); }
+  async documentsCheckAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.checkPreparedAttachment(input, runtime); }
+  async documentsReopenAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.reopenPreparedAttachment(input, runtime); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled

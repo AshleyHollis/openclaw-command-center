@@ -60,5 +60,7 @@ test('filing binding and original lineage receipt roll back together when comple
   assert.equal(receipt.source.sessionId, 'fictional-session');
   assert.equal(receipt.document.referenceId, note.referenceId);
   assert.equal(f.metadata.getTopicOperation(parent.logicalOperationId).state, 'applied');
+  assert.throws(() => f.metadata.recordTopicOperation({ ...parent, state: 'pending', currentStep: 'prepared' }), { code: 'filing-owner-required' });
+  assert.throws(() => f.metadata.completeTopicProvisioning({ logicalOperationId: parent.logicalOperationId, topicId: parent.topicId }), { code: 'filing-owner-required' });
   assert.deepEqual(f.metadata.completeDocumentFiling({ logicalOperationId: parent.logicalOperationId }, () => {}), receipt);
 });

@@ -81,6 +81,7 @@ export function mountTopicNotesPanel(container, context, state) {
       } });
       if (FIRST_LIVE_FEATURES.topicDocuments) {
         attachmentReview = mountTopicAttachmentReview(controls, { host, signal: AbortSignal.any([signal, childLifetime.signal]), binding: value,
+          onFiled: document => child?.openFiledDocument(document),
           verifyContext: async () => {
             const response = await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey });
             const latest = response?.result ?? response;

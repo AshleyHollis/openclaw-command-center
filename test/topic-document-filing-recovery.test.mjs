@@ -62,9 +62,30 @@ test('original filing refuses native admission lost during staging and never cre
   await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'unauthenticated' });
   const names = await readdir(path.join(f.root, 'Documents'));
   assert.ok(names.every(name => name.startsWith('.')));
-  const checked = await f.service.documents.checkPreparedAttachment(input, runtime);
-  assert.equal(checked.status, 'unknown');
+  await assert.rejects(() => f.service.documents.checkPreparedAttachment(input, runtime), { code: 'unknown' });
   assert.deepEqual(await readdir(path.join(f.root, 'Documents')), names);
+});
+
+test('prepared replay and reopen refuse equal-byte replacement of the original inode', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  const filed = await f.service.documents.filePreparedAttachment(input, runtime);
+  const target = path.join(f.root, filed.value.document.path);
+  const notes = [...f.service.topicServices.values()][0].notes;
+  const read = notes.read.bind(notes); let replace = true;
+  notes.read = async command => {
+    const document = await read(command);
+    if (replace && command.observe === false) {
+      replace = false;
+      await rename(target, path.join(f.directory, 'retained-causal-original.pdf'));
+      await writeFile(target, bytes);
+    }
+    return document;
+  };
+  await assert.rejects(() => f.service.documents.reopenPreparedAttachment(input, runtime), { code: 'conflict' });
+  f.service.documents.attachmentReader = { resolve: async () => { throw new Error('Retained preparation must not reread attachment'); } };
+  const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
+  await assert.rejects(() => f.service.documents.prepareAttachment({ ...input, selection }, runtime), { code: 'conflict' });
 });
 
 async function fixture(t, hooks = {}) {

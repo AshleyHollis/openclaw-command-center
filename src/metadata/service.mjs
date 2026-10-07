@@ -2131,9 +2131,10 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     ? readMany('SELECT * FROM source_locators ORDER BY reference_id', [], mapLocator)
     : readMany('SELECT locator.* FROM source_locators AS locator JOIN source_references AS reference ON reference.reference_id = locator.reference_id WHERE reference.topic_id = ? ORDER BY locator.reference_id', [requiredString(topicId, 'topicId')], mapLocator);
 
-  function recordTopicOperation(db, input = {}, structural = false) {
+  function recordTopicOperation(db, input = {}, structural = false, filing = false) {
     const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
     const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    if (!filing && (input.operationKind === 'documents.file.v2' || existing?.operation_kind === 'documents.file.v2')) throw new CommandCenterMetadataError('filing-owner-required', 'Original filing transitions require their dedicated owner.');
     if (input.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE || (existing && jsonValue(existing.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE)) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning progress requires its dedicated owner.');
     reconciliationClaims.assertChildClaim(db, { logicalOperationId }, true);
     const intentJson = JSON.stringify(input.intent ?? {});
@@ -2146,6 +2147,25 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     return mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId));
   }
   service.recordTopicOperation = (input = {}) => mutate(null, db => recordTopicOperation(db, input));
+
+  service.prepareDocumentFiling = (input, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous preparation authority is required.');
+    if (input.operationKind !== 'documents.file.v2' || input.intent?.version !== 2 || input.state !== 'pending' || input.currentStep !== 'prepared') throw new CommandCenterMetadataError('invalid-value', 'One original prepared filing is required.');
+    const existing = service.getTopicOperation(input.logicalOperationId);
+    if (existing && (existing.operationKind !== input.operationKind || JSON.stringify(existing.intent) !== JSON.stringify(input.intent))) throw new CommandCenterMetadataError('intent-mismatch', 'The original filing intent changed.');
+    const record = existing ?? recordTopicOperation(db, input, false, true);
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous preparation authority is required.');
+    return record;
+  });
+  service.claimDocumentFiling = ({ logicalOperationId }, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous dispatch authority is required.');
+    const existing = service.getTopicOperation(logicalOperationId);
+    if (existing?.operationKind !== 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Original filing is required.');
+    if (existing.currentStep !== 'prepared' || existing.state !== 'pending') return { dispatch: false, operation: existing };
+    const operation = recordTopicOperation(db, { ...existing, state: 'unknown', currentStep: 'dispatch-claimed' }, false, true);
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous dispatch authority is required.');
+    return { dispatch: true, operation };
+  });
 
   // Complete only the original filing whose existing Note owner has already
   // recorded causal publication. Binding and retained public receipt share the
@@ -2169,7 +2189,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       source: { referenceId: intent.sessionReferenceId, attachmentReferenceId: referenceId, sessionKey: intent.request.sessionKey, sessionId: intent.request.sessionId, entryId: intent.request.selection.entryId, mediaIndex: intent.request.selection.mediaIndex, generation: intent.request.selection.generation, createdAt: intent.sourceCreatedAt },
       document: { referenceId: note.referenceId, path: intent.documentPath, revision: intent.sourceDigest, contentType: intent.contentType, sizeBytes: intent.sizeBytes } };
     if (parent.state === 'applied' && JSON.stringify(parent.result?.value) !== JSON.stringify(receipt)) throw new CommandCenterMetadataError('conflict', 'The retained original filing receipt changed.');
-    recordTopicOperation(db, { ...parent, state: 'applied', currentStep: 'complete', result: { value: receipt }, updatedAt: now });
+    recordTopicOperation(db, { ...parent, state: 'applied', currentStep: 'complete', result: { value: receipt }, updatedAt: now }, false, true);
     if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Asynchronous completion authority is unsupported.');
     return receipt;
   });
@@ -2463,7 +2483,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.listSourceRecovery = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM source_recovery ORDER BY recovery_id', [], mapRecovery) : readMany('SELECT * FROM source_recovery WHERE topic_id = ? ORDER BY recovery_id', [requiredString(topicId, 'topicId')], mapRecovery);
 
   service.completeTopicProvisioning = (input = {}) => mutate(null, (db) => {
-    const parent = db.prepare('SELECT intent_json FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    const parent = db.prepare('SELECT intent_json,operation_kind FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (parent?.operation_kind === 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Filing completion requires its dedicated owner.');
     if (parent && jsonValue(parent.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning activation requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId);
     if (topic?.lifecycle === 'active' && topic.activated_at) {
@@ -2515,6 +2536,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   }
   service.applySessionRecoveryRelink = (input = {}) => mutate(null, db => applySessionRecoveryRelink(db, input));
   service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
+    if (service.getTopicOperation(input.logicalOperationId)?.operationKind === 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Filing recovery requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
     if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
     const recoveryReference = input.operationKind === 'topics.recovery.verify' ? db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(input.intent.referenceId) : null;

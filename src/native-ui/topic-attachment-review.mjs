@@ -1,7 +1,7 @@
 const route = '/plugins/command-center/api/topic/actions';
 
 /** Review original native attachments inside the existing Topic Files surface. */
-export function mountTopicAttachmentReview(container, { host, signal, binding, verifyContext }) {
+export function mountTopicAttachmentReview(container, { host, signal, binding, verifyContext, onFiled }) {
   const lifetime = new AbortController();
   const activeSignal = AbortSignal.any([signal, lifetime.signal]);
   const document = container.ownerDocument;
@@ -17,10 +17,15 @@ export function mountTopicAttachmentReview(container, { host, signal, binding, v
   const more = document.createElement('button'); more.type = 'button'; more.textContent = 'Load more messages'; more.hidden = true;
   const destination = document.createElement('p');
   const file = document.createElement('button'); file.type = 'button'; file.textContent = 'File original'; file.disabled = true; file.hidden = true;
+  const operation = document.createElement('input'); operation.setAttribute('aria-label', 'Saved filing ID'); operation.placeholder = 'Saved filing ID to check';
+  const check = document.createElement('button'); check.type = 'button'; check.textContent = 'Check result';
+  const reopen = document.createElement('button'); reopen.type = 'button'; reopen.textContent = 'Open filed document'; reopen.hidden = true;
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
-  region.append(status, select, subfolder, review, more, destination, file, cancel);
+  region.append(status, select, subfolder, review, more, destination, file, operation, check, reopen, cancel);
   container.append(open, region);
   let generation = 0; let attachments = []; let nextOffset = null;
+  let prepared = null; let submitted = false; let busy = false;
+  const freezeFields = value => { select.disabled = value; subfolder.disabled = value; operation.readOnly = value; cancel.disabled = value; review.disabled = value; more.disabled = value; file.disabled = value || !prepared?.canFile; check.disabled = value; reopen.disabled = value; };
   const current = pending => !activeSignal.aborted && generation === pending && host.connection.connected && host.connection.canRead && host.connection.canWrite;
   const unavailable = () => !host.connection.connected || !host.connection.canRead || !host.connection.canWrite;
   async function request(action, fields, pending) {
@@ -31,7 +36,7 @@ export function mountTopicAttachmentReview(container, { host, signal, binding, v
     if (!current(pending)) throw new Error('The selected Conversation changed.');
     if (typeof response?.body !== 'string' || new TextEncoder().encode(response.body).length > 32 * 1024) throw new Error('Attachment review is unavailable.');
     const value = JSON.parse(response.body);
-    if (response.status !== 200 || value.schemaVersion !== 1 || value.status === 'error' || value.result?.topicId !== binding.topicId) throw new Error('Attachment review is unavailable. Refresh this Conversation and try again.');
+    if (response.status !== 200 || value.schemaVersion !== 1 || value.status === 'error' || (value.result?.topicId ?? value.result?.value?.topicId ?? binding.topicId) !== binding.topicId) throw new Error('Attachment action did not confirm a result. Keep the saved filing ID and Check result.');
     await verifyContext();
     if (!current(pending)) throw new Error('The selected Conversation changed.');
     return value.result;
@@ -63,21 +68,47 @@ export function mountTopicAttachmentReview(container, { host, signal, binding, v
   review.addEventListener('click', async () => {
     const attachment = attachments[Number(select.value)]; if (!attachment || unavailable()) return;
     const pending = ++generation; review.disabled = true; more.disabled = true;
+    if (!operation.value) operation.value = crypto.randomUUID();
     destination.textContent = ''; file.hidden = true; status.textContent = 'Reviewing the original and linked Topic destination…';
     try {
-      const result = await request('documents.attachment.review', { selection: attachment.selection, ...(subfolder.value.trim() ? { subfolder: subfolder.value.trim() } : {}) }, pending);
-      if (result.status !== 'review' || typeof result.document?.path !== 'string' || !result.document.path.startsWith('Documents/') || result.source?.sessionId !== binding.sessionId || result.source?.entryId !== attachment.selection.entryId) throw new Error('The original attachment review changed. Select it again.');
+      const result = await request('documents.attachment.prepare', { logicalOperationId: operation.value, selection: attachment.selection, ...(subfolder.value.trim() ? { subfolder: subfolder.value.trim() } : {}) }, pending);
+      if (!['prepared', 'filed'].includes(result.status) || result.logicalOperationId !== operation.value || typeof result.document?.path !== 'string' || !result.document.path.startsWith('Documents/') || result.source?.sessionId !== binding.sessionId || result.source?.entryId !== attachment.selection.entryId) throw new Error('The original attachment review changed. Select it again.');
+      prepared = result;
       destination.textContent = `${result.topicName || binding.name || 'Topic'} / ${result.document.path} · ${result.document.sizeBytes} bytes · ${result.document.contentType || 'Original file'}. Source: this Conversation.`;
       file.hidden = false;
       // Publication is deliberately unavailable until the native source commit
       // contract and retained original-intent owner are integrated and qualified.
-      status.textContent = 'Destination reviewed. Filing is unavailable in this build.';
+      file.disabled = result.canFile !== true;
+      reopen.hidden = result.status !== 'filed';
+      status.textContent = result.canFile === true ? `Destination reviewed. Saved filing ID: ${operation.value}. File the original when ready.` : 'Destination reviewed. Filing is unavailable in this build.';
     } catch (error) { if (current(pending)) status.textContent = host.redact(error.message); }
     finally { if (current(pending)) { review.disabled = false; more.disabled = false; } }
   }, { signal: activeSignal });
-  const invalidateReview = () => { generation++; destination.textContent = ''; file.hidden = true; review.disabled = attachments.length === 0 || unavailable(); more.disabled = unavailable(); };
+  async function filingAction(action) {
+    if (busy || unavailable() || !/^[0-9a-f-]{36}$/iu.test(operation.value)) return;
+    const pending = ++generation; busy = true;
+    if (action === 'documents.attachment.file') submitted = true;
+    freezeFields(true); status.textContent = `${action.endsWith('.file') ? 'Filing original' : 'Checking original filing'}. Saved filing ID: ${operation.value}.`;
+    try {
+      const result = await request(action, { logicalOperationId: operation.value }, pending);
+      const receipt = result.value ?? result;
+      if (result.status === 'applied' || result.status === 'filed') {
+        if (receipt.logicalOperationId !== operation.value || receipt.source?.sessionId !== binding.sessionId || typeof receipt.document?.referenceId !== 'string') throw new Error('The original filing receipt is unavailable. Keep the saved ID.');
+        submitted = true; prepared = { ...receipt, canFile: false }; file.disabled = true; reopen.hidden = false;
+        status.textContent = `Original filed: ${receipt.document.path}. Source: this Conversation, message ${receipt.source.entryId}. Saved filing ID: ${operation.value}.`;
+        if (action.endsWith('.reopen')) await onFiled?.(receipt.document);
+      } else {
+        status.textContent = `${result.status === 'not-applied' ? 'Original was not filed.' : 'Filing outcome is unknown.'} Keep saved filing ID ${operation.value}; Check result never files again.`;
+      }
+    } catch (error) { if (current(pending)) status.textContent = `${host.redact(error.message)} Saved filing ID: ${operation.value}.`; }
+    finally { busy = false; if (current(pending)) { freezeFields(false); if (submitted) { select.disabled = true; subfolder.disabled = true; operation.readOnly = true; review.disabled = true; more.disabled = true; file.disabled = true; } } }
+  }
+  file.addEventListener('click', () => { if (prepared?.canFile && !submitted) void filingAction('documents.attachment.file'); }, { signal: activeSignal });
+  check.addEventListener('click', () => void filingAction('documents.attachment.check'), { signal: activeSignal });
+  reopen.addEventListener('click', () => void filingAction('documents.attachment.reopen'), { signal: activeSignal });
+  const invalidateReview = () => { if (submitted || busy) return; generation++; prepared = null; operation.value = ''; destination.textContent = ''; file.hidden = true; reopen.hidden = true; review.disabled = attachments.length === 0 || unavailable(); more.disabled = unavailable(); };
   select.addEventListener('change', invalidateReview, { signal: activeSignal }); subfolder.addEventListener('input', invalidateReview, { signal: activeSignal });
-  cancel.addEventListener('click', () => { generation++; region.hidden = true; open.disabled = unavailable(); destination.textContent = ''; file.hidden = true; open.focus(); }, { signal: activeSignal });
+  cancel.addEventListener('click', () => { if (busy) return; generation++; region.hidden = true; open.disabled = unavailable(); destination.textContent = ''; file.hidden = true; open.focus(); }, { signal: activeSignal });
   const unsubscribe = host.subscribe(() => { open.disabled = unavailable() || !region.hidden; if (unavailable()) { generation++; review.disabled = true; more.disabled = true; file.hidden = true; destination.textContent = ''; status.textContent = 'Reconnect with write access to review filing.'; } });
   open.disabled = unavailable();
   return { dispose() { generation++; lifetime.abort(); unsubscribe(); open.remove(); region.remove(); } };

@@ -10,6 +10,10 @@ const MAX_RESPONSE_BYTES = 32 * 1024;
 const ACTION_FIELDS = Object.freeze({
   'documents.attachments.list': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'offset'],
   'documents.attachment.review': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder'],
+  'documents.attachment.prepare': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder', 'logicalOperationId'],
+  'documents.attachment.file': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
+  'documents.attachment.check': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
+  'documents.attachment.reopen': ['schemaVersion', 'action', 'topicId', 'sessionKey', 'sessionId', 'logicalOperationId'],
   'conversations.create': ['schemaVersion', 'action', 'topicId', 'label', 'expectedRevision', 'logicalOperationId', 'authoritativeSession'],
   'conversations.creation.inspect': ['schemaVersion', 'action', 'topicId'],
   'conversations.creation.reconcile': ['schemaVersion', 'action', 'topicId', 'logicalOperationId'],
@@ -119,6 +123,7 @@ function validateBody(body) {
   if (!isCanonicalUuid(body.topicId)) throw invalid('A canonical topicId is required.');
   if (body.action.startsWith('documents.')) {
     nonBlank(body.sessionKey, 'sessionKey'); nonBlank(body.sessionId, 'sessionId');
+    if (!['documents.attachments.list', 'documents.attachment.review'].includes(body.action) && !isCanonicalUuid(body.logicalOperationId)) throw invalid('The original canonical filing UUID is required.');
     if (body.action === 'documents.attachment.review' && (!body.selection || typeof body.selection !== 'object' || Array.isArray(body.selection))) throw invalid('An exact native attachment selection is required.');
     return body;
   }
@@ -180,15 +185,19 @@ async function execute(service, body, createConversationRuntime, retainDocumentA
     const runtime = await createConversationRuntime();
     if (typeof runtime?.creationAuthority?.assertCurrent !== 'function') throw invalid('Captured native request authority is required.');
     const nativeAuthority = runtime.creationAuthority;
-    let targetFence;
+    const targetFences = [];
     const reviewAuthority = Object.freeze({ principalId: nativeAuthority.principalId,
+      ...(typeof runtime.admitAttachment === 'function' ? { admitAttachment: runtime.admitAttachment.bind(runtime) } : {}),
       assertCurrent() {
-        if (nativeAuthority.assertCurrent()?.then || targetFence?.()?.then) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
+        if (nativeAuthority.assertCurrent()?.then || targetFences.some(fence => fence()?.then)) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
       },
-      captureReviewFence(fence) { if (typeof fence !== 'function' || targetFence) throw invalid('One owner review fence is required.'); targetFence = fence; } });
+      captureReviewFence(fence) { if (typeof fence !== 'function' || targetFences.length >= 8) throw invalid('Bounded owner review fences are required.'); targetFences.push(fence); } });
     retainDocumentAuthority(reviewAuthority);
     const { action: _action, ...input } = body;
-    return service[action === 'documents.attachments.list' ? 'documentsListAttachments' : 'documentsReviewAttachment'](input, reviewAuthority);
+    const methods = { 'documents.attachments.list': 'documentsListAttachments', 'documents.attachment.review': 'documentsReviewAttachment',
+      'documents.attachment.prepare': 'documentsPrepareAttachment', 'documents.attachment.file': 'documentsPublishAttachment',
+      'documents.attachment.check': 'documentsCheckAttachment', 'documents.attachment.reopen': 'documentsReopenAttachment' };
+    return service[methods[action]](input, reviewAuthority);
   }
   if (Object.hasOwn(conversationRecoveryMethods, action)) {
     if (!createConversationRuntime) throw invalid('Conversation recovery requires authenticated native request authority.');
