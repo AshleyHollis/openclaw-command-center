@@ -13,7 +13,7 @@ test.after(release);
 const linux = { skip: process.platform !== 'linux' && 'Descriptor-relative Note publication requires Linux.' };
 const bytes = Buffer.from('fictional original attachment bytes');
 
-async function fixture(t) {
+async function fixture(t, hooks = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'topic-filing-recovery-'));
   const root = path.join(directory, 'vault');
   const stateDir = path.join(directory, 'state');
@@ -26,7 +26,7 @@ async function fixture(t) {
   let service;
   const open = () => {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
-    service = createAuthoritativeSourceService({ metadata, root, capabilities: { notes: true, sessions: true },
+    service = createAuthoritativeSourceService({ metadata, root, noteRecoveryEffects: false, ...hooks, capabilities: { notes: true, sessions: true },
       sessionStore: { getSessionEntry: () => ({ sessionId, updatedAt: 10 }), listSessionEntries: () => [{ sessionKey, entry: { sessionId, updatedAt: 10 } }] },
       api: { runtime: { media: { loadWebMedia: async () => ({ buffer: bytes, contentType: 'application/pdf', fileName: 'original.pdf' }) } } } });
   };
@@ -49,4 +49,22 @@ test('filing retry refuses an equal-byte foreign replacement after durable resta
   await assert.rejects(() => f.service.documentsFileAttachment(f.input), { code: 'conflict' });
   assert.deepEqual(await readFile(original), bytes);
   assert.deepEqual(await readFile(path.join(f.directory, 'retained-original.pdf')), bytes);
+});
+
+test('filing retry completes its interrupted publication and missing attachment binding after restart', linux, async t => {
+  let interrupt = true;
+  const f = await fixture(t, { afterAtomicPublish: async () => {
+    if (interrupt) { interrupt = false; throw new Error('fictional publication interruption'); }
+  } });
+  await assert.rejects(() => f.service.documentsFileAttachment(f.input), /fictional publication interruption/);
+  const names = await readdir(path.join(f.root, 'Documents'));
+  f.reopen();
+  const recovered = await f.service.documentsFileAttachment(f.input);
+  assert.equal(recovered.status, 'applied');
+  assert.equal(recovered.value.status, 'filed');
+  assert.deepEqual(await readFile(path.join(f.root, recovered.value.document.path)), bytes);
+  assert.deepEqual(await readdir(path.join(f.root, 'Documents')), names);
+  const retry = await f.service.documentsFileAttachment(f.input);
+  assert.equal(retry.logicalOperationId, recovered.logicalOperationId);
+  assert.deepEqual(retry.value, recovered.value);
 });
