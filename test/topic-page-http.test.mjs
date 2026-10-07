@@ -345,3 +345,12 @@ test('attachment review actions fence native authority immediately before privat
   assert.equal(response.statusCode, 422);
   assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
 });
+
+test('attachment review actions refuse an asynchronous authority contract before private response delivery', async () => {
+  const service = { async documentsListAttachments() { return { schemaVersion: 1, topicId, attachments: [{ fileName: 'private-fictional-original.pdf' }] }; } };
+  const authority = { assertCurrent: () => Promise.resolve() };
+  const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
+  const response = await invoke(service, { body, handlerOptions: { createConversationRuntime: async () => ({ creationAuthority: authority }) } });
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
+});

@@ -182,7 +182,9 @@ async function execute(service, body, createConversationRuntime, retainDocumentA
     const nativeAuthority = runtime.creationAuthority;
     let targetFence;
     const reviewAuthority = Object.freeze({ principalId: nativeAuthority.principalId,
-      assertCurrent() { nativeAuthority.assertCurrent(); targetFence?.(); },
+      assertCurrent() {
+        if (nativeAuthority.assertCurrent()?.then || targetFence?.()?.then) throw Object.assign(new Error('Synchronous native review authority is required.'), { code: 'unauthenticated' });
+      },
       captureReviewFence(fence) { if (typeof fence !== 'function' || targetFence) throw invalid('One owner review fence is required.'); targetFence = fence; } });
     retainDocumentAuthority(reviewAuthority);
     const { action: _action, ...input } = body;
