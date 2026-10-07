@@ -5,7 +5,14 @@ import path from 'node:path';
 import { NoteAdapter } from '../../src/sources/notes.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../../src/sources/service.mjs';
-import { enrollNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { enrollNoteFolderIdentity, setHostDurableFolderStager, setHostFilesystemIdentityReader } from '../../src/sources/note-folder-identity.mjs';
+import { createHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
+
+// Parent and SIGKILL children share only the enrollment contract double.
+// Filesystem exclusion still uses the actual public native SQLite owner.
+const fileAccess = createHostFileAccessFixture();
+setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
+setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
 
 export async function openFixture(stateDir, hooks = {}) {
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
