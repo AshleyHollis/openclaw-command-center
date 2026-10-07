@@ -24,8 +24,9 @@ publication; its ownership is checked again after awaited media reads. This fixe
 copy-before-rejection for known foreign bindings (red16428e3/run37589358246).
 These admission checks do not close the final publication race: native invocation
 and target authority at the effect still require the separate guarded owner seam.
-The existing coordinator retains the operation receipt and performs no fresh
-create during unknown reconciliation; no schema or new operation store is added.
+The existing Note exclusion covers recovery, attachment repair and the durable
+coordinator receipt. Every retained attempt is reconcile-only, including causal
+not-applied; it never falls through to a fresh create; no schema or new operation store is added.
 Tests enter the public SourceService.documentsFileAttachment boundary with real
 isolated SQLite, enrolled Note Folder and real descriptor-relative Note writes.
 Only external native Session catalogue/media and host filesystem contracts use
@@ -44,5 +45,6 @@ and final-publication cases, Btrfs/installed pinned pair qualification and F1–
 remain open. No production reads, NAS job, shared WSL restart, merge, deployment,
 feature activation or unrelated performance measurement occurs here. Local work
 is limited to lightweight checks; hosted Linux runs the owner/filesystem lane.
+
 
 

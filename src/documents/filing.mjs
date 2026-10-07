@@ -135,6 +135,7 @@ export class TopicDocumentFilingService {
     const logicalOperationId = stableUuid('command-center.documents.file.v1', firstBinding.topicId, firstBinding.referenceId, firstBinding.sessionId, mediaRef, documentPath);
     const requestId = input.requestId ?? logicalOperationId;
     const intent = Object.freeze({ sessionKey, sessionId: firstBinding.sessionId, sessionReferenceId: firstBinding.referenceId, folderReferenceId: firstBinding.folderReferenceId, mediaRef, sourceDigest: source.digest, documentPath, contentType: source.contentType, sizeBytes: source.bytes.length });
+    const noteInput = Object.freeze({ logicalOperationId, requestId, referenceId: firstBinding.folderReferenceId, path: documentPath, content: source.bytes, sourceKind: 'document' });
     const execute = async () => {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) throw sourceError('source-recovery', 'Topic ownership changed before attachment filing.');
@@ -155,8 +156,7 @@ export class TopicDocumentFilingService {
         // existing Note owner's retained create inode and original operation.
         const recovery = current.notes.recovery;
         if (!recovery?.enabled) return { outcome: 'unknown' };
-        const noteInput = { logicalOperationId, requestId, referenceId: current.folderReferenceId, path: documentPath, content: source.bytes, sourceKind: 'document' };
-        const recovered = await recovery.runExactReconciliation(noteInput, 'create', () => recovery.reconcile(noteInput, 'create'));
+        const recovered = await recovery.reconcile(noteInput, 'create');
         if (recovered?.outcome !== 'applied') return { outcome: recovered?.outcome ?? 'unknown' };
         const document = recovered.value?.note;
         const attachment = this.metadata.getSourceReference?.(`attachment:${createHash('sha256').update(mediaRef).digest('hex')}`);
@@ -171,7 +171,16 @@ export class TopicDocumentFilingService {
         throw error;
       }
     };
-    return this.sourceService.coordinator.mutate({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    const coordinate = () => {
+      const existing = this.sourceService.coordinator.journal?.get(logicalOperationId) ?? this.metadata.getOperation?.(logicalOperationId);
+      // A retained attempt is recovery-only, even when its Note owner proves
+      // not-applied. Explicit reconciliation must never enter fresh execution.
+      return this.sourceService.coordinator[existing ? 'reconcile' : 'mutate']({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    };
+    const recovery = firstBinding.notes.recovery;
+    // Retain the existing Note exclusion through verification, source binding
+    // and the coordinator's durable filing receipt, as for ordinary Note writes.
+    return recovery?.enabled ? recovery.runExactReconciliation(noteInput, 'create', coordinate) : coordinate();
   }
 }
 
