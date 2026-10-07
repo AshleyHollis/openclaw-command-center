@@ -201,7 +201,7 @@ export default definePluginEntry({
       match: 'exact',
       handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, {
         assertAction: assertFirstLiveTopicAction,
-        createConversationRuntime: () => createRequestScopedConversationRuntime()
+        createConversationRuntime: () => createRequestScopedConversationRuntime({ includeAttachmentAdmission: FIRST_LIVE_FEATURES.topicDocuments })
       }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({

@@ -28,6 +28,17 @@ test('review selected accepted attachment resolves exact linked Topic and safe o
   assert.equal(f.effects(), 0);
 });
 
+test('original review uses the native 5 MiB bound and refuses an oversized managed copy', async () => {
+  const f = fixture();
+  const page = await f.service.listAttachments(f.input, f.runtime);
+  f.service.mediaLoader = async (_ref, options) => {
+    assert.equal(options.maxBytes, 5 * 1024 * 1024);
+    return { buffer: Buffer.alloc(options.maxBytes + 1) };
+  };
+  await assert.rejects(() => f.service.reviewAttachment({ ...f.input, selection: page.attachments[0].selection }, f.runtime), { code: 'response-too-large' });
+  assert.equal(f.effects(), 0);
+});
+
 test('review refuses lost authority, wrong Conversation, unsafe path and stale selection before any file effect', async () => {
   const f = fixture();
   const selection = (await f.service.listAttachments(f.input, f.runtime)).attachments[0].selection;

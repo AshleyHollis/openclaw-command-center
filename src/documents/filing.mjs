@@ -6,6 +6,7 @@ import { revisionForBytes } from '../sources/reference.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const MAX_ORIGINAL_FILING_BYTES = 5 * 1024 * 1024;
 
 function canonicalInboundMediaRef(value) {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0) {
@@ -162,7 +163,7 @@ export class TopicDocumentFilingService {
     const identity = this.attachmentIdentity(binding);
     const attachment = await this.attachmentReader.resolve(identity, input.selection);
     this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
-    const source = await this.loadExactMedia(attachment.mediaRef);
+    const source = await this.loadExactMedia(attachment.mediaRef, MAX_ORIGINAL_FILING_BYTES);
     if (attachment.sizeBytes !== null && attachment.sizeBytes !== source.bytes.length || attachment.contentType && source.contentType && attachment.contentType !== source.contentType) throw sourceError('conflict', 'The original managed attachment no longer matches its accepted native media fact.');
     await this.attachmentReader.resolve(identity, attachment.selection);
     const latest = await this.resolveBoundConversation(input);
@@ -177,10 +178,10 @@ export class TopicDocumentFilingService {
       document: Object.freeze({ path: `${destination}/${filename}`, revision: source.digest, contentType: attachment.contentType ?? source.contentType, sizeBytes: source.bytes.length }) });
   }
 
-  async loadExactMedia(mediaRef) {
-    const loaded = await this.mediaLoader(mediaRef, { maxBytes: MAX_ATTACHMENT_BYTES, optimizeImages: false });
+  async loadExactMedia(mediaRef, maxBytes = MAX_ATTACHMENT_BYTES) {
+    const loaded = await this.mediaLoader(mediaRef, { maxBytes, optimizeImages: false });
     if (!loaded || !Buffer.isBuffer(loaded.buffer)) throw sourceError('unavailable', 'The managed attachment could not be read.');
-    if (loaded.buffer.length > MAX_ATTACHMENT_BYTES) throw sourceError('response-too-large', 'The managed original exceeds the bounded filing limit.');
+    if (loaded.buffer.length > maxBytes) throw sourceError('response-too-large', 'The managed original exceeds the bounded filing limit.');
     return Object.freeze({
       bytes: Buffer.from(loaded.buffer),
       digest: revisionForBytes(loaded.buffer),
@@ -223,12 +224,13 @@ export class TopicDocumentFilingService {
         if (checked.status !== 'applied') throw sourceError('source-recovery', 'The original completed filing no longer has causal publication proof.');
         return checked.value;
       }
-      return Object.freeze({ ...this.preparedReceipt(retained), canFile: retained.currentStep === 'prepared' && typeof runtime.admitAttachment === 'function' });
+      return Object.freeze({ ...this.preparedReceipt(retained), canFile: retained.currentStep === 'prepared' && retained.intent.sizeBytes <= MAX_ORIGINAL_FILING_BYTES && typeof runtime.admitAttachment === 'function' });
     }
     const binding = await this.resolveBoundConversation(request);
     const targetBasis = this.reviewTargetBasis(binding);
     const { logicalOperationId: _id, ...reviewInput } = input;
     const review = await this.reviewAttachment(reviewInput, runtime);
+    if (review.document.sizeBytes > MAX_ORIGINAL_FILING_BYTES) throw sourceError('response-too-large', 'Original filing supports attachments up to 5 MiB.');
     const attachment = await this.attachmentReader.resolve(this.attachmentIdentity(binding), request.selection);
     if (this.reviewTargetBasis(binding) !== targetBasis) throw sourceError('conflict', 'The original filing destination changed during preparation.');
     this.sourceService.assertDocumentReviewConversation?.(binding);
@@ -299,15 +301,28 @@ export class TopicDocumentFilingService {
       // host runtime, never JSON or configuration. No fallback promotes a read
       // snapshot into source commit authority.
       if (typeof runtime.admitAttachment !== 'function') throw sourceError('capability-unavailable', 'Native accepted attachment admission is unavailable.');
+      if (record.intent.sizeBytes > MAX_ORIGINAL_FILING_BYTES) throw sourceError('response-too-large', 'Original filing supports attachments up to 5 MiB.');
       const claim = this.metadata.claimDocumentFiling({ logicalOperationId: current.logicalOperationId }, assertCurrent);
       if (!claim.dispatch) return this.checkPreparedAttachment(input, runtime, true);
-      const source = await this.loadExactMedia(record.intent.mediaRef);
-      if (source.digest !== record.intent.sourceDigest || source.bytes.length !== record.intent.sizeBytes) throw sourceError('conflict', 'The original attachment bytes changed.');
       const admission = await runtime.admitAttachment({ ...this.attachmentIdentity(binding), selection: record.intent.request.selection,
-        mediaRef: record.intent.mediaRef, sourceDigest: record.intent.sourceDigest, sizeBytes: record.intent.sizeBytes });
-      if (typeof admission?.withCommit !== 'function') throw sourceError('capability-unavailable', 'Native synchronous attachment admission is unavailable.');
-      assertCurrent();
-      await binding.notes.create({ ...noteInput, content: source.bytes }, { commit: effect => admission.withCommit(() => { assertCurrent(); return effect(); }) });
+        mediaRef: record.intent.mediaRef });
+      let failed = false;
+      let failure;
+      try {
+        if (typeof admission?.publish !== 'function' || typeof admission?.close !== 'function' || typeof admission?.getOriginalBytes !== 'function') throw sourceError('capability-unavailable', 'Native accepted attachment publication is unavailable.');
+        assertCurrent();
+        if (record.intent.sizeBytes > MAX_ORIGINAL_FILING_BYTES || admission.originalDigest !== record.intent.sourceDigest || admission.sizeBytes !== record.intent.sizeBytes) throw sourceError('conflict', 'The original attachment bytes changed or exceed the supported filing bound.');
+        const bytes = admission.getOriginalBytes();
+        if (!Buffer.isBuffer(bytes) || bytes.length !== record.intent.sizeBytes || revisionForBytes(bytes) !== record.intent.sourceDigest) throw sourceError('conflict', 'The admitted original copy differs from the frozen filing intent.');
+        await binding.notes.create({ ...noteInput, content: bytes }, { publish: effect => admission.publish(() => { assertCurrent(); effect(); }) });
+      } catch (error) {
+        failed = true;
+        failure = error;
+      } finally {
+        try { await admission?.close?.(); }
+        catch (error) { failure = failed ? new AggregateError([failure, error], 'Original publication and native custody cleanup failed.', { cause: failure }) : error; failed = true; }
+      }
+      if (failed) throw failure;
       return this.checkPreparedAttachment(input, runtime, true);
     });
   }

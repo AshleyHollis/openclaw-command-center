@@ -558,12 +558,14 @@ export class NoteAdapter {
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
         if (runtime !== undefined) {
-          if (typeof runtime.commit !== 'function') throw sourceError('unauthenticated', 'Trusted synchronous create admission is required.');
+          if (typeof runtime.publish !== 'function') throw sourceError('unauthenticated', 'Trusted native create publication is required.');
           let published = false;
+          let consumed = false;
           let active = true;
           const publish = () => {
             if (!active) throw sourceError('unauthenticated', 'The create admission callback expired.');
-            if (published) throw sourceError('conflict', 'The create admission callback was already consumed.');
+            if (consumed) throw sourceError('conflict', 'The create admission callback was already consumed.');
+            consumed = true;
             this.assertCurrentRoot(root);
             runtime.folderWitness.assertCurrent();
             for (const part of parent.chain) if (!sameIdentity(lstatSync(part.namedPath), part.stat)) throw sourceError('conflict', 'The destination directory changed before publication.');
@@ -572,9 +574,8 @@ export class NoteAdapter {
             linkSync(temporary, parent.target);
             published = true;
           };
-          let result;
-          try { result = runtime.commit(publish); } finally { active = false; }
-          if (result?.then || !published) throw sourceError('unauthenticated', 'Create admission must synchronously publish exactly once.');
+          try { await runtime.publish(publish); } finally { active = false; }
+          if (!published) throw sourceError('unauthenticated', 'Create admission must publish exactly once.');
         } else await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {

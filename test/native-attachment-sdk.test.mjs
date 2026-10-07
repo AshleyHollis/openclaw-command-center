@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createNativeAttachmentReader } from '../src/documents/native-attachments.mjs';
+import { createRequestScopedConversationRuntime } from '../src/bridge/gateway-method-dispatch.mjs';
 
 // Exercise the hash-verified native26a9 public SDK, not a transcript/media double.
 // The accepted message is seeded by the native strict append owner; an actual
@@ -22,6 +23,14 @@ test('real pinned native SDK retains scoped accepted media facts through bounded
   });
   const nativeStore = await import('openclaw/plugin-sdk/session-store-runtime');
   const nativeTranscript = await import('openclaw/plugin-sdk/session-transcript-runtime');
+  const context = {};
+  const scope = { pluginId: 'command-center', gatewayMethodDispatchAllowed: true,
+    client: { authenticatedUserProfile: { profileId: 'fictional-principal' }, connect: { role: 'operator', scopes: ['operator.write'] } }, resolveGatewayContext: () => context };
+  const request = await createRequestScopedConversationRuntime({ getRequestScope: () => scope, includeAttachmentAdmission: true });
+  const supportsAdmission = nativeTranscript.ACCEPTED_SESSION_ATTACHMENT_ADMISSION_VERSION === 1
+    && nativeTranscript.ACCEPTED_SESSION_ATTACHMENT_MAX_BYTES === 5 * 1024 * 1024
+    && typeof nativeTranscript.prepareAcceptedSessionAttachmentAdmission === 'function';
+  assert.equal(typeof request.admitAttachment, supportsAdmission ? 'function' : 'undefined');
   const identity = { agentId: 'main', sessionKey: 'agent:main:fictional-attachments', sessionId: 'fictional-attachments-incarnation' };
   await nativeStore.patchSessionEntry({ agentId: identity.agentId, sessionKey: identity.sessionKey,
     fallbackEntry: { sessionId: identity.sessionId, lifecycleRevision: 'fictional-life', updatedAt: 1 }, update: entry => entry });

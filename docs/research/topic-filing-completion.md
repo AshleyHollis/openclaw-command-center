@@ -1,5 +1,9 @@
 # Original attachment filing completion successor
 
+The synchronous withCommit proposal below is historical PR373 coordination.
+The next isolated successor consumes the actual awaited native v1 publication
+contract; see [native contract adaptation](topic-filing-native-contract.md).
+
 This independent Class 3 successor starts at PR372 head
 93b7b8888b1f034fb80885e48714aebbb8b84415. All feature flags remain false.
 Native26a qualification, NAS jobs and deployments are untouched.

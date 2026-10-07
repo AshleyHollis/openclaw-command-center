@@ -80,3 +80,16 @@ test('late identical preparation cannot reset a claimed original dispatch', asyn
   assert.equal(replay.status, 'unknown');
   assert.equal(replay.canFile, false);
 });
+
+test('an oversized preparation retained from the prior contract is review-only', async t => {
+  const f = await fixture(t);
+  const service = f.service();
+  await service.prepareAttachment(f.input, f.runtime);
+  const original = f.metadata.getTopicOperation(f.input.logicalOperationId);
+  const logicalOperationId = '00000000-0000-4000-8000-000000000124';
+  f.metadata.prepareDocumentFiling({ logicalOperationId, topicId: original.topicId, operationKind: 'documents.file.v2', state: 'pending', currentStep: 'prepared',
+    intent: { ...original.intent, sizeBytes: 5 * 1024 * 1024 + 1, noteLogicalOperationId: '00000000-0000-4000-8000-000000000125' } }, () => {});
+  const runtime = { ...f.runtime, admitAttachment: () => { throw new Error('Oversized original cannot enter native admission.'); } };
+  assert.equal((await service.prepareAttachment({ ...f.input, logicalOperationId }, runtime)).canFile, false);
+  assert.equal(f.metadata.getTopicOperation(logicalOperationId).currentStep, 'prepared');
+});
