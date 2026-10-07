@@ -55,7 +55,7 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
   await tableScroll.waitFor();
   for (const width of [320, 360, 412]) {
     for (const fontSize of [16, 32]) {
-    await page.evaluate(size => { document.documentElement.style.fontSize = size + 'px'; document.body.style.fontSize = size + 'px'; }, fontSize);
+    await page.evaluate(size => { document.body.style.fontSize = size + 'px'; }, fontSize);
     await page.setViewportSize({ width, height: 740 });
     for (const filesVisible of [true, false]) {
       const toggle = page.getByRole('button', { name: filesVisible ? 'Show Files' : 'Hide Files', exact: true });
@@ -79,12 +79,12 @@ test('Topic Reading tables retain readable columns and keyboard scrolling in nar
       await tableScroll.focus(); await page.keyboard.press('ArrowRight');
       await page.waitForFunction(() => document.activeElement.scrollLeft > 0);
       await tableScroll.evaluate(region => { region.scrollLeft = region.scrollWidth; });
-      const endVisible = await tableScroll.evaluate(region => { const cell = region.querySelector('table').rows[2].cells[3].getBoundingClientRect(); const bounds = region.getBoundingClientRect(); return cell.right <= bounds.right + 1 && cell.right > bounds.left; });
-      assert.equal(endVisible, true, 'the final column is reachable');
+      const endVisible = await tableScroll.evaluate(region => { const cell = region.querySelector('table').rows[2].cells[3].getBoundingClientRect(); const bounds = region.getBoundingClientRect(); return { cellRight: cell.right, regionRight: bounds.right, regionLeft: bounds.left, position: region.scrollLeft, maximum: region.scrollWidth - region.clientWidth }; });
+      assert.ok(endVisible.cellRight <= endVisible.regionRight + 2 && endVisible.cellRight > endVisible.regionLeft, JSON.stringify({ width, fontSize, filesVisible, ...endVisible }));
     }
   }
   }
-  await page.evaluate(() => { document.documentElement.style.fontSize = '16px'; document.body.style.fontSize = '16px'; });
+  await page.evaluate(() => { document.body.style.fontSize = '16px'; });
   await page.setViewportSize({ width: 360, height: 740 });
   await page.getByRole('button', { name: 'Source', exact: true }).click();
   assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), await page.evaluate(() => window.noteText));

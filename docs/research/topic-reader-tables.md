@@ -44,7 +44,7 @@ Use a fictional Date / Area / Decision / Notes table through mountTopicPage and
 the existing native explorer contract fixture. Cover 320, 360 and 412 CSS pixels,
 Files shown/hidden, stacked native Chat fixture, keyboard horizontal scrolling,
 reachability of the final column, single-line dates, exact Source and unchanged
-unsent draft. Doubled root/body font sizes exercise additional reflow pressure;
+unsent draft. Doubled body font sizes exercise additional reflow pressure;
 they are not proof of browser or Android 200% zoom.
 
 Retain reader, sanitized renderer, media preview, navigation and architecture
