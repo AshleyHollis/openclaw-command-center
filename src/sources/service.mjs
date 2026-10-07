@@ -1,4 +1,5 @@
 import { gzipSync } from 'node:zlib';
+import { FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstat, realpath } from 'node:fs/promises';
 import { createActivityService } from '../activity/service.mjs';
@@ -202,12 +203,32 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] }); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  assertDocumentReviewConversation(binding) {
+    this.requireTopicService({ topicId: binding.topicId }, { write: true, requiredSourceKinds: ['note_folder', 'session'] });
+    const store = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
+    if (typeof store?.getSessionEntry !== 'function') throw sourceError('capability-unavailable', 'The synchronous native Conversation read owner is unavailable.');
+    const entry = store.getSessionEntry({ agentId: binding.sessionKey.split(':')[1], sessionKey: binding.sessionKey, readConsistency: 'latest' });
+    if (entry?.then) throw sourceError('capability-unavailable', 'The native Conversation review fence requires synchronous readback.');
+    if (entry?.sessionId !== binding.sessionId) throw sourceError('source-recovery', 'The Conversation was replaced before attachment review delivery.');
+  }
+  async documentsListAttachments(input = {}, runtime) {
+    const { schemaVersion: _version, topicId, ...selection } = input;
+    const result = await this.documents.listAttachments({ topicId, ...selection }, runtime);
+    if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment selection requires the exact linked Topic.');
+    return result;
+  }
+  async documentsReviewAttachment(input = {}, runtime) {
+    const { schemaVersion: _version, topicId, ...selection } = input;
+    const result = await this.documents.reviewAttachment({ topicId, ...selection }, runtime);
+    if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    return result;
+  }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled
     // result may make a native maintenance turn pending; a retry reaches this
     // point after the filing owner has recovered its exact receipt.
-    if (this.maintenanceSchedule && ['applied', 'reconciled'].includes(result?.status)) {
+    if (FIRST_LIVE_FEATURES.noteMaintenance && this.maintenanceSchedule && ['applied', 'reconciled'].includes(result?.status)) {
       await this.maintenanceSchedule.schedule({ sessionKey: input.sessionKey, reason: 'a permanently filed attachment' });
     }
     return result;

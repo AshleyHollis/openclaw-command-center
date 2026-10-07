@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { createNativeAttachmentReader } from './native-attachments.mjs';
 import { sourceError, assertNoUnexpectedKeys, nonBlank } from '../sources/errors.mjs';
 import { revisionForBytes } from '../sources/reference.mjs';
 
@@ -79,11 +80,12 @@ function publicReceipt({ topicId, sourceReference, document, mediaRef, contentTy
  * delegates durable file publication/recovery to the existing Note owner.
  */
 export class TopicDocumentFilingService {
-  constructor({ sourceService, metadata, mediaLoader } = {}) {
+  constructor({ sourceService, metadata, mediaLoader, attachmentReader } = {}) {
     if (!sourceService || !metadata || typeof mediaLoader !== 'function') throw new TypeError('Topic document filing requires source, metadata, and managed-media capabilities.');
     this.sourceService = sourceService;
     this.metadata = metadata;
     this.mediaLoader = mediaLoader;
+    this.attachmentReader = attachmentReader ?? createNativeAttachmentReader();
   }
 
   async resolveBoundConversation({ sessionKey, sessionId }) {
@@ -96,9 +98,88 @@ export class TopicDocumentFilingService {
     return Object.freeze({ ...binding, folderReferenceId: folders[0].referenceId, notes: service.notes });
   }
 
+  assertReviewCurrent(runtime) {
+    if (typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw sourceError('unauthenticated', 'Current synchronous native request authority is required.');
+  }
+
+  reviewTargetBasis(binding) {
+    const topic = this.metadata.getTopic(binding.topicId);
+    const session = this.metadata.getSourceReference(binding.referenceId);
+    const state = this.metadata.getSessionState(binding.referenceId);
+    const sessionLocator = this.metadata.getSourceLocator(binding.referenceId);
+    const folders = this.metadata.listSourceReferences(binding.topicId).filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+    const folder = this.metadata.getSourceReference(binding.folderReferenceId);
+    const locator = this.metadata.getSourceLocator(binding.folderReferenceId);
+    if (!topic || session?.topicId !== binding.topicId || session.sourceSystem !== 'openclaw' || session.sourceKind !== 'session' || (sessionLocator?.locator ?? session.externalSourceId) !== binding.sessionKey || state?.sessionId !== binding.sessionId || state.status !== 'open' || folder?.topicId !== binding.topicId || folder.sourceSystem !== 'obsidian' || folder.sourceKind !== 'note_folder' || !locator || folders.length !== 1 || folders[0].referenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact current review destination is unavailable.');
+    return JSON.stringify([
+      topic.topicId, topic.revision, topic.lifecycle, topic.paraCategory,
+      session.referenceId, session.externalSourceId, state.sessionId, state.status,
+      sessionLocator?.locator, sessionLocator?.locatorVersion, sessionLocator?.observedRevision,
+      folder.referenceId, folder.externalSourceId, folder.observedRevision,
+      locator.locator, locator.locatorVersion, locator.observedRevision, locator.ownership,
+    ]);
+  }
+
+  captureReviewTarget(binding, runtime) {
+    const basis = this.reviewTargetBasis(binding);
+    const assertCurrent = () => {
+      if (this.reviewTargetBasis(binding) !== basis) throw sourceError('conflict', 'The Topic or Note Folder changed during attachment review.');
+      this.sourceService.assertDocumentReviewConversation?.(binding);
+    };
+    runtime.captureReviewFence?.(assertCurrent);
+    return assertCurrent;
+  }
+
+  attachmentIdentity(binding) {
+    const agentId = binding.sessionKey.split(':')[1];
+    return { agentId, sessionKey: binding.sessionKey, sessionId: binding.sessionId };
+  }
+
+  async listAttachments(input = {}, runtime) {
+    assertNoUnexpectedKeys(input, ['topicId', 'sessionKey', 'sessionId', 'offset'], 'Conversation attachment selection');
+    nonBlank(input.sessionId, 'sessionId');
+    this.assertReviewCurrent(runtime);
+    const binding = await this.resolveBoundConversation(input);
+    if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    const assertTargetCurrent = this.captureReviewTarget(binding, runtime);
+    const page = await this.attachmentReader.list(this.attachmentIdentity(binding), { offset: input.offset });
+    const latest = await this.resolveBoundConversation(input);
+    if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment selection.');
+    assertTargetCurrent();
+    this.assertReviewCurrent(runtime);
+    return Object.freeze({ ...page, topicId: binding.topicId, topicName: binding.name, sessionKey: binding.sessionKey, sessionId: binding.sessionId });
+  }
+
+  async reviewAttachment(input = {}, runtime) {
+    assertNoUnexpectedKeys(input, ['topicId', 'sessionKey', 'sessionId', 'selection', 'subfolder'], 'Topic attachment review');
+    nonBlank(input.sessionId, 'sessionId');
+    const destination = safeSubfolder(input.subfolder);
+    this.assertReviewCurrent(runtime);
+    const binding = await this.resolveBoundConversation(input);
+    if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    const assertTargetCurrent = this.captureReviewTarget(binding, runtime);
+    const identity = this.attachmentIdentity(binding);
+    const attachment = await this.attachmentReader.resolve(identity, input.selection);
+    this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
+    const source = await this.loadExactMedia(attachment.mediaRef);
+    if (attachment.sizeBytes !== null && attachment.sizeBytes !== source.bytes.length || attachment.contentType && source.contentType && attachment.contentType !== source.contentType) throw sourceError('conflict', 'The original managed attachment no longer matches its accepted native media fact.');
+    await this.attachmentReader.resolve(identity, attachment.selection);
+    const latest = await this.resolveBoundConversation(input);
+    if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment review.');
+    this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
+    assertTargetCurrent();
+    this.assertReviewCurrent(runtime);
+    const filename = filedName(safeFilename(attachment.fileName ?? source.fileName, `attachment-${sourceToken(attachment.mediaRef)}`), sourceToken(attachment.mediaRef));
+    return Object.freeze({ schemaVersion: 1, status: 'review', topicId: binding.topicId, topicName: binding.name,
+      selection: attachment.selection,
+      source: Object.freeze({ sessionKey: binding.sessionKey, sessionId: binding.sessionId, referenceId: binding.referenceId, entryId: attachment.selection.entryId, createdAt: attachment.createdAt }),
+      document: Object.freeze({ path: `${destination}/${filename}`, revision: source.digest, contentType: attachment.contentType ?? source.contentType, sizeBytes: source.bytes.length }) });
+  }
+
   async loadExactMedia(mediaRef) {
     const loaded = await this.mediaLoader(mediaRef, { maxBytes: MAX_ATTACHMENT_BYTES, optimizeImages: false });
     if (!loaded || !Buffer.isBuffer(loaded.buffer)) throw sourceError('unavailable', 'The managed attachment could not be read.');
+    if (loaded.buffer.length > MAX_ATTACHMENT_BYTES) throw sourceError('response-too-large', 'The managed original exceeds the bounded filing limit.');
     return Object.freeze({
       bytes: Buffer.from(loaded.buffer),
       digest: revisionForBytes(loaded.buffer),
@@ -107,12 +188,18 @@ export class TopicDocumentFilingService {
     });
   }
 
-  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+  readOwnedAttachmentReference({ topicId, mediaRef }) {
     const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const existing = this.metadata.getSourceReference?.(referenceId);
     if (existing && (existing.topicId !== topicId || existing.sourceSystem !== 'openclaw' || existing.sourceKind !== 'attachment' || existing.externalSourceId !== mediaRef)) {
       throw sourceError('cross-topic', 'This managed attachment is already owned by another source binding.');
     }
+    return existing ?? null;
+  }
+
+  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+    const existing = this.readOwnedAttachmentReference({ topicId, mediaRef });
+    const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const reference = { version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'attachment', externalSourceId: mediaRef, observedRevision: digest };
     return existing ? this.metadata.observeSourceReference(reference) : this.metadata.createSourceReference(reference);
   }
@@ -122,17 +209,20 @@ export class TopicDocumentFilingService {
     const sessionKey = nonBlank(input.sessionKey, 'sessionKey');
     const mediaRef = canonicalInboundMediaRef(input.mediaRef);
     const firstBinding = await this.resolveBoundConversation({ sessionKey, sessionId: input.sessionId });
+    this.readOwnedAttachmentReference({ topicId: firstBinding.topicId, mediaRef });
     const source = await this.loadExactMedia(mediaRef);
     const filename = filedName(safeFilename(source.fileName, `attachment-${sourceToken(mediaRef)}`), sourceToken(mediaRef));
     const documentPath = `${safeSubfolder(input.subfolder)}/${filename}`;
     const logicalOperationId = stableUuid('command-center.documents.file.v1', firstBinding.topicId, firstBinding.referenceId, firstBinding.sessionId, mediaRef, documentPath);
     const requestId = input.requestId ?? logicalOperationId;
     const intent = Object.freeze({ sessionKey, sessionId: firstBinding.sessionId, sessionReferenceId: firstBinding.referenceId, folderReferenceId: firstBinding.folderReferenceId, mediaRef, sourceDigest: source.digest, documentPath, contentType: source.contentType, sizeBytes: source.bytes.length });
+    const noteInput = Object.freeze({ logicalOperationId, requestId, referenceId: firstBinding.folderReferenceId, path: documentPath, content: source.bytes, sourceKind: 'document' });
     const execute = async () => {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) throw sourceError('source-recovery', 'Topic ownership changed before attachment filing.');
       const currentSource = await this.loadExactMedia(mediaRef);
       if (currentSource.digest !== source.digest || currentSource.bytes.length !== source.bytes.length) throw sourceError('conflict', 'The managed attachment changed before filing.');
+      this.readOwnedAttachmentReference({ topicId: current.topicId, mediaRef });
       const created = await current.notes.create({ logicalOperationId, requestId, referenceId: current.folderReferenceId, path: documentPath, content: currentSource.bytes, sourceKind: 'document' });
       const document = created.note;
       if (!document || document.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') throw sourceError('conflict', 'The filed document did not retain its verified identity.');
@@ -143,16 +233,35 @@ export class TopicDocumentFilingService {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) return { outcome: 'conflict' };
       try {
-        const document = await current.notes.read({ path: documentPath, sourceKind: 'document' });
+        // Matching current bytes cannot identify our publication. Consult the
+        // existing Note owner's retained create inode and original operation.
+        const recovery = current.notes.recovery;
+        if (!recovery?.enabled) return { outcome: 'unknown' };
+        const recovered = await recovery.reconcile(noteInput, 'create');
+        if (recovered?.outcome !== 'applied') return { outcome: recovered?.outcome ?? 'unknown' };
+        const document = recovered.value?.note;
         const attachment = this.metadata.getSourceReference?.(`attachment:${createHash('sha256').update(mediaRef).digest('hex')}`);
-        if (document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document' || !attachment || attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest) return { outcome: 'conflict' };
-        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference: attachment, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
+        if (document?.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') return { outcome: 'conflict' };
+        if (attachment && (attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest)) return { outcome: 'conflict' };
+        // Repair only the binding of this already-proven publication. This does
+        // not create or replace a file, or infer an effect from equal content.
+        const sourceReference = attachment ?? this.ensureAttachmentReference({ topicId: current.topicId, mediaRef, digest: source.digest });
+        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
       } catch (error) {
-        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'not-applied' };
+        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'unknown' };
         throw error;
       }
     };
-    return this.sourceService.coordinator.mutate({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    const coordinate = () => {
+      const existing = this.sourceService.coordinator.journal?.get(logicalOperationId) ?? this.metadata.getOperation?.(logicalOperationId);
+      // A retained attempt is recovery-only, even when its Note owner proves
+      // not-applied. Explicit reconciliation must never enter fresh execution.
+      return this.sourceService.coordinator[existing ? 'reconcile' : 'mutate']({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    };
+    const recovery = firstBinding.notes.recovery;
+    // Retain the existing Note exclusion through verification, source binding
+    // and the coordinator's durable filing receipt, as for ordinary Note writes.
+    return recovery?.enabled ? recovery.runExactReconciliation(noteInput, 'create', coordinate) : coordinate();
   }
 }
 

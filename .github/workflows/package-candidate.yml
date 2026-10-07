@@ -28,6 +28,20 @@ jobs:
           mkdir -p "$dependencies"
           cp package.json package-lock.json "$dependencies/"
           npm ci --prefix "$dependencies" --ignore-scripts --no-audit --no-fund
+      - name: Reuse exact pinned native SDK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/pinned-native-sdk"
+          mkdir -p "$sdk/download" "$sdk/runtime"
+          gh run download 37398915447 --repo AshleyHollis/openclaw \
+            --name nas-runtime-package-26a9c0faa4124e53ae2eab34291d68a7245f630c-37398915447-1 \
+            --dir "$sdk/download"
+          printf '%s  %s\n' e6203c9ba1d01d928f51cb71d7b4ecc77515fa6742f8168d9b5d8175610d6b36 \
+            "$sdk/download/openclaw-current.tgz" | sha256sum --check --strict
+          tar -xzf "$sdk/download/openclaw-current.tgz" -C "$sdk/runtime"
+          mkdir -p "$sdk/runtime/node_modules"
       # Fixed packaging toolchain only; this is not the deployed host identity.
       # No credentials, live mounts or network are passed to candidate commands.
       - name: Build and verify candidate archive
@@ -42,6 +56,13 @@ jobs:
           # confined to this networkless test container, not an import profile.
           docker run --rm --init --network none --read-only \
             --env COMMAND_CENTER_SOURCE_COMMIT \
+            --env COMMAND_CENTER_TEST_SQLITE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/sqlite-runtime.js \
+            --env COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/file-access-runtime.js \
+            --env COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-store-runtime.js \
+            --env COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-transcript-runtime.js \
+            --env NODE_OPTIONS=--import=/workspace/test/fixtures/note-runtime-loader.mjs \
+            --mount "type=bind,src=$RUNNER_TEMP/pinned-native-sdk/runtime,dst=/native-sdk,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/candidate-dependencies/node_modules,dst=/native-sdk/node_modules,readonly" \
             --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
             --cpus 2 --memory 8g --pids-limit 256 \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=1073741824,mode=1777 \
@@ -52,6 +73,7 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
+              node --test test/native-attachment-selection.test.mjs test/native-attachment-sdk.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing.test.mjs test/topic-document-filing-recovery.test.mjs test/note-process-death.test.mjs test/mutation-reconciliation.test.mjs test/mutation-architecture.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
