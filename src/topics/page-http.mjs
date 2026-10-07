@@ -153,11 +153,12 @@ function assertRequestBounds(body, bytes) {
   if (bytes > MAX_REQUEST_BYTES) throw invalid('Topic Page mutations exceed the bounded envelope.');
 }
 
-function mutationValue(value) {
+function mutationValue(value, action) {
   const result = value?.value ?? value?.result ?? value ?? {};
   const note = result?.note ?? result;
   const publicReferenceId = result?.sourceReference?.referenceId ?? note?.sourceReference?.referenceId ?? result?.referenceId;
   return {
+    ...(['conversations.create', 'conversations.creation.reconcile'].includes(action) && typeof result?.sessionId === 'string' ? { sessionId: result.sessionId } : {}),
     ...(typeof publicReferenceId === 'string' ? { referenceId: publicReferenceId } : {}),
     ...(typeof note?.path === 'string' ? { path: note.path } : {}),
     ...(typeof note?.previousPath === 'string' ? { previousPath: note.previousPath } : {}),
@@ -226,10 +227,11 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
           result: { action: body.action, topicId: body.topicId,
             ...(result.expectedTopicRevision === undefined ? {} : { expectedTopicRevision: result.expectedTopicRevision }),
             ...(result.label === undefined ? {} : { label: result.label }),
-            ...(result.referenceId === undefined ? {} : { referenceId: result.referenceId }) } });
+            ...(result.referenceId === undefined ? {} : { referenceId: result.referenceId }),
+            ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }) } });
         return true;
       }
-      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result) } });
+      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result, body.action) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');
       if (code === 'feature-unavailable') {

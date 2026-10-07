@@ -25,3 +25,21 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
       - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - name: Everyday Topic browser regression
+        env:
+          COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/everyday-topic-sidebar.png
+        run: node --test --test-concurrency=1 test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/first-live-native-ui.test.mjs
+      - name: Topic reader composition regression
+        env:
+          COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/topic-reader-tables.png
+        run: node --test --test-concurrency=1 test/native-reader-tables.test.mjs test/note-render.test.mjs test/native-reader-workspace.test.mjs test/native-document-preview.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: everyday-workspace-composition-fictional-ui
+          path: |
+            ${{ runner.temp }}/everyday-topic-sidebar.png
+            ${{ runner.temp }}/topic-reader-tables.png
+            ${{ runner.temp }}/topic-reader-tables-files.png
+          if-no-files-found: error
+          retention-days: 14

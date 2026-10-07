@@ -93,6 +93,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
     await inbox.press('Enter');
     assert.equal(await inbox.getAttribute('aria-expanded'), 'true');
     assert.equal(await page.getByRole('button', { name: 'Assign to Topic', exact: true }).first().isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: 'Assign to Topic', exact: true }).first().isDisabled(), true, 'a single eligible Topic must still be chosen explicitly');
     await inbox.press('Space');
     assert.equal(await inbox.getAttribute('aria-expanded'), 'false');
     await inbox.press('Enter');
@@ -154,6 +155,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
     assert.equal(await projects.getAttribute('aria-expanded'), 'false', 'a changed host roster retains collapsed PARA state');
     await projects.press('Space');
     assert.equal(await primary.isVisible(), true, 'nested Topic expansion survives parent collapse and refreshed rendering');
+    await page.getByRole('listitem').filter({ hasText: 'Inbox refreshed' }).getByRole('combobox').selectOption('topic-project');
     await page.getByRole('listitem').filter({ hasText: 'Inbox refreshed' }).getByRole('button', { name: 'Assign to Topic' }).click();
     await page.waitForFunction(() => window.calls.some(([method]) => method.endsWith('sessions.assign-topic')));
     const assignment = await page.evaluate(() => window.calls.find(([method]) => method.endsWith('sessions.assign-topic'))[1]);

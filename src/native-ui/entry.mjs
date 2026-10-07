@@ -160,7 +160,7 @@ export default {
       ? host.ui.registerReplacement({ id: 'topic-files', label: 'Topic Files', surface: 'session-files', mount: (container, context) => mountTopicNotesPanel(container, context, state) })
       : () => {};
     const topicSidebar = replacements
-      ? host.ui.registerReplacement({ id: 'topic-sidebar', label: 'Topics', surface: 'session-list', mount: (container, context) => mountTopicSidebar(container, context, sidebarState) })
+      ? host.ui.registerReplacement({ id: 'topic-sidebar', label: 'Topics', surface: 'session-list', mount: (container, context) => mountTopicSidebar(container, context, sidebarState, state) })
       : () => {};
     if (replacements) {
       host.ui.selectReplacement('session-files', 'topic-files');

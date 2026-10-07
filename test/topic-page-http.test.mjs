@@ -10,6 +10,7 @@ import { createTopicPageActionsHandler, topicPageActionRoute } from '../src/topi
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 const folderId = 'note-folder:fictional-topic';
@@ -80,7 +81,9 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const applied = await invoke(service, { body: conversationCreate() });
   assert.equal(applied.statusCode, 200);
   assert.equal(applied.body.result.referenceId, 'session:new');
-  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main|session-new/u);
+  assert.deepEqual(Object.keys(applied.body.result).sort(), ['action', 'referenceId', 'sessionId', 'status', 'topicId']);
+  assert.equal(applied.body.result.sessionId, 'session-new');
+  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main/u);
   assert.equal(service.calls[0][1].isPrimary, false);
 
   service.sessionsCreate = async () => ({ status: 'applied', note: { path: 'x'.repeat(33 * 1024), revision: 'revision' } });
@@ -132,7 +135,8 @@ test('Conversation creation adopts only the authenticated external-tab Session e
   assert.deepEqual(receivedRuntime, { authoritativeSession: { key: `agent:main:dashboard:${logicalOperationId}`, sessionId: `session-${logicalOperationId}`, revision: '1', idempotencyKey: logicalOperationId, label: 'Authenticated Conversation' } });
 });
 
-test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {
+test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', { skip: process.platform !== 'linux' }, async t => {
+  t.after(installHostFileAccessFixture());
   const scaleTopicId = '22222222-2222-4222-8222-222222222222';
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migrated-scale-route-'));
   let migratedMetadata;
