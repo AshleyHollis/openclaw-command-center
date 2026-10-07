@@ -143,7 +143,14 @@ export class TopicDocumentFilingService {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) return { outcome: 'conflict' };
       try {
-        const document = await current.notes.read({ path: documentPath, sourceKind: 'document' });
+        // Matching current bytes cannot identify our publication. Consult the
+        // existing Note owner's retained create inode and original operation.
+        const recovery = current.notes.recovery;
+        if (!recovery?.enabled) return { outcome: 'unknown' };
+        const noteInput = { logicalOperationId, requestId, referenceId: current.folderReferenceId, path: documentPath, content: source.bytes, sourceKind: 'document' };
+        const recovered = await recovery.runExactReconciliation(noteInput, 'create', () => recovery.reconcile(noteInput, 'create'));
+        if (recovered?.outcome !== 'applied') return { outcome: recovered?.outcome ?? 'unknown' };
+        const document = recovered.value?.note;
         const attachment = this.metadata.getSourceReference?.(`attachment:${createHash('sha256').update(mediaRef).digest('hex')}`);
         if (document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document' || !attachment || attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest) return { outcome: 'conflict' };
         return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference: attachment, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
@@ -159,3 +166,4 @@ export class TopicDocumentFilingService {
 export function createTopicDocumentFilingService(options) {
   return new TopicDocumentFilingService(options);
 }
+
