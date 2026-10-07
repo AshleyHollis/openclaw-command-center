@@ -203,6 +203,14 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] }); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  assertDocumentReviewConversation(binding) {
+    this.requireTopicService({ topicId: binding.topicId }, { write: true, requiredSourceKinds: ['note_folder', 'session'] });
+    const store = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
+    if (typeof store?.getSessionEntry !== 'function') throw sourceError('capability-unavailable', 'The synchronous native Conversation read owner is unavailable.');
+    const entry = store.getSessionEntry({ agentId: binding.sessionKey.split(':')[1], sessionKey: binding.sessionKey, readConsistency: 'latest' });
+    if (entry?.then) throw sourceError('capability-unavailable', 'The native Conversation review fence requires synchronous readback.');
+    if (entry?.sessionId !== binding.sessionId) throw sourceError('source-recovery', 'The Conversation was replaced before attachment review delivery.');
+  }
   async documentsListAttachments(input = {}, runtime) {
     const { schemaVersion: _version, topicId, ...selection } = input;
     const result = await this.documents.listAttachments({ topicId, ...selection }, runtime);

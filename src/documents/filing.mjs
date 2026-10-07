@@ -102,6 +102,34 @@ export class TopicDocumentFilingService {
     if (typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw sourceError('unauthenticated', 'Current synchronous native request authority is required.');
   }
 
+  reviewTargetBasis(binding) {
+    const topic = this.metadata.getTopic(binding.topicId);
+    const session = this.metadata.getSourceReference(binding.referenceId);
+    const state = this.metadata.getSessionState(binding.referenceId);
+    const sessionLocator = this.metadata.getSourceLocator(binding.referenceId);
+    const folders = this.metadata.listSourceReferences(binding.topicId).filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+    const folder = this.metadata.getSourceReference(binding.folderReferenceId);
+    const locator = this.metadata.getSourceLocator(binding.folderReferenceId);
+    if (!topic || session?.topicId !== binding.topicId || session.sourceSystem !== 'openclaw' || session.sourceKind !== 'session' || (sessionLocator?.locator ?? session.externalSourceId) !== binding.sessionKey || state?.sessionId !== binding.sessionId || state.status !== 'open' || folder?.topicId !== binding.topicId || folder.sourceSystem !== 'obsidian' || folder.sourceKind !== 'note_folder' || !locator || folders.length !== 1 || folders[0].referenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact current review destination is unavailable.');
+    return JSON.stringify([
+      topic.topicId, topic.revision, topic.lifecycle, topic.paraCategory,
+      session.referenceId, session.externalSourceId, state.sessionId, state.status,
+      sessionLocator?.locator, sessionLocator?.locatorVersion, sessionLocator?.observedRevision,
+      folder.referenceId, folder.externalSourceId, folder.observedRevision,
+      locator.locator, locator.locatorVersion, locator.observedRevision, locator.ownership,
+    ]);
+  }
+
+  captureReviewTarget(binding, runtime) {
+    const basis = this.reviewTargetBasis(binding);
+    const assertCurrent = () => {
+      if (this.reviewTargetBasis(binding) !== basis) throw sourceError('conflict', 'The Topic or Note Folder changed during attachment review.');
+      this.sourceService.assertDocumentReviewConversation?.(binding);
+    };
+    runtime.captureReviewFence?.(assertCurrent);
+    return assertCurrent;
+  }
+
   attachmentIdentity(binding) {
     const agentId = binding.sessionKey.split(':')[1];
     return { agentId, sessionKey: binding.sessionKey, sessionId: binding.sessionId };
@@ -113,9 +141,11 @@ export class TopicDocumentFilingService {
     this.assertReviewCurrent(runtime);
     const binding = await this.resolveBoundConversation(input);
     if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    const assertTargetCurrent = this.captureReviewTarget(binding, runtime);
     const page = await this.attachmentReader.list(this.attachmentIdentity(binding), { offset: input.offset });
     const latest = await this.resolveBoundConversation(input);
     if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment selection.');
+    assertTargetCurrent();
     this.assertReviewCurrent(runtime);
     return Object.freeze({ ...page, topicId: binding.topicId, topicName: binding.name, sessionKey: binding.sessionKey, sessionId: binding.sessionId });
   }
@@ -127,15 +157,17 @@ export class TopicDocumentFilingService {
     this.assertReviewCurrent(runtime);
     const binding = await this.resolveBoundConversation(input);
     if (input.topicId !== undefined && input.topicId !== binding.topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    const assertTargetCurrent = this.captureReviewTarget(binding, runtime);
     const identity = this.attachmentIdentity(binding);
     const attachment = await this.attachmentReader.resolve(identity, input.selection);
     this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
     const source = await this.loadExactMedia(attachment.mediaRef);
     if (attachment.sizeBytes !== null && attachment.sizeBytes !== source.bytes.length || attachment.contentType && source.contentType && attachment.contentType !== source.contentType) throw sourceError('conflict', 'The original managed attachment no longer matches its accepted native media fact.');
-    const latest = await this.resolveBoundConversation(input);
     await this.attachmentReader.resolve(identity, attachment.selection);
+    const latest = await this.resolveBoundConversation(input);
     if (latest.topicId !== binding.topicId || latest.referenceId !== binding.referenceId || latest.folderReferenceId !== binding.folderReferenceId) throw sourceError('source-recovery', 'The exact Topic destination changed during attachment review.');
     this.readOwnedAttachmentReference({ topicId: binding.topicId, mediaRef: attachment.mediaRef });
+    assertTargetCurrent();
     this.assertReviewCurrent(runtime);
     const filename = filedName(safeFilename(attachment.fileName ?? source.fileName, `attachment-${sourceToken(attachment.mediaRef)}`), sourceToken(attachment.mediaRef));
     return Object.freeze({ schemaVersion: 1, status: 'review', topicId: binding.topicId, topicName: binding.name,

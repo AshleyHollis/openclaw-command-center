@@ -322,7 +322,7 @@ test('production proxy delegates Note identity validation to the authoritative s
 test('attachment review actions require captured native authority and keep their build gate closed', async () => {
   let calls = 0;
   const authority = { principalId: 'fictional-operator', assertCurrent() {} };
-  const service = { documentsListAttachments(input, runtime) { calls++; assert.equal(runtime, authority); assert.equal(input.sessionId, 'fictional-incarnation'); return { schemaVersion: 1, topicId, topicName: 'Fictional project', sessionKey: input.sessionKey, sessionId: input.sessionId, generation: 'g', offset: 0, nextOffset: null, attachments: [] }; } };
+  const service = { documentsListAttachments(input, runtime) { calls++; assert.equal(runtime.principalId, authority.principalId); runtime.assertCurrent(); assert.equal(input.sessionId, 'fictional-incarnation'); return { schemaVersion: 1, topicId, topicName: 'Fictional project', sessionKey: input.sessionKey, sessionId: input.sessionId, generation: 'g', offset: 0, nextOffset: null, attachments: [] }; } };
   const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
   const options = { createConversationRuntime: async () => ({ creationAuthority: authority }) };
   const result = await invoke(service, { body, handlerOptions: options });
@@ -334,4 +334,14 @@ test('attachment review actions require captured native authority and keep their
   assert.equal(refused.statusCode, 501);
   assert.equal(calls, 1);
   assert.equal((await invoke(service, { body })).statusCode, 422);
+});
+
+test('attachment review actions fence native authority immediately before private response delivery', async () => {
+  let current = true;
+  const authority = { principalId: 'fictional-operator', assertCurrent() { if (!current) throw Object.assign(new Error('Retired authority'), { code: 'unauthenticated' }); } };
+  const service = { async documentsListAttachments() { await Promise.resolve(); current = false; return { schemaVersion: 1, topicId, attachments: [{ fileName: 'private-fictional-original.pdf' }] }; } };
+  const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
+  const response = await invoke(service, { body, handlerOptions: { createConversationRuntime: async () => ({ creationAuthority: authority }) } });
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
 });

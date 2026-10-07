@@ -173,14 +173,20 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body, createConversationRuntime) {
+async function execute(service, body, createConversationRuntime, retainDocumentAuthority) {
   const { action } = body;
   if (action.startsWith('documents.')) {
     if (!createConversationRuntime) throw Object.assign(new Error('Attachment review requires authenticated native request authority.'), { code: 'unauthenticated' });
     const runtime = await createConversationRuntime();
     if (typeof runtime?.creationAuthority?.assertCurrent !== 'function') throw invalid('Captured native request authority is required.');
+    const nativeAuthority = runtime.creationAuthority;
+    let targetFence;
+    const reviewAuthority = Object.freeze({ principalId: nativeAuthority.principalId,
+      assertCurrent() { nativeAuthority.assertCurrent(); targetFence?.(); },
+      captureReviewFence(fence) { if (typeof fence !== 'function' || targetFence) throw invalid('One owner review fence is required.'); targetFence = fence; } });
+    retainDocumentAuthority(reviewAuthority);
     const { action: _action, ...input } = body;
-    return service[action === 'documents.attachments.list' ? 'documentsListAttachments' : 'documentsReviewAttachment'](input, runtime.creationAuthority);
+    return service[action === 'documents.attachments.list' ? 'documentsListAttachments' : 'documentsReviewAttachment'](input, reviewAuthority);
   }
   if (Object.hasOwn(conversationRecoveryMethods, action)) {
     if (!createConversationRuntime) throw invalid('Conversation recovery requires authenticated native request authority.');
@@ -231,8 +237,11 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
       const body = validateBody(request.body);
       noteSave = createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile';
       assertRequestBounds(body, request.bytes);
-      const result = await execute(service, body, createConversationRuntime);
+      let documentAuthority;
+      const result = await execute(service, body, createConversationRuntime, authority => { documentAuthority = authority; });
       if (body.action.startsWith('documents.')) {
+        if (typeof documentAuthority?.assertCurrent !== 'function') throw invalid('Captured attachment response authority is required.');
+        documentAuthority.assertCurrent();
         // The filing owner already projects only reviewed, Topic-relative facts.
         sendJson(res, 200, { schemaVersion: 1, status: result.status ?? 'ready', result });
         return true;
