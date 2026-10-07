@@ -152,10 +152,14 @@ export class TopicDocumentFilingService {
         if (recovered?.outcome !== 'applied') return { outcome: recovered?.outcome ?? 'unknown' };
         const document = recovered.value?.note;
         const attachment = this.metadata.getSourceReference?.(`attachment:${createHash('sha256').update(mediaRef).digest('hex')}`);
-        if (document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document' || !attachment || attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest) return { outcome: 'conflict' };
-        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference: attachment, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
+        if (document?.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') return { outcome: 'conflict' };
+        if (attachment && (attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest)) return { outcome: 'conflict' };
+        // Repair only the binding of this already-proven publication. This does
+        // not create or replace a file, or infer an effect from equal content.
+        const sourceReference = attachment ?? this.ensureAttachmentReference({ topicId: current.topicId, mediaRef, digest: source.digest });
+        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
       } catch (error) {
-        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'not-applied' };
+        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'unknown' };
         throw error;
       }
     };
@@ -166,4 +170,3 @@ export class TopicDocumentFilingService {
 export function createTopicDocumentFilingService(options) {
   return new TopicDocumentFilingService(options);
 }
-
