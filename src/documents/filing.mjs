@@ -333,6 +333,30 @@ export class TopicDocumentFilingService {
     });
   }
 
+  async readOriginalDocument(input, read) {
+    const records = this.metadata.listTopicOperations(input.topicId).filter(row => row.operationKind === 'documents.file.v2' && row.state === 'applied' && row.result?.value?.document?.referenceId === input.referenceId);
+    if (!records.length) return read(false);
+    if (records.length !== 1) throw sourceError('source-recovery', 'The original document lineage is ambiguous.');
+    const record = records[0];
+    if (record.intent.documentPath !== input.path || record.result.value.document.revision !== record.intent.sourceDigest) throw sourceError('conflict', 'The original document request changed.');
+    const service = this.sourceService.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
+    const noteInput = this.noteIntent(record);
+    if (!service.notes.recovery?.enabled) throw sourceError('capability-unavailable', 'Causal original document access is unavailable.');
+    return service.notes.recovery.runExactReconciliation(noteInput, 'create', async () => {
+      const verified = await service.notes.recovery.reconcile(noteInput, 'create');
+      if (verified?.outcome !== 'applied') throw sourceError('conflict', 'The original document no longer has its causal publication identity.');
+      return service.notes.recovery.withCreateCompletionFence(noteInput, async fence => {
+        fence();
+        const result = await read(true);
+        fence();
+        if (result.revision !== record.intent.sourceDigest) throw sourceError('conflict', 'The original document read acquired a different revision.');
+        // The existing reader owns bounded byte delivery; these are copied
+        // source bytes verified under exclusion, not current-path authority.
+        return result;
+      });
+    });
+  }
+
   readOwnedAttachmentReference({ topicId, mediaRef }) {
     const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const existing = this.metadata.getSourceReference?.(referenceId);

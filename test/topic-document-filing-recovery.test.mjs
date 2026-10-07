@@ -41,6 +41,8 @@ test('original filing freezes intent, synchronously publishes once, atomically r
   assert.deepEqual(reopened.source, result.value.source);
   assert.deepEqual(reopened.document, result.value.document);
   assert.deepEqual(await readFile(path.join(f.root, reopened.document.path)), bytes);
+  const read = await f.service.notesRead({ schemaVersion: 1, topicId: input.topicId, referenceId: reopened.document.referenceId, path: reopened.document.path, sourceKind: 'document', offset: 0, observedRevision: reopened.document.revision });
+  assert.deepEqual(Buffer.from(read.contentBase64, 'base64'), bytes);
 });
 
 test('original filing interrupted after publication recovers the frozen receipt without reading the original or creating again', linux, async t => {
@@ -87,6 +89,7 @@ test('prepared replay and reopen refuse equal-byte replacement of the original i
   f.service.documents.attachmentReader = { resolve: async () => { throw new Error('Retained preparation must not reread attachment'); } };
   const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
   await assert.rejects(() => f.service.documents.prepareAttachment({ ...input, selection }, runtime), { code: 'source-recovery' });
+  await assert.rejects(() => f.service.notesRead({ schemaVersion: 1, topicId: input.topicId, referenceId: filed.value.document.referenceId, path: filed.value.document.path, sourceKind: 'document', offset: 0, observedRevision: filed.value.document.revision }), { code: 'conflict' });
 });
 
 test('original filing refuses a Folder marker retired inside its final publication callback', linux, async t => {

@@ -68,3 +68,9 @@ identity/stat/byte fence. Original publication and causal completion hold this
 witness across awaited staging rather than adopting a later marker snapshot.
 Private response delivery occurs synchronously inside the existing Note
 exclusion after Folder/file proof, before any descriptor cleanup await.
+
+The existing document byte reader also consults retained v2 filing lineage.
+It holds original Note/Folder proof through reading copied original bytes and
+refuses equal-byte foreign replacements. Legacy documents retain their existing
+reader path. This closes the interval between the reopen response and the
+reader's later byte request, without introducing another reader or byte store.

@@ -265,14 +265,15 @@ export class AuthoritativeSourceService {
   historiesList(input, runtime) { return this.readImportedHistory('list', input, runtime); }
   historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
   historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
-  async notesRead(input = {}) {
+  async notesRead(input = {}, originalReadOwned = false) {
+    if (input.sourceKind === 'document' && !originalReadOwned) return this.documents.readOriginalDocument(input, owned => this.notesRead(input, owned || 'legacy'));
     const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     this.assertExactNoteReference(input, { read: true });
     const { offset: _offset, ...noteInput } = adapterInput(input);
     // Original attachments are opaque bytes, not UTF-8 Notes. This internal
     // option never crosses the public bridge boundary.
-    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}) });
+    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}), ...(originalReadOwned === true ? { observe: false } : {}) });
     if (input.offset === undefined) return note;
     if (!Number.isInteger(input.offset) || input.offset < 0) throw sourceError('invalid-request', 'A non-negative byte offset is required.');
     if (input.offset > 0 && (typeof input.observedRevision !== 'string' || input.observedRevision !== note.revision)) throw sourceError('conflict', 'The Note changed during chunk retrieval.');
