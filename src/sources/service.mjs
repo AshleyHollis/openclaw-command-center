@@ -240,6 +240,24 @@ export class AuthoritativeSourceService {
   historiesList(input, runtime) { return this.readImportedHistory('list', input, runtime); }
   historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
   historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
+  assertNotesRecallAuthority(topicId) {
+    if (this.closed) throw sourceError('capability-unavailable', 'The Note source activation ended.');
+    requireCapability(this.capabilities, 'notes');
+    this.requireTopicService({ topicId }, { requiredSourceKinds: ['note_folder'] });
+  }
+  async prepareNotesRecall(input = {}) {
+    const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
+    requireCapability(this.capabilities, 'notes');
+    this.assertExactNoteReference(input, { read: true });
+    const lease = await service.notes.prepareRecallRead(adapterInput(input));
+    return Object.freeze({ note: lease.note, close: lease.close, assertCurrent: () => {
+      if (this.closed) throw sourceError('capability-unavailable', 'The Note source activation ended.');
+      requireCapability(this.capabilities, 'notes');
+      this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
+      this.assertExactNoteReference(input, { read: true });
+      lease.assertCurrent();
+    } });
+  }
   async notesRead(input = {}) {
     const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
