@@ -36,5 +36,5 @@ export function validatePlan(input) {
 }
 export const planIdentity = source => planDigest([PLAN_FAMILY, source.topicId, source.referenceId, source.sessionId, source.messageId]);
 export function nativePlanIntent(input) {
-  return { title: input.snapshot.outcome, notes: JSON.stringify({ family: PLAN_FAMILY, source: input.source, snapshot: input.snapshot }), status: 'todo', tenant: input.destination.tenantId, boardId: input.destination.boardId, idempotencyKey: `cc-plan:${planIdentity(input.source)}` };
+  return { title: input.snapshot.outcome, notes: JSON.stringify({ family: PLAN_FAMILY, source: input.source, snapshot: input.snapshot }), status: 'todo', tenant: input.destination.tenantId, boardId: input.destination.boardId, idempotencyKey: `cc-plan:${planIdentity(input.source)}`, ...(input.source.nativeAdmission ? { agentId: 'main', sessionKey: input.source.sessionKey } : {}) };
 }

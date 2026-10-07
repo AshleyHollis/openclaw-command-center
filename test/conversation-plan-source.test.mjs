@@ -18,12 +18,22 @@ function fixture(t) {
   metadata.createTopic({ topicId, name: 'Fictional garden', paraCategory: 'project', lifecycle: 'active' });
   metadata.createSessionBinding({ reference: { version: 1, referenceId: 'fictional-ref', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: '10' }, state: { referenceId: 'fictional-ref', sessionId: 'original', status: 'open', isPrimary: true, displayName: 'Overview' } });
   const entry = { sessionId: 'original', updatedAt: 10 };
-  const sessions = new SessionAdapter({ metadata, topicId, sessionStore: { getSessionEntry: () => entry, listSessionEntries: () => [{ sessionKey, entry }] } });
+  let nativeReads = 0;
+  const sessions = new SessionAdapter({ metadata, topicId, sessionStore: { getSessionEntry: () => { nativeReads++; return entry; }, listSessionEntries: () => [{ sessionKey, entry }] } });
   const sources = { requireTopicService() { return { sessions }; }, forTopic() { return { sessions }; }, getTopicSourceReference(input) { const reference = metadata.getSourceReference(input.referenceId); if (reference.topicId !== input.topicId) throw new Error('Reassigned'); return reference; } };
   let entries = [{ entryId: 'fictional-message', role: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Draft the garden plan. Compare costs.' }] } }], allowed = true, locks = 0;
   const source = createConversationPlanSource({ metadata, sources, assertCurrent() { if (!allowed) throw new Error('revoked'); }, readEntries: async () => entries, withTranscriptLock: async (scope, operation) => { locks++; return operation({ target: scope }); } });
-  return { source, topicId, referenceId: 'fictional-ref', entry, metadata, replace: value => { entries = value; }, revoke: () => { allowed = false; }, locks: () => locks };
+  return { source, topicId, referenceId: 'fictional-ref', entry, metadata, replace: value => { entries = value; }, revoke: () => { allowed = false; }, locks: () => locks, nativeReads: () => nativeReads };
 }
+
+test('retained native custody uses a CC ownership guard without querying the paused source worker', async t => {
+  const f = fixture(t), [message] = await f.source.messages(f), reads = f.nativeReads();
+  f.source.inspect(message.source, false, { nativeIdentity: false });
+  assert.equal(f.nativeReads(), reads);
+  assert.throws(() => f.source.inspect({ ...message.source, membershipRevision: message.source.membershipRevision + 1 }, false, { nativeIdentity: false }), /ownership changed/);
+  f.revoke(); assert.throws(() => f.source.inspect(message.source, false, { nativeIdentity: false }), /revoked/);
+  assert.equal(f.nativeReads(), reads);
+});
 test('actual CC Session adapter exposes exact entry identity and catches rewrite/reset/revocation', async t => {
   const f = fixture(t), [message] = await f.source.messages(f);
   assert.equal(message.source.messageId, 'fictional-message'); assert.equal(message.text, 'Draft the garden plan. Compare costs.');

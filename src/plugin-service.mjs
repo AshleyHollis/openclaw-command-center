@@ -28,6 +28,7 @@ import { createConversationPlanSource } from './conversation-plans/source.mjs';
 import { readPlanHumanRequests, verifyPlanHumanRequest } from './conversation-plans/human-requests.mjs';
 import { createPlanRequestEpisodeOwner } from './conversation-plans/request-episodes.mjs';
 import { createNativePlanTranscriptAdapter, nativePlanSourceSelection } from './conversation-plans/native-source.mjs';
+import { createNativePlanGatewayAdapter } from './conversation-plans/native-gateway.mjs';
 import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
@@ -188,24 +189,30 @@ export function createMetadataService(api) {
     };
     assertCurrent();
     const transcripts = await import('openclaw/plugin-sdk/session-transcript-runtime'); assertCurrent();
+    const gatewaySdk = await import('openclaw/plugin-sdk/gateway-runtime'); assertCurrent();
+    const nativeGateway = createNativePlanGatewayAdapter({ sdk: gatewaySdk, gateway: runtime.sourceBoundGateway, assertCurrent });
     const nativeTranscript = createNativePlanTranscriptAdapter(transcripts);
     const source = createConversationPlanSource({ metadata, sources, assertCurrent,
       readEntries: nativeTranscript.readEntries, readRecentEntries: nativeTranscript.readRecentEntries,
       assertCreateAdmissionAvailable(origin) {
         nativePlanSourceSelection(origin);
-        // PR67 transfers custody through WorkboardCoreStore.create's fourth
-        // argument. Its Gateway handler still passes only input/scope/guard;
-        // never serialize custody or bypass authenticated native transport.
-        throw new SourceServiceError('capability-unavailable', 'Retained native source custody has no authenticated Workboard create handoff.');
+        nativeGateway.assertAvailable();
+        // Native #67's runtime dispatcher only admits bundled/trusted official
+        // plugins. CC is external; its entitled public dispatcher drops source
+        // custody. Keep this refusal before journal reservation until that
+        // public contract is implemented and independently qualified.
+        throw new SourceServiceError('capability-unavailable', 'Native authenticated source admission for external plugins is unavailable.');
       },
       withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
     const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,
       verifyRequest: ({ card, request, known, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;
-    const owner = createConversationPlanOwner({ metadata, nativeRequest: runtime.nativeRequest,
+    const owner = createConversationPlanOwner({ metadata, nativeRequest: (method, params, options) => method === 'workboard.cards.create' ? nativeGateway.create(params, options) : runtime.nativeRequest(method, params, options),
       projectHumanRequests: requestEpisodes ? requestEpisodes.project : async () => ({ availability: 'unavailable', eligible: false, requests: [], unavailableCount: 0, resultReviewAvailability: 'unqualified' }),
       readHumanRequests: (card, assertCurrent) => readPlanHumanRequests({ card, nativeRequest: runtime.nativeRequest, assertCurrent }),
-      readSource: source.readSource, assertSourceCurrent: source.inspect,
-      authorize: ({ source: origin, write }) => { assertCurrent(); if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Workboard write access is required.'); source.inspect(origin, write); return { principalId: runtime.principalId }; } });
+      // Native retains transcript identity under its writer lock. This closure
+      // checks CC ownership only and must never query the paused source worker.
+      readSource: source.readSource, assertSourceCurrent: origin => source.inspect(origin, false, { nativeIdentity: false }),
+      authorize: ({ source: origin, write }) => { assertCurrent(); if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Workboard write access is required.'); source.inspect(origin, write, { nativeIdentity: false }); return { principalId: runtime.principalId }; } });
     const command = input => { if (input.input?.logicalOperationId !== input.logicalOperationId) throw new SourceServiceError('intent-mismatch', 'The plan must retain its original logical operation ID.'); return input.input; };
     return { messages: input => source.messages(input),
       track: input => source.withSource(command(input).source, () => owner.track(command(input))),

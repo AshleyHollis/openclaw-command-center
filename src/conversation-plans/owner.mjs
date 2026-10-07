@@ -71,7 +71,7 @@ export function createConversationPlanOwner({ metadata, nativeRequest, readSourc
     const binding = metadata.reserveConversationPlan(input, principalId, () => fence(input, principalId, true));
     if (binding.cardId) return observe(binding, principalId);
     try {
-      const response = await nativeRequest('workboard.cards.create', binding.createIntent, { assertCurrent: () => fence(binding.input, principalId, true) });
+      const response = await nativeRequest('workboard.cards.create', binding.createIntent, { source: binding.input.source, assertCurrent: () => fence(binding.input, principalId, true) });
       await source(binding.input, principalId, true);
       const card = exact(response?.card, binding);
       if (card.title !== binding.createIntent.title || card.notes !== binding.createIntent.notes) fail('conflict', 'Created card differs from the frozen plan.');

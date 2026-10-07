@@ -4,15 +4,17 @@ import { planDigest } from './contract.mjs';
 
 const fail = message => { throw sourceError('unavailable', message); };
 export function createConversationPlanSource({ metadata, sources, assertCurrent, readEntries, readRecentEntries = readEntries, withTranscriptLock, assertMessageCurrent, assertCreateAdmissionAvailable }) {
-  function inspect(source, write = false) {
+  function inspect(source, write = false, { nativeIdentity = true } = {}) {
     assertCurrent();
     const topic = metadata.getTopic(source.topicId);
     sources.requireTopicService({ topicId: source.topicId }, { write, requiredSourceKinds: ['session'] });
     const reference = sources.getTopicSourceReference({ topicId: source.topicId, referenceId: source.referenceId, sourceKind: 'session' });
     const state = metadata.getSessionState(source.referenceId), sessions = sources.forTopic(source.topicId).sessions;
     if (!topic || topic.revision !== source.membershipRevision || !state || state.status !== 'open' || state.sessionId !== source.sessionId || effectiveSourceLocator(metadata, reference) !== source.sessionKey) fail('The original Conversation ownership changed.');
-    const entry = sessions?.sessionStore?.getSessionEntry?.({ agentId: 'main', sessionKey: source.sessionKey, readConsistency: 'latest' });
-    if (entry?.then || entry?.sessionId !== source.sessionId) fail('The exact native Conversation was reset or is unavailable.');
+    if (nativeIdentity) {
+      const entry = sessions?.sessionStore?.getSessionEntry?.({ agentId: 'main', sessionKey: source.sessionKey, readConsistency: 'latest' });
+      if (entry?.then || entry?.sessionId !== source.sessionId) fail('The exact native Conversation was reset or is unavailable.');
+    }
     if (write && source.messageId) {
       if (assertCreateAdmissionAvailable) { if (assertCreateAdmissionAvailable(source)?.then) fail('Source capability admission must be synchronous.'); }
       else {

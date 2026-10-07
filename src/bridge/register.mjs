@@ -309,7 +309,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
             if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'The authenticated bill-action request is no longer current.');
           };
           const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update', ...(method.startsWith('command-center.v1.conversation-plans.') ? ['question.list', 'question.get', 'exec.approval.list'] : [])]);
-          runtime = { assertCurrent, principalId: authority.principalId, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
+          runtime = { assertCurrent, principalId: authority.principalId, sourceBoundGateway: method.startsWith('command-center.v1.conversation-plans.') ? api.runtime?.gateway : undefined, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
             nativeRequest: (nativeMethod, nativeParams, options = {}) => {
               if (!nativeMethods.has(nativeMethod)) throw new SourceServiceError('invalid-request', 'Unsupported native bill-action method.');
               const requestScope = ['question.list', 'question.get'].includes(nativeMethod) ? 'operator.questions' : nativeMethod === 'exec.approval.list' ? 'operator.approvals' : null;
