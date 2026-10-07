@@ -107,12 +107,18 @@ export class TopicDocumentFilingService {
     });
   }
 
-  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+  readOwnedAttachmentReference({ topicId, mediaRef }) {
     const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const existing = this.metadata.getSourceReference?.(referenceId);
     if (existing && (existing.topicId !== topicId || existing.sourceSystem !== 'openclaw' || existing.sourceKind !== 'attachment' || existing.externalSourceId !== mediaRef)) {
       throw sourceError('cross-topic', 'This managed attachment is already owned by another source binding.');
     }
+    return existing ?? null;
+  }
+
+  ensureAttachmentReference({ topicId, mediaRef, digest }) {
+    const existing = this.readOwnedAttachmentReference({ topicId, mediaRef });
+    const referenceId = `attachment:${createHash('sha256').update(mediaRef).digest('hex')}`;
     const reference = { version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'attachment', externalSourceId: mediaRef, observedRevision: digest };
     return existing ? this.metadata.observeSourceReference(reference) : this.metadata.createSourceReference(reference);
   }
@@ -122,17 +128,20 @@ export class TopicDocumentFilingService {
     const sessionKey = nonBlank(input.sessionKey, 'sessionKey');
     const mediaRef = canonicalInboundMediaRef(input.mediaRef);
     const firstBinding = await this.resolveBoundConversation({ sessionKey, sessionId: input.sessionId });
+    this.readOwnedAttachmentReference({ topicId: firstBinding.topicId, mediaRef });
     const source = await this.loadExactMedia(mediaRef);
     const filename = filedName(safeFilename(source.fileName, `attachment-${sourceToken(mediaRef)}`), sourceToken(mediaRef));
     const documentPath = `${safeSubfolder(input.subfolder)}/${filename}`;
     const logicalOperationId = stableUuid('command-center.documents.file.v1', firstBinding.topicId, firstBinding.referenceId, firstBinding.sessionId, mediaRef, documentPath);
     const requestId = input.requestId ?? logicalOperationId;
     const intent = Object.freeze({ sessionKey, sessionId: firstBinding.sessionId, sessionReferenceId: firstBinding.referenceId, folderReferenceId: firstBinding.folderReferenceId, mediaRef, sourceDigest: source.digest, documentPath, contentType: source.contentType, sizeBytes: source.bytes.length });
+    const noteInput = Object.freeze({ logicalOperationId, requestId, referenceId: firstBinding.folderReferenceId, path: documentPath, content: source.bytes, sourceKind: 'document' });
     const execute = async () => {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) throw sourceError('source-recovery', 'Topic ownership changed before attachment filing.');
       const currentSource = await this.loadExactMedia(mediaRef);
       if (currentSource.digest !== source.digest || currentSource.bytes.length !== source.bytes.length) throw sourceError('conflict', 'The managed attachment changed before filing.');
+      this.readOwnedAttachmentReference({ topicId: current.topicId, mediaRef });
       const created = await current.notes.create({ logicalOperationId, requestId, referenceId: current.folderReferenceId, path: documentPath, content: currentSource.bytes, sourceKind: 'document' });
       const document = created.note;
       if (!document || document.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') throw sourceError('conflict', 'The filed document did not retain its verified identity.');
@@ -143,16 +152,35 @@ export class TopicDocumentFilingService {
       const current = await this.resolveBoundConversation({ sessionKey, sessionId: firstBinding.sessionId });
       if (current.topicId !== firstBinding.topicId || current.referenceId !== firstBinding.referenceId || current.folderReferenceId !== firstBinding.folderReferenceId) return { outcome: 'conflict' };
       try {
-        const document = await current.notes.read({ path: documentPath, sourceKind: 'document' });
+        // Matching current bytes cannot identify our publication. Consult the
+        // existing Note owner's retained create inode and original operation.
+        const recovery = current.notes.recovery;
+        if (!recovery?.enabled) return { outcome: 'unknown' };
+        const recovered = await recovery.reconcile(noteInput, 'create');
+        if (recovered?.outcome !== 'applied') return { outcome: recovered?.outcome ?? 'unknown' };
+        const document = recovered.value?.note;
         const attachment = this.metadata.getSourceReference?.(`attachment:${createHash('sha256').update(mediaRef).digest('hex')}`);
-        if (document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document' || !attachment || attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest) return { outcome: 'conflict' };
-        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference: attachment, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
+        if (document?.path !== documentPath || document.revision !== source.digest || document.sourceReference?.sourceKind !== 'document') return { outcome: 'conflict' };
+        if (attachment && (attachment.topicId !== current.topicId || attachment.sourceSystem !== 'openclaw' || attachment.sourceKind !== 'attachment' || attachment.externalSourceId !== mediaRef || attachment.observedRevision !== source.digest)) return { outcome: 'conflict' };
+        // Repair only the binding of this already-proven publication. This does
+        // not create or replace a file, or infer an effect from equal content.
+        const sourceReference = attachment ?? this.ensureAttachmentReference({ topicId: current.topicId, mediaRef, digest: source.digest });
+        return { outcome: 'applied', value: publicReceipt({ topicId: current.topicId, sourceReference, document, mediaRef, contentType: source.contentType, sizeBytes: source.bytes.length, logicalOperationId }) };
       } catch (error) {
-        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'not-applied' };
+        if (error?.code === 'not-found' || error?.code === 'ENOENT') return { outcome: 'unknown' };
         throw error;
       }
     };
-    return this.sourceService.coordinator.mutate({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    const coordinate = () => {
+      const existing = this.sourceService.coordinator.journal?.get(logicalOperationId) ?? this.metadata.getOperation?.(logicalOperationId);
+      // A retained attempt is recovery-only, even when its Note owner proves
+      // not-applied. Explicit reconciliation must never enter fresh execution.
+      return this.sourceService.coordinator[existing ? 'reconcile' : 'mutate']({ operationKind: 'documents.file', requestId, logicalOperationId, topicId: firstBinding.topicId, referenceId: firstBinding.referenceId, intent, execute, reconcile });
+    };
+    const recovery = firstBinding.notes.recovery;
+    // Retain the existing Note exclusion through verification, source binding
+    // and the coordinator's durable filing receipt, as for ordinary Note writes.
+    return recovery?.enabled ? recovery.runExactReconciliation(noteInput, 'create', coordinate) : coordinate();
   }
 }
 
