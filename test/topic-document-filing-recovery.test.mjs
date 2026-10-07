@@ -7,6 +7,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { writeFileSync } from 'node:fs';
 
 const release = installHostFileAccessFixture();
 test.after(release);
@@ -86,6 +87,17 @@ test('prepared replay and reopen refuse equal-byte replacement of the original i
   f.service.documents.attachmentReader = { resolve: async () => { throw new Error('Retained preparation must not reread attachment'); } };
   const selection = { entryId: 'fictional-accepted-user', mediaIndex: 0, offset: 0, generation: 'fictional-original-generation' };
   await assert.rejects(() => f.service.documents.prepareAttachment({ ...input, selection }, runtime), { code: 'source-recovery' });
+});
+
+test('original filing refuses a Folder marker retired inside its final publication callback', linux, async t => {
+  const f = await fixture(t);
+  const { input, runtime } = await prepareOriginal(f);
+  runtime.admitAttachment = async () => ({ withCommit: effect => {
+    writeFileSync(path.join(f.root, '.command-center-folder-identity'), 'fictional retired marker');
+    return effect();
+  } });
+  await assert.rejects(() => f.service.documents.filePreparedAttachment(input, runtime), { code: 'source-recovery' });
+  assert.ok((await readdir(path.join(f.root, 'Documents'))).every(name => name.startsWith('.')));
 });
 
 async function fixture(t, hooks = {}) {
