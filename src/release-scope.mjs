@@ -7,7 +7,7 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false,
   // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
-  billActions: true
+  billActions: true, conversationPlans: false
 });
 
 // The ownership catalogue deliberately retains deferred tools so their domain

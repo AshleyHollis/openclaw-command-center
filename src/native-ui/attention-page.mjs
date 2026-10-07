@@ -23,6 +23,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  let planWorkspace;
   // The host retires context.signal on view/connection replacement. This map
   // belongs only to that verified mount lifetime; it is never handed to a remount.
   const drafts = new Map();
@@ -1266,6 +1267,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function load(message = '', removedLoopId, capture = true) {
+    planWorkspace?.dispose(); planWorkspace = undefined;
     if (capture && content.childElementCount) captureTransientUiState();
     const pending = ++generation; retireResponseWaiters(); selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
@@ -1389,6 +1391,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         }
         workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
         if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
+        if (pageMode === 'dashboard' && FIRST_LIVE_FEATURES.conversationPlans) planWorkspace = mountConversationPlanWorkspace(dashboards, { host, signal, current: () => current(pending) });
         if (pageMode === 'dashboard') renderBillActionCards(focus, dashboard.billActions, { host, signal, operations, current: () => current(pending), writable, reload: load, report, bindDraft: (form, row, fields, update) => bindDraft(form, { ...row, revision: row.native.updatedAt }, 'bill-later', fields, pending, update) });
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
@@ -1423,7 +1426,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let access = `${readable()}:${host.connection.canWrite}`;
   const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; clearDrafts(); void load('', undefined, false); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; planWorkspace?.dispose(); generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
@@ -1439,3 +1442,5 @@ const openLoopsArray = value => Array.isArray(value) ? value : [];
 export function mountPlannerPage(container, context, operations = new Map()) {
   return mountAttentionPage(container, context, operations, 'planner');
 }
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountConversationPlanWorkspace } from './conversation-plan-workspace.mjs';

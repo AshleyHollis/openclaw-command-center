@@ -1,0 +1,76 @@
+import { mountConversationPlan } from './conversation-plan.mjs';
+
+// Hosted by the existing Topic/dashboard; never mounts or owns native Chat.
+export function mountConversationPlanWorkspace(container, { host, signal, topicId, referenceId, current = () => true }) {
+  const document = container.ownerDocument, lifetime = new AbortController();
+  const activeSignal = AbortSignal.any([signal, lifetime.signal]);
+  let generation = 0, review;
+  const el = (tag, text) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; return node; };
+  const section = el('section'); section.className = 'cc-module'; section.dataset.conversationPlans = 'true';
+  section.setAttribute('aria-label', 'Conversation plans');
+  const status = el('p'); status.setAttribute('role', 'status');
+  const rows = el('div'), editor = el('div'), refresh = el('button', 'Refresh tracked plans'); refresh.type = 'button';
+  section.append(el('h2', 'Conversation plans'), refresh, status, rows, editor); container.append(section);
+  const live = version => !activeSignal.aborted && current() && version === generation && host.connection.connected && host.connection.canRead;
+  const request = async (method, params) => (await host.request(`command-center.v1.conversation-plans.${method}`, { schemaVersion: 1, ...params })).result;
+  async function load() {
+    const version = ++generation; status.textContent = 'Reading native tracked plans.';
+    try {
+      const result = await request('list', { ...(topicId ? { topicId } : {}) });
+      if (!live(version)) return;
+      rows.replaceChildren();
+      for (const row of result.rows ?? []) {
+        const article = el('article');
+        if (!row.input || !row.card) { article.append(el('p', 'An exact native card is unavailable.')); rows.append(article); continue; }
+        article.append(el('h3', row.input.snapshot.outcome), el('p', `Native status: ${row.card.status}. ${row.progress.availability === 'available' ? `Linked run: ${row.progress.status}.` : 'Linked run progress is unavailable.'}`));
+        if (row.attention?.eligible) {
+          const open = el('button', 'Review native human request'); open.type = 'button';
+          open.onclick = async () => {
+            if (!live(version)) return;
+            open.disabled = true;
+            try {
+              const currentRow = await request('reconcile', { input: row.input, logicalOperationId: row.input.logicalOperationId });
+              if (!live(version)) return;
+              if (currentRow.availability !== 'available' || currentRow.card.id !== row.card.id || currentRow.card.sessionKey !== row.card.sessionKey || currentRow.card.runId !== row.card.runId || !currentRow.attention?.eligible || !currentRow.attention.requests?.some(request => row.attention.requests?.some(original => original.id === request.id && original.kind === request.kind))) { status.textContent = 'This native human request changed. Refresh tracked plans.'; return; }
+              host.sessions.openChat({ sessionKey: currentRow.card.sessionKey });
+            } catch { if (live(version)) status.textContent = 'Current native human-request authority is unavailable.'; }
+            finally { if (live(version)) open.disabled = false; }
+          };
+          article.append(open);
+        }
+        // Exact-card navigation is a declared fork prerequisite, not a guessed URL.
+        article.append(el('p', `Workboard card ${row.card.id} · ${row.input.destination.boardId}. Exact-card navigation awaits the native route contract.`)); rows.append(article);
+      }
+      status.textContent = `${result.rows?.length ?? 0} tracked plans. Coverage: ${result.coverage}.`;
+    } catch { if (live(version)) { rows.replaceChildren(); status.textContent = 'Authorized native plan status is unavailable.'; } }
+  }
+  async function compose() {
+    const version = generation;
+    try {
+      const result = await request('messages', { topicId, referenceId }); if (!live(version)) return;
+      const form = el('form'), choice = el('select'); choice.required = true;
+      for (const [index, message] of result.messages.entries()) { const option = el('option', message.text.slice(0, 100)); option.value = String(index); choice.append(option); }
+      const message = el('pre'); message.style.whiteSpace = 'pre-wrap'; choice.onchange = () => { message.textContent = result.messages[Number(choice.value)]?.text ?? ''; }; choice.onchange();
+      const fields = {};
+      const add = (name, title, multiline = false) => { const label = el('label', title); const field = el(multiline ? 'textarea' : 'input'); field.required = true; label.append(field); fields[name] = field; form.append(label); };
+      const sourceLabel = el('label', 'Source Conversation message'); sourceLabel.append(choice); form.append(sourceLabel, message);
+      add('outcome', 'Agreed outcome'); add('steps', 'Exact agreed steps, one per line', true); add('criteria', 'Completion criteria, one per line', true); add('tenant', 'Exact Workboard tenant'); add('board', 'Exact Workboard board');
+      const submit = el('button', 'Review this plan'); submit.type = 'submit'; form.append(submit);
+      form.onsubmit = event => {
+        event.preventDefault(); if (review || !live(version) || !host.connection.canWrite) return;
+        const origin = result.messages[Number(choice.value)]; if (!origin) return;
+        const input = { family: 'approved-conversation-plan.v1', logicalOperationId: crypto.randomUUID(), source: structuredClone(origin.source), destination: { tenantId: fields.tenant.value, boardId: fields.board.value }, snapshot: { outcome: fields.outcome.value, steps: fields.steps.value.split('\n'), completionCriteria: fields.criteria.value.split('\n') } };
+        form.inert = true;
+        review = mountConversationPlan(editor, { input, signal: activeSignal, owner: Object.fromEntries(['track', 'reconcile'].map(action => [action, accepted => { if (!live(version)) throw new Error('Current source unavailable'); return request(action, { logicalOperationId: accepted.logicalOperationId, input: accepted }); }])) });
+      };
+      if (!result.messages.length) { editor.append(el('p', 'No authoritative assistant message is available.')); return; }
+      editor.append(form);
+    } catch { if (live(version)) editor.append(el('p', 'The exact authorized Conversation is unavailable.')); }
+  }
+  refresh.onclick = () => { if (!review) { editor.replaceChildren(); void load().then(() => { if (referenceId && !activeSignal.aborted) void compose(); }); } };
+  const unsubscribe = host.subscribe(() => { if (!host.connection.connected || !host.connection.canRead || !host.connection.canWrite && referenceId) { generation++; review?.dispose(); rows.replaceChildren(); editor.replaceChildren(); status.textContent = 'Conversation plan authority changed. Reopen to review.'; } });
+  const dispose = () => { generation++; review?.dispose(); lifetime.abort(); unsubscribe(); section.remove(); };
+  signal.addEventListener('abort', dispose, { once: true });
+  void load().then(() => { if (referenceId && !activeSignal.aborted) void compose(); });
+  return { dispose };
+}

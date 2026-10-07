@@ -23,6 +23,7 @@ test('fictional rendered plan uses real CC journal owner, preserves draft/focus 
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional plan review</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:1rem/1.5 system-ui;max-width:70ch;margin:2rem auto;padding:1rem}button{margin:.25rem;padding:.65rem}section{border:1px solid;padding:1rem;overflow-wrap:anywhere}</style><label>Native unsent draft<textarea id="native-draft">Unsent fictional draft</textarea></label><main id="mount"></main></html>'); return; }
     if (req.url === '/conversation-plan.mjs') { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL('../src/native-ui/conversation-plan.mjs', import.meta.url))); return; }
+    if (req.url === '/conversation-plan-workspace.mjs') { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL('../src/native-ui/conversation-plan-workspace.mjs', import.meta.url))); return; }
     if (['/track', '/reconcile'].includes(req.url) && req.method === 'POST') {
       let body = ''; for await (const chunk of req) body += chunk;
       try { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(await owner[req.url.slice(1)](JSON.parse(body)))); }
@@ -38,6 +39,7 @@ test('fictional rendered plan uses real CC journal owner, preserves draft/focus 
   await page.evaluate(async input => {
     const { mountConversationPlan } = await import('/conversation-plan.mjs');
     window.lifetime = new AbortController(); window.opened = [];
+    window.fixtureInput = structuredClone(input);
     const owner = Object.fromEntries(['track', 'reconcile'].map(action => [action, async input => {
       const response = await fetch(`/${action}`, { method: 'POST', body: JSON.stringify(input) }); const value = await response.json();
       if (!response.ok) throw Object.assign(new Error('unavailable'), value); return value;
@@ -66,4 +68,34 @@ test('fictional rendered plan uses real CC journal owner, preserves draft/focus 
   assert.equal(await page.getByRole('button', { name: 'Open native card' }).count(), 0);
   assert.equal(await page.locator('#native-draft').inputValue(), 'Unsent fictional draft');
   assert.equal((await page.evaluate(() => window.opened)).length, 1);
+  await page.evaluate(async () => {
+    const { mountConversationPlanWorkspace } = await import('/conversation-plan-workspace.mjs');
+    const input = window.fixtureInput;
+    window.workspaceLifetime = new AbortController();
+    window.fixtureHost = { connection: { connected: true, canRead: true, canWrite: true }, subscribe(callback) { window.changedAccess = callback; return () => {}; }, sessions: { openChat() { throw new Error('No execution navigation expected'); } },
+      async request(method, params) {
+        const action = method.split('.').at(-1);
+        if (action === 'messages') return { result: { messages: [{ source: input.source, text: 'Draft a planting plan, then compare the budget.' }] } };
+        const response = await fetch(`/${action === 'list' ? 'reconcile' : action}`, { method: 'POST', body: JSON.stringify(action === 'list' ? input : params.input) });
+        const result = await response.json(); if (!response.ok) throw Object.assign(new Error('failed'), result);
+        return { result: action === 'list' ? { rows: [result], coverage: 'tracked-plans-only' } : result };
+      } };
+    document.querySelector('#native-draft').focus();
+    window.workspace = mountConversationPlanWorkspace(document.querySelector('#mount'), { host: window.fixtureHost, signal: window.workspaceLifetime.signal, topicId: input.source.topicId, referenceId: input.source.referenceId });
+  });
+  await page.getByLabel('Agreed outcome').waitFor();
+  assert.equal(await page.locator('#native-draft').evaluate(node => node === document.activeElement), true);
+  await page.getByLabel('Agreed outcome').fill(input.snapshot.outcome);
+  await page.getByLabel('Exact agreed steps, one per line').fill(input.snapshot.steps.join('\n'));
+  await page.getByLabel('Completion criteria, one per line').fill(input.snapshot.completionCriteria.join('\n'));
+  await page.getByLabel('Exact Workboard tenant').fill(input.destination.tenantId);
+  await page.getByLabel('Exact Workboard board').fill(input.destination.boardId);
+  await page.getByRole('button', { name: 'Review this plan' }).click();
+  await page.getByRole('button', { name: 'Track this plan' }).click();
+  await page.getByRole('status').filter({ hasText: 'Native status: done' }).waitFor();
+  assert.equal(writes, 1); assert.equal(await page.locator('#native-draft').inputValue(), 'Unsent fictional draft');
+  assert.equal(await page.getByRole('button', { name: 'Open native card' }).count(), 0);
+  await page.evaluate(() => { window.fixtureHost.connection.canRead = false; window.changedAccess(); });
+  await page.getByText('Conversation plan authority changed. Reopen to review.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Track this plan' }).count(), 0);
 });

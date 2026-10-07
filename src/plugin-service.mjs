@@ -23,6 +23,9 @@ import { clarificationInterpretationStatus } from './open-loops/clarification-st
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 import { createBillActionAdapter } from './open-loops/bill-actions.mjs';
+import { createConversationPlanOwner } from './conversation-plans/owner.mjs';
+import { createConversationPlanSource } from './conversation-plans/source.mjs';
+import { readPlanHumanRequests } from './conversation-plans/human-requests.mjs';
 import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
@@ -174,6 +177,38 @@ export function createMetadataService(api) {
     const { requestId: _requestId, authenticatedOperatorId: _operatorId, ...command } = input;
     return command;
   };
+  async function conversationPlans(runtime) {
+    requireOperational();
+    const metadata = metadataService, sources = sourceService;
+    const assertCurrent = () => {
+      requireOperational();
+      if (stopPromise || metadataService !== metadata || sourceService !== sources || typeof runtime.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw new SourceServiceError('unauthenticated', 'Current Conversation plan authority is required.');
+    };
+    assertCurrent();
+    const transcripts = await import('openclaw/plugin-sdk/session-transcript-runtime'); assertCurrent();
+    const source = createConversationPlanSource({ metadata, sources, assertCurrent,
+      readEntries: transcripts.readVisibleSessionTranscriptMessageEntries,
+      withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
+    const owner = createConversationPlanOwner({ metadata, nativeRequest: runtime.nativeRequest,
+      readHumanRequests: (card, assertCurrent) => readPlanHumanRequests({ card, nativeRequest: runtime.nativeRequest, assertCurrent }),
+      readSource: source.readSource, assertSourceCurrent: source.inspect,
+      authorize: ({ source: origin, write }) => { assertCurrent(); if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Workboard write access is required.'); source.inspect(origin, write); return { principalId: runtime.principalId }; } });
+    const command = input => { if (input.input?.logicalOperationId !== input.logicalOperationId) throw new SourceServiceError('intent-mismatch', 'The plan must retain its original logical operation ID.'); return input.input; };
+    return { messages: input => source.messages(input),
+      track: input => source.withSource(command(input).source, () => owner.track(command(input))),
+      reconcile: input => source.withSource(command(input).source, () => owner.reconcile(command(input)), { write: false }),
+      async list(input) {
+        const rows = []; let unavailableCount = 0;
+        for (const binding of metadata.listConversationPlans()) {
+          if (binding.principalId !== runtime.principalId) continue;
+          if (input.topicId && input.topicId !== binding.input.source.topicId) continue;
+          try { rows.push(await owner.reconcile(binding.input)); } catch { unavailableCount++; }
+        }
+        assertCurrent();
+        const currentRows = rows.filter(row => { try { if (!row.input) { unavailableCount++; return false; } source.inspect(row.input.source); return true; } catch { unavailableCount++; return false; } });
+        return { rows: currentRows, coverage: unavailableCount ? 'partial' : 'tracked-plans-only', unavailableCount };
+      } };
+  }
   const billRow = (row, runtime) => {
     let canWrite = runtime.canWrite === true;
     try { sourceService.requireTopicService({ topicId: row.topicId }, { write: true }); }
@@ -616,6 +651,10 @@ export function createMetadataService(api) {
     billActionsHandle(input = {}, runtime = {}) { return billAdapter(runtime).handle(billInput(input)); },
     billActionsDefer(input = {}, runtime = {}) { return billAdapter(runtime).defer(billInput(input)); },
     billActionsReconcile(input = {}, runtime = {}) { return billAdapter(runtime).reconcile(billInput(input)); },
+    async conversationPlansMessages(input, runtime) { return { messages: await (await conversationPlans(runtime)).messages(billInput(input)) }; },
+    async conversationPlansTrack(input, runtime) { return (await conversationPlans(runtime)).track(billInput(input)); },
+    async conversationPlansReconcile(input, runtime) { return (await conversationPlans(runtime)).reconcile(billInput(input)); },
+    async conversationPlansList(input, runtime) { return (await conversationPlans(runtime)).list(billInput(input)); },
     briefingSetRead(input = {}) { requireOperational(); return dailyWorkspace.setBriefingRead(input); },
     routineDecide(input = {}) { requireOperational(); return dailyWorkspace.decideRoutine(input); },
     openLoopsList(input = {}) {
