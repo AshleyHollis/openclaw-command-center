@@ -209,8 +209,8 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
           if (!['applied', 'replayed'].includes(result?.status ?? '') || result?.logicalOperationId !== logicalOperationId || result?.referenceId !== `conversation-assignment:${logicalOperationId}` || result?.topicId !== target.topicId || result?.sessionKey !== row.key || result?.sessionId !== row.sessionId) throw new Error('The exact Topic assignment did not return an authoritative receipt.');
           assignmentOperations.delete(operationKey);
           status.textContent = `Assigned to ${target.name}.`; await load();
-        } catch (error) { if (current(generationId)) { status.textContent = host.redact(error?.message || 'Topic assignment outcome is unavailable.'); assign.disabled = !host.connection.canWrite; } }
-        finally { assigning = false; }
+        } catch (error) { if (current(generationId)) status.textContent = host.redact(error?.message || 'Topic assignment outcome is unavailable.'); }
+        finally { assigning = false; if (current(generationId)) assign.disabled = !host.connection.canWrite || !allTopics().some(topic => topic.topicId === selectedTopicId); }
       })());
       assign.disabled = true;
       const choose = value => {

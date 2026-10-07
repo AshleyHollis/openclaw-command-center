@@ -37,8 +37,8 @@ export function mountTopicConversationDialog(container, { host, state, signal, p
           if (!stillCurrent()) return;
           const catalog = response?.result ?? response;
           const matches = catalog?.conversations?.filter(row => row.referenceId === result.referenceId && row.status === 'open' && typeof row.sessionId === 'string' && row.sessionId);
-          if (catalog?.topicId !== input.topicId || matches?.length !== 1) throw new Error('The exact created Conversation is unavailable. Check creation outcome before another creation.');
-          await navigation.open({ topicId: input.topicId, referenceId: result.referenceId, expectedSessionId: matches[0].sessionId });
+          if (catalog?.topicId !== input.topicId || matches?.length !== 1 || typeof result.sessionId !== 'string' || !result.sessionId || matches[0].sessionId !== result.sessionId) throw new Error('The exact created Conversation incarnation is unavailable. Check creation outcome before another creation.');
+          await navigation.open({ topicId: input.topicId, referenceId: result.referenceId, expectedSessionId: result.sessionId });
           if (stillCurrent()) close();
         } });
       form.form.querySelector('h2').textContent = `New conversation in ${topic.name}`;

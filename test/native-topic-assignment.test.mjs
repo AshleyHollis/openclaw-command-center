@@ -31,7 +31,7 @@ test('native picker assignment starts empty, disambiguates Topics and never repl
         if (method.endsWith('sessions.browse')) return { result: { topicId: params.topicId, conversations: [{ referenceId: `${params.topicId}-primary`, sessionId: `${params.topicId}-session`, status: 'open', isPrimary: true }] } };
         if (method.endsWith('histories.list')) return { result: { histories: [] } };
         if (method.endsWith('sessions.topic-context')) return { result: { status: 'unbound' } };
-        if (method.endsWith('sessions.assign-topic')) { window.assignments.push(params); throw new Error('Fictional response lost'); }
+        if (method.endsWith('sessions.assign-topic')) { window.assignments.push(params); if (window.holdAssignment) await new Promise(resolve => { window.releaseAssignment = resolve; }); throw new Error('Fictional response lost'); }
         throw new Error('Unexpected fixture request');
       } };
     const context = window.context = { host, signal, presented: true, props: { sessions: [{ key: 'agent:main:fictional-inbox', sessionId: 'fictional-inbox', updatedAt: 8, displayName: 'Fictional Inbox' }] }, mountDefault: () => () => {} };
@@ -44,8 +44,12 @@ test('native picker assignment starts empty, disambiguates Topics and never repl
   assert.match(await picker.innerText(), /fictional-one/); assert.match(await picker.innerText(), /fictional-two/);
   await picker.selectOption('fictional-two'); assert.equal(await assign.isDisabled(), false);
   if (process.env.COMMAND_CENTER_VISUAL_OUTPUT) await page.screenshot({ path: process.env.COMMAND_CENTER_VISUAL_OUTPUT, fullPage: true });
-  await assign.click(); await page.waitForFunction(() => window.assignments.length === 1);
+  await page.evaluate(() => { window.holdAssignment = true; });
+  await assign.click(); await page.waitForFunction(() => !!window.releaseAssignment);
+  await picker.selectOption('');
+  await page.evaluate(() => { window.holdAssignment = false; window.releaseAssignment(); });
   await page.getByRole('status').filter({ hasText: 'Fictional response lost' }).waitFor();
+  assert.equal(await assign.isDisabled(), true, 'a failed pending assignment cannot enable the cleared destination');
   await page.evaluate(() => { window.topics[1].revision = 9; });
   await page.getByRole('button', { name: 'Refresh Topic workspace' }).click();
   await page.waitForFunction(() => window.pickers.length >= 2);

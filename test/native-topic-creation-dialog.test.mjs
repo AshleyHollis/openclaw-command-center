@@ -32,7 +32,7 @@ test('focused Topic creation preserves Chat on Cancel and recovers one original 
         window.calls.push([method, params]);
         if (method.endsWith('topics.get')) return { result: { topic } };
         if (method.endsWith('sessions.create')) { window.created.push(params); if (window.loseResponse) throw new Error('Fictional response lost'); return {}; }
-        if (method.endsWith('sessions.browse')) { if (window.holdBrowse) await new Promise(resolve => { window.releaseBrowse = resolve; }); return { result: { topicId: topic.topicId, conversations: [{ referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', status: 'open' }] } }; }
+        if (method.endsWith('sessions.browse')) { if (window.holdBrowse) await new Promise(resolve => { window.releaseBrowse = resolve; }); return { result: { topicId: topic.topicId, conversations: [{ referenceId: 'fictional-created-ref', sessionId: window.catalogSessionId ?? 'fictional-created-id', status: 'open' }] } }; }
         if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:fictional-created' } };
         throw new Error('Unexpected fixture request');
       },
@@ -41,7 +41,7 @@ test('focused Topic creation preserves Chat on Cancel and recovers one original 
         const original = window.created[0];
         const status = input.action.endsWith('.inspect') ? original ? 'unknown' : 'clear' : 'applied';
         return { status: 200, body: JSON.stringify({ schemaVersion: 1, status, logicalOperationId: original?.logicalOperationId,
-          result: { action: input.action, topicId: topic.topicId, referenceId: 'fictional-created-ref', expectedTopicRevision: 4, label: original?.label } }) };
+          result: { action: input.action, topicId: topic.topicId, referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', expectedTopicRevision: 4, label: original?.label } }) };
       }
     };
     window.show = () => { window.controller = mountTopicConversationDialog(document.querySelector('#mount'), { host, state, signal: host.signal, presented: () => true, topicId: topic.topicId, returnFocusTarget: document.querySelector('#new') }); };
@@ -70,6 +70,11 @@ test('focused Topic creation preserves Chat on Cancel and recovers one original 
   assert.deepEqual(await page.evaluate(() => window.opened), [], 'Cancel wins over an awaited created-Conversation lookup');
   await page.getByRole('button', { name: 'New Conversation', exact: true }).click();
   await page.getByRole('button', { name: 'Check creation outcome', exact: true }).click();
+  await page.evaluate(() => { window.catalogSessionId = 'fictional-rebound-id'; });
+  await page.getByRole('button', { name: 'Open created Conversation', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'exact created Conversation incarnation is unavailable' }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.opened), [], 'same reference rebound to another incarnation cannot replace the immutable creation result');
+  await page.evaluate(() => { window.catalogSessionId = 'fictional-created-id'; });
   await page.getByRole('button', { name: 'Open created Conversation', exact: true }).click();
   await page.waitForFunction(() => window.opened.length === 1);
   assert.equal(await page.evaluate(() => window.created.length), 1);

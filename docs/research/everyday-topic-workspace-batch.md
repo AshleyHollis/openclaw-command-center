@@ -31,6 +31,13 @@ creation/assignment backend, operation store or queue. It shares the existing
 activation-owned creation state with the Topic page and reuses the durable
 creation/reconciliation and conditional assignment owners.
 
+The existing authenticated HTTP creation/reconciliation and owning inspection
+projections additionally expose the saved Session incarnation. The dialog
+compares that immutable receipt value to the catalog and passes it to the exact
+resolver; a same-reference rebind cannot substitute a newer incarnation. No
+locator, principal or journal is exposed, and no persisted representation or
+effect changes.
+
 Base: published Attention head `97a4b08`, whose product bytes retain the
 `2253d49` baseline. PRs #360–365 remain independently selectable and untouched;
 none is a dependency. Selecting a different predecessor requires packaging and
@@ -53,8 +60,9 @@ qualification of that actual combination.
   Files continuity and the remaining dock/swap/resize/scroll/image/PDF rows.
   Mobile and home-screen relaunch remain explicitly unpassed.
 
-Release policy: Class 1 presentation/client interaction over unchanged public
-write contracts and persisted representations. Installed-package journeys and
+Release policy: Class 3 conservatively applies to the small owning receipt and
+write-response projection change, alongside the UI. Real creation/recovery and
+assignment failure suites cover the unchanged owners. Installed-package journeys and
 visual inspection on the selected supported pair remain admission gates.
 
 ## Non-goals and next boundary

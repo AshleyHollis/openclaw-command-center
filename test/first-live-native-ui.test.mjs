@@ -511,7 +511,8 @@ test('large Notes page through one cursor-pinned catalog and retain exact revisi
   await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-50.md', exact: true }).click();
   await page.getByText('Note opened · r1', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('region', { name: 'Note content' }).textContent(), 'Large authoritative Note.\n'.repeat(50000));
+  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), 'Large authoritative Note.\n'.repeat(50000));
   const requests = await page.evaluate(() => window.requests);
   assert.ok(requests.some(row => row.method.endsWith('notes.browse') && row.params.offset === 50 && row.params.cursor === 'fictional-cursor'));
   const reads = requests.filter(row => row.method.endsWith('notes.read'));
