@@ -1391,7 +1391,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         }
         workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
         if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
-        if (pageMode === 'dashboard' && FIRST_LIVE_FEATURES.conversationPlans) planWorkspace = mountConversationPlanWorkspace(dashboards, { host, signal, current: () => current(pending) });
+        if (pageMode === 'dashboard' && FIRST_LIVE_FEATURES.conversationPlans) planWorkspace = mountConversationPlanWorkspace(dashboards, { host, signal, attentionContainer: focus, current: () => current(pending) });
         if (pageMode === 'dashboard') renderBillActionCards(focus, dashboard.billActions, { host, signal, operations, current: () => current(pending), writable, reload: load, report, bindDraft: (form, row, fields, update) => bindDraft(form, { ...row, revision: row.native.updatedAt }, 'bill-later', fields, pending, update) });
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {

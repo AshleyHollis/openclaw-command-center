@@ -308,11 +308,11 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
             sessionMutationCommitGuard?.();
             if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'The authenticated bill-action request is no longer current.');
           };
-          const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update', ...(method.startsWith('command-center.v1.conversation-plans.') ? ['question.list', 'exec.approval.list'] : [])]);
+          const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update', ...(method.startsWith('command-center.v1.conversation-plans.') ? ['question.list', 'question.get', 'exec.approval.list'] : [])]);
           runtime = { assertCurrent, principalId: authority.principalId, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
             nativeRequest: (nativeMethod, nativeParams, options = {}) => {
               if (!nativeMethods.has(nativeMethod)) throw new SourceServiceError('invalid-request', 'Unsupported native bill-action method.');
-              const requestScope = nativeMethod === 'question.list' ? 'operator.questions' : nativeMethod === 'exec.approval.list' ? 'operator.approvals' : null;
+              const requestScope = ['question.list', 'question.get'].includes(nativeMethod) ? 'operator.questions' : nativeMethod === 'exec.approval.list' ? 'operator.approvals' : null;
               if (requestScope && !client.connect.scopes.some(scope => scope === requestScope || scope === 'operator.admin')) throw new SourceServiceError('read-only', 'Native human-request scope is required.');
               if (Object.keys(options).some(key => key !== 'assertCurrent') || options.assertCurrent !== undefined && typeof options.assertCurrent !== 'function') throw new SourceServiceError('invalid-request', 'Bill-action dispatch options are closed.');
               if (['workboard.cards.create', 'workboard.cards.update'].includes(nativeMethod) && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');

@@ -4,7 +4,7 @@ import { sourceError } from '../sources/errors.mjs';
 const fail = (code, message) => { throw sourceError(code, message); };
 // readSource verifies the exact message; assertSourceCurrent reaches source
 // membership/reset/permission admission synchronously. Missing owners fail closed.
-export function createConversationPlanOwner({ metadata, nativeRequest, readSource, assertSourceCurrent, authorize, readHumanRequests }) {
+export function createConversationPlanOwner({ metadata, nativeRequest, readSource, assertSourceCurrent, authorize, readHumanRequests, projectHumanRequests }) {
   if (!metadata?.reserveConversationPlan || ![nativeRequest, readSource, assertSourceCurrent, authorize].every(value => typeof value === 'function')) throw new TypeError('Plan tracking requires durable metadata and exact authenticated source owners.');
   function fence(input, principalId, write = false) {
     const auth = authorize({ source: input.source, destination: input.destination, write });
@@ -49,6 +49,16 @@ export function createConversationPlanOwner({ metadata, nativeRequest, readSourc
       // pending request resolution before any user response; CC only navigates.
       const requests = (attention.requests ?? []).filter(request => request.expiresAtMs > Date.now());
       attention = { ...attention, requests, eligible: attention.eligible === true && requests.length > 0 };
+      if (projectHumanRequests) {
+        attention = await projectHumanRequests({ input, card, principalId, observation: attention, assertCurrent: () => fence(input, principalId) });
+        await source(input, principalId, false);
+        const final = await nativeRequest('workboard.cards.list', { boardId: input.destination.boardId });
+        await source(input, principalId, false);
+        const finalCards = final?.cards?.filter(item => item.id === card.id);
+        if (!Array.isArray(finalCards) || finalCards.length !== 1 || planDigest(exact(finalCards[0], binding)) !== planDigest(card)) fail('unavailable', 'Native card changed during Attention publication.');
+        attention = { ...attention, requests: attention.requests.filter(request => request.expiresAtMs > Date.now()) };
+        attention.eligible = attention.requests.length > 0;
+      }
     }
     const attempts = card.metadata?.attempts ?? [];
     const linked = typeof card.sessionKey === 'string' && card.sessionKey.trim() && typeof card.runId === 'string' && card.runId.trim();

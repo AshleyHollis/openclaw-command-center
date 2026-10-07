@@ -8,6 +8,7 @@ import { eligibleSnoozeChoices, resolveSnoozeUntil, snoozeExpired } from './snoo
 import { createActionRegistry } from './actions.mjs';
 import { executeWithReconciliation } from './execution.mjs';
 import { compareOccurrenceRows, orderAttentionEpisodes } from './ordering.mjs';
+import { attentionSourcePolicy, PLAN_REQUEST_CAPABILITY } from './source-policy.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 
 const DELIVERY_WINDOW_MS = 10 * 60 * 1000;
@@ -251,16 +252,21 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   }
 
   function assertOpen() { if (closed) fail('service-closed', 'Attention service is closed.'); }
-  function transaction(callback) {
+  function synchronousGuard(guard) {
+    if (guard && guard()?.then) fail('invalid-authority', 'Attention publication authority must be synchronous.');
+  }
+  function transaction(callback, guard) {
     assertOpen();
     assertWritable();
+    synchronousGuard(guard);
     if (!db) return callback(null);
     db.exec('PRAGMA foreign_keys = ON; BEGIN IMMEDIATE');
-    try { const result = callback(db); db.exec('COMMIT'); return result; } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
+    try { const result = callback(db); synchronousGuard(guard); db.exec('COMMIT'); return result; } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
   }
   function read(callback) { assertOpen(); return db ? callback(db) : callback(null); }
   function findById(id) { return db ? mapEpisode(db.prepare('SELECT * FROM attention_episodes WHERE episode_id = ?').get(id)) : memory.episodes.get(id) ?? null; }
   function listRows() { return db ? db.prepare('SELECT * FROM attention_episodes ORDER BY attention_since, episode_id').all().map(mapEpisode) : [...memory.episodes.values()]; }
+  const ownerScoped = episode => !!episode && (attentionSourcePolicy(episode.sourceCapabilityId).ownerScoped || episode.evidenceFacts?.ownerScoped === true || capabilities.get(episode.sourceCapabilityId)?.ownerScoped === true);
   function findGenerations(identity) {
     return db ? db.prepare('SELECT * FROM attention_episodes WHERE identity_digest = ? ORDER BY generation DESC').all(identity.identityDigest).map(mapEpisode) : [...memory.episodes.values()].filter((episode) => episode.identityDigest === identity.identityDigest).sort((a, b) => b.generation - a.generation);
   }
@@ -424,9 +430,13 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
 
   function registerSourceCapability(input) {
     const value = object(input, 'source capability');
-    const allowed = ['sourceCapabilityId', 'sourceKind', 'monitoring', 'actions', 'verifyTransition', 'deriveEvidence', 'actionExecutor', 'preauthorizations', 'planRevision', 'policyRevision', 'preconditionReader'];
+    const allowed = ['sourceCapabilityId', 'sourceKind', 'monitoring', 'actions', 'verifyTransition', 'deriveEvidence', 'actionExecutor', 'preauthorizations', 'planRevision', 'policyRevision', 'preconditionReader', 'ownerScoped', 'terminalSubject'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('invalid-capability', 'Source capability contains unsupported field.');
     nonBlank(value.sourceCapabilityId, 'sourceCapabilityId');
+    const reservedPolicy = attentionSourcePolicy(value.sourceCapabilityId);
+    for (const field of ['ownerScoped', 'terminalSubject']) if (value[field] !== undefined && typeof value[field] !== 'boolean') fail('invalid-capability', `${field} must be boolean.`);
+    const scoped = reservedPolicy.ownerScoped || value.ownerScoped === true;
+    if (scoped && (value.monitoring !== false || value.actions?.length)) fail('invalid-capability', 'Owner-scoped requests require no monitoring or generic actions.');
     if (!Array.isArray(value.actions) || value.actions.length > 3) fail('invalid-capability', 'A source capability may register at most three actions.');
     const descriptors = value.actions.map((descriptor) => actionRegistry.register(descriptor));
     if (descriptors.some((descriptor) => descriptor.kind === 'mutation' && descriptor.approvalMode !== 'required')) fail('invalid-capability', 'Source-authored mutations require a fresh approval.');
@@ -451,6 +461,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     }
     const capability = Object.freeze({
       sourceCapabilityId: value.sourceCapabilityId,
+      ownerScoped: scoped,
+      terminalSubject: reservedPolicy.terminalSubject || value.terminalSubject === true,
       sourceKind: value.sourceKind ?? 'operational',
       // Capabilities registered before the monitoring declaration existed are
       // monitorable unless they explicitly opt out; new adapters declare this.
@@ -468,19 +480,38 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     return capability;
   }
 
-  async function ingest(input) {
+  async function ingest(input, options = {}) {
     assertWritable();
+    object(options, 'Attention publication options');
+    if (Object.keys(options).some(key => key !== 'assertCurrent') || options.assertCurrent !== undefined && typeof options.assertCurrent !== 'function') fail('invalid-authority', 'Attention publication options are closed.');
     const occurrence = normalizeOccurrence(input);
     const capability = capabilities.get(occurrence.sourceCapabilityId);
     if (!capability) fail('capability-unavailable', `Source capability ${occurrence.sourceCapabilityId} is not registered.`);
+    if (capability.ownerScoped && !db) fail('capability-unavailable', 'Owner-scoped Attention requires the durable SQLite owner.');
+    const reservedPolicy = attentionSourcePolicy(occurrence.sourceCapabilityId);
+    if (reservedPolicy.attentionReason && occurrence.attentionReason !== reservedPolicy.attentionReason) fail('invalid-request', 'Reserved native request reason cannot change identity.');
+    if (capability.ownerScoped && typeof options.assertCurrent !== 'function') fail('invalid-authority', 'Owner-scoped Attention requires current source authority.');
+    const guard = () => {
+      synchronousGuard(options.assertCurrent);
+      if (occurrence.topicId && !metadata.getTopic?.(occurrence.topicId)) fail('not-found', 'The exact Attention Topic was not found.');
+      if (occurrence.sourceReferenceId) {
+        const reference = metadata.getSourceReference?.(occurrence.sourceReferenceId);
+        if (!reference || occurrence.topicId && reference.topicId !== occurrence.topicId) fail('conflict', 'The exact Attention Source Reference is not owned by the Topic.');
+      }
+    };
+    guard();
     if (occurrence.topicId && typeof metadata?.getTopic === 'function' && !metadata.getTopic(occurrence.topicId)) fail('not-found', 'The exact Attention Topic was not found.');
     if (occurrence.sourceReferenceId && typeof metadata?.getSourceReference === 'function') {
       const reference = metadata.getSourceReference(occurrence.sourceReferenceId);
       if (!reference || occurrence.topicId && reference.topicId !== occurrence.topicId) fail('conflict', 'The exact Attention Source Reference is not owned by the Topic.');
     }
     const verifiedTransition = await capability.verifyTransition(occurrence);
+    guard();
     const derivedFacts = await capability.deriveEvidence(occurrence);
-    const effectiveOccurrence = Object.freeze({ ...occurrence, evidenceFacts: object(derivedFacts ?? EMPTY_OBJECT, 'derived evidenceFacts') });
+    guard();
+    const facts = object(derivedFacts ?? EMPTY_OBJECT, 'derived evidenceFacts');
+    if (Object.hasOwn(facts, 'ownerScoped') || Object.hasOwn(facts, 'terminalSubject')) fail('invalid-evidence', 'Attention policy fields are owner-controlled.');
+    const effectiveOccurrence = Object.freeze({ ...occurrence, evidenceFacts: capability.ownerScoped ? { ...facts, ownerScoped: true, terminalSubject: capability.terminalSubject } : facts });
     const severity = deriveSeverity(effectiveOccurrence.evidenceFacts, { verified: true });
     const identity = episodeIdentity(effectiveOccurrence);
     const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
@@ -497,7 +528,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       }
       const generations = findGenerations(identity);
       const current = generations[0];
-      if (confirmedState === 'Withdrawn' && (!current || ['Resolved', 'Withdrawn'].includes(current.state))) return Object.freeze({ episode: current ?? null, duplicate: false, ignored: true });
+      if ((capability.terminalSubject || current?.evidenceFacts?.terminalSubject === true) && current && ['Resolved', 'Withdrawn'].includes(current.state)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
+      if (!capability.terminalSubject && confirmedState === 'Withdrawn' && (!current || ['Resolved', 'Withdrawn'].includes(current.state))) return Object.freeze({ episode: current ?? null, duplicate: false, ignored: true });
       if (current && ['Resolved', 'Withdrawn'].includes(current.state)) {
         const terminal = Date.parse(current.terminalAt ?? current.updatedAt);
         const withinWindow = Date.parse(clock) < terminal + DELIVERY_WINDOW_MS;
@@ -526,7 +558,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
         ? saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock })
         : null;
       return Object.freeze({ episode: findById(episode.episodeId), activity, duplicate: false, ignored: false });
-    });
+    }, guard);
   }
 
   function projectEpisode(episode, clock) {
@@ -545,7 +577,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)) fail('invalid-request', 'limit must be between 1 and 100');
     const clock = nowIso(input.now ?? now);
     expireSnoozes(clock);
-    const projected = listRows().filter((episode) => !input.topicId || episode.topicId === input.topicId).map((episode) => projectEpisode(episode, clock));
+    const projected = listRows().filter((episode) => !ownerScoped(episode) && (!input.topicId || episode.topicId === input.topicId)).map((episode) => projectEpisode(episode, clock));
     const episodes = episodesWithActions(projected.filter((episode) => episode.state === 'Active' && !(episode.snoozedUntil && Date.parse(episode.snoozedUntil) > Date.parse(clock))));
     const orderedProjection = orderAttentionEpisodes(episodes, { now: clock });
     const buckets = orderedProjection.buckets;
@@ -560,7 +592,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
 
   function get(episodeIdValue) {
     const episode = findById(nonBlank(episodeIdValue, 'episodeId'));
-    if (!episode) return null;
+    if (!episode || ownerScoped(episode)) return null;
     const clock = nowIso(now);
     if (snoozeExpired(episode, clock)) { expireSnoozes(clock); return get(episode.episodeId); }
     return Object.freeze({ schemaVersion: ATTENTION_SCHEMA_VERSION, revision: episode.revision, episode: episodesWithActions([projectEpisode(episode, clock)])[0] });
@@ -823,6 +855,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   }
 
   async function act(input = {}) {
+    if (ownerScoped(findById(input?.episodeId))) fail('capability-unavailable', 'This Attention request is owned by its authenticated native projection.');
     assertWritable();
     const value = object(input, 'Attention action request');
     const allowed = ['schemaVersion', 'logicalOperationId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'topicId', 'sourceReferenceId', 'sourceCapabilityId', 'stableSubjectId', 'actionId', 'input', 'approvalId', 'requestId', 'authenticatedOperatorId'];
@@ -1028,6 +1061,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const allowed = ['episodeId', 'expectedEpisodeRevision', 'actionId', 'parameters', 'logicalOperationId', 'authenticatedOperatorId'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('invalid-request', 'Approval request contains unsupported field.');
     const episode = findById(nonBlank(value.episodeId, 'episodeId'));
+    if (ownerScoped(episode)) fail('capability-unavailable', 'Native request approval stays with the native owner.');
     if (!episode || episode.revision !== value.expectedEpisodeRevision) fail('conflict', 'Approval episode revision is stale.');
     const descriptor = actionDescriptor(episode, nonBlank(value.actionId, 'actionId'));
     if (!descriptor || descriptor.kind !== 'mutation') fail('invalid-action', 'Approval action is not a registered mutation.');
@@ -1195,14 +1229,20 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       object(input, 'Attention approval refresh request');
       if (Object.keys(input).some((key) => !['topicId', 'episodeId', 'authenticatedOperatorId'].includes(key))) fail('invalid-request', 'Attention approval refresh request contains unsupported field');
       const candidates = input.episodeId ? [findById(input.episodeId)].filter(Boolean) : listRows().filter((episode) => !input.topicId || episode.topicId === input.topicId);
-      for (const episode of candidates) await refreshApprovalForEpisode(episode, input.authenticatedOperatorId);
+      for (const episode of candidates.filter(episode => !ownerScoped(episode))) await refreshApprovalForEpisode(episode, input.authenticatedOperatorId);
     },
     sourceOccurrenceContext(input = {}) {
       const identity = episodeIdentity(normalizeOccurrence({ ...input, schemaVersion: 1, occurrenceId: 'context-only', occurredAt: '1970-01-01T00:00:00.000Z', evidenceFacts: {} }));
       const current = findGenerations(identity)[0] ?? null;
-      return current ? Object.freeze({ generation: current.generation, state: current.state }) : null;
+      return current && !ownerScoped(current) ? Object.freeze({ generation: current.generation, state: current.state }) : null;
     },
-    allEpisodes() { return listRows(); },
+    allEpisodes() { return listRows().filter(episode => !ownerScoped(episode)); },
+    ownerEpisodes(sourceCapabilityId, assertCurrent) {
+      if (!capabilities.get(sourceCapabilityId)?.ownerScoped || typeof assertCurrent !== 'function') fail('invalid-authority', 'Registered owner-scoped Attention authority is required.');
+      synchronousGuard(assertCurrent);
+      const rows = listRows().filter(episode => episode.sourceCapabilityId === sourceCapabilityId);
+      synchronousGuard(assertCurrent); return rows;
+    },
     act,
     attentionAct: act,
     createApproval,
@@ -1218,20 +1258,24 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const boundedRows = (table, mapper) => {
         if (!db) return [];
         const clauses = []; const parameters = [];
+        if (table === 'attention_activity_records') {
+          clauses.push("NOT EXISTS (SELECT 1 FROM attention_episodes e WHERE e.episode_id = attention_activity_records.episode_id AND (e.source_capability_id = ? OR json_extract(e.evidence_json, '$.ownerScoped') = 1))");
+          parameters.push(PLAN_REQUEST_CAPABILITY);
+        }
         if (topicId) { clauses.push('topic_id = ?'); parameters.push(topicId); }
         if (filterEpisodeId && table === 'attention_activity_records') { clauses.push('episode_id = ?'); parameters.push(filterEpisodeId); }
         if (filterEpisodeId && table === 'activity_records') return [];
         parameters.push(offset + limit + 1);
         return db.prepare(`SELECT * FROM ${table} ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY created_at DESC, activity_id DESC LIMIT ?`).all(...parameters).map(mapper);
       };
-      const attentionRows = db ? boundedRows('attention_activity_records', mapActivity) : [...memory.activities.values()].filter((item) => (!topicId || item.topicId === topicId) && (!filterEpisodeId || item.episodeId === filterEpisodeId));
+      const attentionRows = db ? boundedRows('attention_activity_records', mapActivity) : [...memory.activities.values()].filter((item) => !ownerScoped(findById(item.episodeId)) && (!topicId || item.topicId === topicId) && (!filterEpisodeId || item.episodeId === filterEpisodeId));
       const legacyRows = filterEpisodeId ? [] : db ? boundedRows('activity_records', mapLegacyActivity) : typeof metadata?.listActivity === 'function' ? metadata.listActivity(topicId).map(mapLegacyActivity) : [];
       const rows = [...new Map([...attentionRows, ...legacyRows].map((row) => [row.activityId, row])).values()].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.activityId.localeCompare(left.activityId));
       const page = rows.slice(offset, offset + limit);
       const hasMore = rows.length > offset + limit;
       return Object.freeze({ schemaVersion: 1, records: Object.freeze(page), nextOffset: hasMore ? offset + page.length : null, hasMore });
     },
-    getActivity(activityId) { const id = nonBlank(activityId, 'activityId'); return (db ? mapActivity(db.prepare('SELECT * FROM attention_activity_records WHERE activity_id = ?').get(id)) : [...memory.activities.values()].find((item) => item.activityId === id)) ?? mapLegacyActivity(metadata?.getActivity?.(id)); },
+    getActivity(activityId) { const id = nonBlank(activityId, 'activityId'); const activity = (db ? mapActivity(db.prepare('SELECT * FROM attention_activity_records WHERE activity_id = ?').get(id)) : [...memory.activities.values()].find((item) => item.activityId === id)) ?? mapLegacyActivity(metadata?.getActivity?.(id)); return activity?.episodeId && ownerScoped(findById(activity.episodeId)) ? null : activity; },
     close() { if (closed) return; closed = true; db?.close(); }
   };
   return Object.freeze(service);

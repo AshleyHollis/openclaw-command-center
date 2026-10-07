@@ -25,7 +25,8 @@ import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 import { createBillActionAdapter } from './open-loops/bill-actions.mjs';
 import { createConversationPlanOwner } from './conversation-plans/owner.mjs';
 import { createConversationPlanSource } from './conversation-plans/source.mjs';
-import { readPlanHumanRequests } from './conversation-plans/human-requests.mjs';
+import { readPlanHumanRequests, verifyPlanHumanRequest } from './conversation-plans/human-requests.mjs';
+import { createPlanRequestEpisodeOwner } from './conversation-plans/request-episodes.mjs';
 import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
@@ -189,7 +190,10 @@ export function createMetadataService(api) {
     const source = createConversationPlanSource({ metadata, sources, assertCurrent,
       readEntries: transcripts.readVisibleSessionTranscriptMessageEntries,
       withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
+    const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,
+      verifyRequest: ({ card, request, known, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;
     const owner = createConversationPlanOwner({ metadata, nativeRequest: runtime.nativeRequest,
+      projectHumanRequests: requestEpisodes ? requestEpisodes.project : async () => ({ availability: 'unavailable', eligible: false, requests: [], unavailableCount: 0, resultReviewAvailability: 'unqualified' }),
       readHumanRequests: (card, assertCurrent) => readPlanHumanRequests({ card, nativeRequest: runtime.nativeRequest, assertCurrent }),
       readSource: source.readSource, assertSourceCurrent: source.inspect,
       authorize: ({ source: origin, write }) => { assertCurrent(); if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Workboard write access is required.'); source.inspect(origin, write); return { principalId: runtime.principalId }; } });

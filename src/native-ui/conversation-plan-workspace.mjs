@@ -1,7 +1,7 @@
 import { mountConversationPlan } from './conversation-plan.mjs';
 
 // Hosted by the existing Topic/dashboard; never mounts or owns native Chat.
-export function mountConversationPlanWorkspace(container, { host, signal, topicId, referenceId, current = () => true }) {
+export function mountConversationPlanWorkspace(container, { host, signal, topicId, referenceId, attentionContainer = container, current = () => true }) {
   const document = container.ownerDocument, lifetime = new AbortController();
   const activeSignal = AbortSignal.any([signal, lifetime.signal]);
   let generation = 0, review;
@@ -11,6 +11,7 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
   const status = el('p'); status.setAttribute('role', 'status');
   const rows = el('div'), editor = el('div'), refresh = el('button', 'Refresh tracked plans'); refresh.type = 'button';
   section.append(el('h2', 'Conversation plans'), refresh, status, rows, editor); container.append(section);
+  const humanRequests = el('section'); humanRequests.setAttribute('aria-label', 'Conversation plan human requests'); attentionContainer.append(humanRequests);
   const live = version => !activeSignal.aborted && current() && version === generation && host.connection.connected && host.connection.canRead;
   const request = async (method, params) => (await host.request(`command-center.v1.conversation-plans.${method}`, { schemaVersion: 1, ...params })).result;
   async function load() {
@@ -18,7 +19,7 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
     try {
       const result = await request('list', { ...(topicId ? { topicId } : {}) });
       if (!live(version)) return;
-      rows.replaceChildren();
+      rows.replaceChildren(); humanRequests.replaceChildren();
       for (const row of result.rows ?? []) {
         const article = el('article');
         if (!row.input || !row.card) { article.append(el('p', 'An exact native card is unavailable.')); rows.append(article); continue; }
@@ -31,18 +32,18 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
             try {
               const currentRow = await request('reconcile', { input: row.input, logicalOperationId: row.input.logicalOperationId });
               if (!live(version)) return;
-              if (currentRow.availability !== 'available' || currentRow.card.id !== row.card.id || currentRow.card.sessionKey !== row.card.sessionKey || currentRow.card.runId !== row.card.runId || !currentRow.attention?.eligible || !currentRow.attention.requests?.some(request => row.attention.requests?.some(original => original.id === request.id && original.kind === request.kind))) { status.textContent = 'This native human request changed. Refresh tracked plans.'; return; }
+              if (currentRow.availability !== 'available' || currentRow.card.id !== row.card.id || currentRow.card.sessionKey !== row.card.sessionKey || currentRow.card.runId !== row.card.runId || !currentRow.attention?.eligible || !currentRow.attention.requests?.some(request => row.attention.requests?.some(original => original.id === request.id && original.kind === request.kind && original.requestRevision === request.requestRevision && original.episodeId === request.episodeId && original.episodeRevision === request.episodeRevision))) { status.textContent = 'This native human request changed. Refresh tracked plans.'; return; }
               host.sessions.openChat({ sessionKey: currentRow.card.sessionKey });
             } catch { if (live(version)) status.textContent = 'Current native human-request authority is unavailable.'; }
             finally { if (live(version)) open.disabled = false; }
           };
-          article.append(open);
+          const human = el('article'); human.append(el('h3', row.input.snapshot.outcome), open); humanRequests.append(human);
         }
         // Exact-card navigation is a declared fork prerequisite, not a guessed URL.
         article.append(el('p', `Workboard card ${row.card.id} · ${row.input.destination.boardId}. Exact-card navigation awaits the native route contract.`)); rows.append(article);
       }
       status.textContent = `${result.rows?.length ?? 0} tracked plans. Coverage: ${result.coverage}.`;
-    } catch { if (live(version)) { rows.replaceChildren(); status.textContent = 'Authorized native plan status is unavailable.'; } }
+    } catch { if (live(version)) { rows.replaceChildren(); humanRequests.replaceChildren(); status.textContent = 'Authorized native plan status is unavailable.'; } }
   }
   async function compose() {
     const version = generation;
@@ -68,8 +69,8 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
     } catch { if (live(version)) editor.append(el('p', 'The exact authorized Conversation is unavailable.')); }
   }
   refresh.onclick = () => { if (!review) { editor.replaceChildren(); void load().then(() => { if (referenceId && !activeSignal.aborted) void compose(); }); } };
-  const unsubscribe = host.subscribe(() => { if (!host.connection.connected || !host.connection.canRead || !host.connection.canWrite && referenceId) { generation++; review?.dispose(); rows.replaceChildren(); editor.replaceChildren(); status.textContent = 'Conversation plan authority changed. Reopen to review.'; } });
-  const dispose = () => { generation++; review?.dispose(); lifetime.abort(); unsubscribe(); section.remove(); };
+  const unsubscribe = host.subscribe(() => { if (!host.connection.connected || !host.connection.canRead || !host.connection.canWrite && referenceId) { generation++; review?.dispose(); rows.replaceChildren(); humanRequests.replaceChildren(); editor.replaceChildren(); status.textContent = 'Conversation plan authority changed. Reopen to review.'; } });
+  const dispose = () => { generation++; review?.dispose(); lifetime.abort(); unsubscribe(); section.remove(); humanRequests.remove(); };
   signal.addEventListener('abort', dispose, { once: true });
   void load().then(() => { if (referenceId && !activeSignal.aborted) void compose(); });
   return { dispose };
