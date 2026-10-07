@@ -219,7 +219,7 @@ export class TopicDocumentFilingService {
       if (this.reviewTargetBasis(binding) !== retained.intent.targetBasis) throw sourceError('conflict', 'The original filing destination changed.');
       this.assertReviewCurrent(runtime);
       if (retained.state === 'applied') {
-        const checked = await this.checkPreparedAttachment({ logicalOperationId, topicId: request.topicId, sessionKey: request.sessionKey, sessionId: request.sessionId }, runtime);
+        const checked = await this.checkPreparedAttachment({ logicalOperationId, topicId: request.topicId, sessionKey: request.sessionKey, sessionId: request.sessionId }, runtime, result => runtime.deliverResult?.(result.value));
         if (checked.status !== 'applied') throw sourceError('source-recovery', 'The original completed filing no longer has causal publication proof.');
         return checked.value;
       }
@@ -242,7 +242,7 @@ export class TopicDocumentFilingService {
       if (this.reviewTargetBasis(binding) !== targetBasis) throw sourceError('conflict', 'The original filing destination changed.');
       this.sourceService.assertDocumentReviewConversation?.(binding);
     });
-    if (record.state === 'applied') return (await this.checkPreparedAttachment({ logicalOperationId, topicId: request.topicId, sessionKey: request.sessionKey, sessionId: request.sessionId }, runtime)).value;
+    if (record.state === 'applied') return (await this.checkPreparedAttachment({ logicalOperationId, topicId: request.topicId, sessionKey: request.sessionKey, sessionId: request.sessionId }, runtime, result => runtime.deliverResult?.(result.value))).value;
     return Object.freeze({ ...this.preparedReceipt(record), canFile: record.currentStep === 'prepared' && typeof runtime.admitAttachment === 'function' });
   }
 
@@ -285,7 +285,7 @@ export class TopicDocumentFilingService {
       try {
         const value = this.metadata.completeDocumentFiling({ logicalOperationId: record.logicalOperationId }, () => { assertCurrent(); fence.assertCurrent(); });
         result = Object.freeze({ schemaVersion: 2, status: 'applied', logicalOperationId: record.logicalOperationId, value });
-        if (deliver) { assertCurrent(); fence.assertCurrent(); if (runtime.deliverResult?.(result)?.then) throw sourceError('unauthenticated', 'Synchronous document delivery is required.'); }
+        if (deliver) { assertCurrent(); fence.assertCurrent(); const delivered = typeof deliver === 'function' ? deliver(result) : runtime.deliverResult?.(result); if (delivered?.then) throw sourceError('unauthenticated', 'Synchronous document delivery is required.'); }
       }
       finally { await fence.close(); }
       return result;

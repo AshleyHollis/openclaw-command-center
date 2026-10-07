@@ -27,6 +27,7 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
           const input = JSON.parse(body); window.calls.push(input);
           if (input.action === 'documents.attachment.prepare' && scenario === 'replaced Conversation') await new Promise(resolve => { window.finishReview = resolve; });
           if (input.action === 'documents.attachment.file' && scenario === 'unknown and check') throw new Error('Fictional lost response');
+          if (input.action === 'documents.attachment.check' && !window.calls.some(call => call.action === 'documents.attachment.file')) return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result: { schemaVersion: 2, status: 'not-applied', logicalOperationId: input.logicalOperationId, value: null } }) };
           if (['documents.attachment.file', 'documents.attachment.check', 'documents.attachment.reopen'].includes(input.action)) {
             const value = { schemaVersion: 2, status: 'filed', logicalOperationId: input.logicalOperationId, topicId: binding.topicId, source: { sessionId: binding.sessionId, entryId: selection.entryId }, document: { referenceId: 'document:fictional', path: 'Documents/Reference/original--fixture.pdf', revision: 'sha256:fictional' } };
             return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'ready', result: input.action.endsWith('.reopen') ? value : { schemaVersion: 2, status: 'applied', logicalOperationId: input.logicalOperationId, value } }) };
@@ -46,6 +47,9 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
     await page.getByRole('button', { name: 'Review destination' }).click();
     if (scenario === 'replaced Conversation') {
       await page.waitForFunction(() => typeof window.finishReview === 'function');
+      assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isDisabled(), true);
+      assert.equal(await page.getByRole('textbox', { name: 'Subfolder below Documents' }).isDisabled(), true);
+      assert.match(await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue(), /^[0-9a-f-]{36}$/u);
       await page.evaluate(() => { window.current = false; window.finishReview(); });
       await page.getByRole('status').filter({ hasText: 'changed' }).waitFor();
       assert.equal(await page.getByRole('button', { name: 'File original' }).isVisible(), false);
@@ -55,6 +59,10 @@ for (const scenario of ['review and cancel', 'replaced Conversation', 'read-only
       if (['file and reopen', 'unknown and check'].includes(scenario)) {
         const originalId = await page.getByRole('textbox', { name: 'Saved filing ID' }).inputValue();
         assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).getAttribute('readonly') !== null, true);
+        await page.getByRole('button', { name: 'Check result', exact: true }).click();
+        await page.getByRole('status').filter({ hasText: 'Original was not filed' }).waitFor();
+        assert.equal(await page.getByRole('textbox', { name: 'Saved filing ID' }).getAttribute('readonly') !== null, true);
+        assert.equal(await page.getByRole('combobox', { name: 'Chat attachment' }).isDisabled(), true);
         await page.getByRole('button', { name: 'File original', exact: true }).click();
         if (scenario === 'unknown and check') {
           await page.getByRole('status').filter({ hasText: 'lost response' }).waitFor();

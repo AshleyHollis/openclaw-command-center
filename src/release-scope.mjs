@@ -15,7 +15,6 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
 // manifest exposes neither tool; this mapping is the explicit audit bridge
 // between those two facts.
 export const FIRST_LIVE_DEFERRED_NATIVE_TOOLS = Object.freeze({
-  command_center_file_topic_attachment: 'topicDocuments',
   command_center_update_working_note: 'noteMaintenance'
 });
 
