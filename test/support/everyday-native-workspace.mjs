@@ -108,7 +108,31 @@ export async function openEverydayTopicFiles({ page, sidebar, chatPane, fixture,
   return { filesView, reader, explorer };
 }
 
-export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, fixture, resourceFixture, created, readNavigation, onStage }) {
+export const EVERYDAY_SECONDARY_TRANSCRIPT = 'Fictional secondary transcript retained while Files opens and closes.';
+
+export async function seedEverydaySecondaryTranscript({ created, inject, readHistory }) {
+  const receipt = await inject({ sessionKey: created.sessionKey, message: EVERYDAY_SECONDARY_TRANSCRIPT });
+  assert.equal(receipt?.ok, true, 'The native Chat owner must acknowledge the fictional transcript append.');
+  assert.ok(typeof receipt.messageId === 'string' && receipt.messageId.length > 0);
+  const history = await readHistory(created.sessionKey);
+  assert.equal(history.sessionKey, created.sessionKey);
+  assert.equal(history.sessionId, created.sessionId);
+  assert.ok(history.messages?.some(message => message.role === 'assistant'
+    && (message.content === EVERYDAY_SECONDARY_TRANSCRIPT || Array.isArray(message.content)
+      && message.content.some(part => part.type === 'text' && part.text === EVERYDAY_SECONDARY_TRANSCRIPT))),
+  'The exact native Session history must contain the fictional assistant transcript.');
+  const snapshot = JSON.stringify(history.messages);
+  const assertRetained = async () => {
+    const retained = await readHistory(created.sessionKey);
+    assert.equal(retained.sessionKey, created.sessionKey);
+    assert.equal(retained.sessionId, created.sessionId);
+    assert.equal(JSON.stringify(retained.messages), snapshot, 'Files routing must preserve the populated native transcript exactly.');
+  };
+  assertRetained.messageId = receipt.messageId;
+  return assertRetained;
+}
+
+export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, fixture, resourceFixture, created, readNavigation, assertTranscript, onStage }) {
   const secondary = { ...fixture, sessionReferenceId: created.referenceId, sessionId: created.sessionId, sessionKey: created.sessionKey };
   const composer = chatPane.getByLabel('Chat composer', { exact: true });
   // Explicit sidebar selection also records the exact secondary preference;
@@ -119,9 +143,22 @@ export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, 
   await waitForEverydayChat({ page, chatPane, sessionKey: secondary.sessionKey });
   const secondaryDraft = 'Fictional secondary Chat draft retained through Files close and reopen.';
   await composer.fill(secondaryDraft);
+  const assertVisibleTranscript = async () => {
+    await waitForEverydayChat({ page, chatPane, sessionKey: secondary.sessionKey });
+    // Native repeats the latest text in a sibling screen-reader status. The
+    // canonical assistant bubble's prose owns the visible transcript content.
+    const message = chatPane.locator('.chat-thread[role="log"] .chat-group.assistant .chat-bubble[data-message-id] .chat-text')
+      .getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true });
+    await message.waitFor({ state: 'visible', timeout: 30_000 });
+    assert.equal(await message.count(), 1, 'The populated transcript must belong to the exact current secondary Chat.');
+    assert.equal(await composer.inputValue(), secondaryDraft);
+    await assertTranscript();
+  };
+  await assertVisibleTranscript();
   const openAreaFiles = async (chatKey, draft) => (await openEverydayTopicFiles({ page, sidebar, chatPane,
     fixture: secondary, chatKey, draft, readNavigation })).explorer;
   const explorer = await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  await assertVisibleTranscript();
   const close = chatPane.getByRole('button', { name: 'Close Files', exact: true });
   await close.waitFor({ state: 'visible', timeout: 30_000 });
   assert.equal(await close.count(), 1, 'Close the actual native Files slot.');
@@ -129,7 +166,9 @@ export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, 
   await explorer.waitFor({ state: 'hidden', timeout: 30_000 });
   assert.equal(await chatPane.evaluate(pane => pane.sessionKey), secondary.sessionKey);
   assert.equal(await composer.inputValue(), secondaryDraft);
+  await assertVisibleTranscript();
   await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  await assertVisibleTranscript();
   await onStage?.('native-secondary-files-reopened');
   const resource = await revealEverydayTopic(sidebar, resourceFixture.topicId);
   await resource.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
@@ -137,8 +176,17 @@ export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, 
   const resourceDraft = 'Fictional Resource Chat draft retained through remembered Area Files.';
   await composer.fill(resourceDraft);
   await openAreaFiles(resourceFixture.sessionKey, resourceDraft);
+  await assertTranscript();
+  const returnedArea = await revealEverydayTopic(sidebar, fixture.topicId);
+  await returnedArea.getByRole('button', { name: EVERYDAY_SESSION_LABELS.focusedCreated, exact: true }).press('Enter');
+  await assertVisibleTranscript();
+  const returnedResource = await revealEverydayTopic(sidebar, resourceFixture.topicId);
+  await returnedResource.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
+  await waitForEverydayChat({ page, chatPane, sessionKey: resourceFixture.sessionKey });
+  assert.equal(await composer.inputValue(), resourceDraft);
   await onStage?.('native-secondary-files-remembered');
-  return { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true };
+  return { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true, populatedTranscriptPreserved: true,
+    transcriptMessageId: assertTranscript.messageId };
 }
 
 export async function assertEverydayDownloadedOriginal(download, expectedBytes) {

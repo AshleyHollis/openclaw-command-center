@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, openEverydayTopicFiles, locateEverydayFilesView, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, waitForEverydayChat, EVERYDAY_SECONDARY_TRANSCRIPT, seedEverydaySecondaryTranscript, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, openEverydayTopicFiles, locateEverydayFilesView, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -52,7 +52,15 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     const reader = document.querySelector('#reader'); filesView.append(reader); chat.append(filesView);
     window.fixture = { dispatchCount: 0, responseLost: false, armed: false, assignment: null, operation: null };
     const f = window.fixture;
-    const drafts = new Map();
+    const drafts = new Map(); const transcripts = new Map();
+    const thread = document.createElement('div'); thread.className = 'chat-thread'; thread.setAttribute('role', 'log'); chat.prepend(thread);
+    const announcement = document.createElement('span'); announcement.className = 'chat-transcript-announcement sr-only'; announcement.setAttribute('role', 'status');
+    announcement.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)'; thread.append(announcement);
+    const group = document.createElement('div'); group.className = 'chat-group assistant'; thread.append(group);
+    const bubble = document.createElement('div'); bubble.className = 'chat-bubble'; bubble.dataset.messageId = 'fictional-message-id'; group.append(bubble);
+    const prose = document.createElement('div'); prose.className = 'chat-text'; bubble.append(prose);
+    const transcript = document.createElement('p'); prose.append(transcript);
+    window.transcripts = transcripts; window.transcript = transcript;
     const claimedLabels = new Set();
     for (const role of ['areaPrimary', 'resourcePrimary', 'unassigned']) {
       if (claimedLabels.has(labels[role])) throw new Error('Native setup label already in use');
@@ -61,7 +69,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     f.seedLabels = [...claimedLabels];
     const host = { signal, connection: { connected: true, canRead: true, canWrite: true }, redact: x => x, subscribe: () => () => {},
       sessions: { async openChat({ sessionKey }) { await delay(); const composer = chat.querySelector('textarea');
-          drafts.set(chat.sessionKey, composer.value); chat.sessionKey = sessionKey; composer.value = drafts.get(sessionKey) ?? ''; },
+          drafts.set(chat.sessionKey, composer.value); chat.sessionKey = sessionKey; composer.value = drafts.get(sessionKey) ?? ''; transcript.textContent = transcripts.get(sessionKey) ?? ''; announcement.textContent = transcript.textContent; },
         async openFiles(target) { await delay(); f.filesTarget = target; filesView.props = target; filesView.hidden = false; filesView.presented = true;
           window.reader.update({ host, signal, presented: true, props: { topicId: target.sessionKey === 'agent:main:fictional-resource' ? 'fixture-resource' : 'fixture-area' }, panel: { showInMain() {} } }); } },
       navigation: { async openPage() { await delay(); } },
@@ -195,12 +203,33 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
   assert.equal(await filesView.count(), 1);
 
 
+  const assertTranscript = await seedEverydaySecondaryTranscript({ created,
+    inject: async params => {
+      await page.evaluate(params => { window.transcripts.set(params.sessionKey, params.message); }, params);
+      return { ok: true, messageId: 'fictional-message-id' };
+    },
+    readHistory: sessionKey => page.evaluate(({ sessionKey, sessionId }) => ({ sessionKey, sessionId,
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: window.transcripts.get(sessionKey) }] }] }), { sessionKey, sessionId: created.sessionId }) });
   const secondary = await exerciseEverydaySecondaryFiles({ page, sidebar, chatPane,
     fixture: { topicId: 'fixture-area', sessionKey: 'agent:main:fictional-primary' }, resourceFixture, created,
-    readNavigation: () => page.evaluate(() => window.fixture.navigation) });
-  assert.deepEqual(secondary, { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true });
+    readNavigation: () => page.evaluate(() => window.fixture.navigation), assertTranscript });
+  assert.deepEqual(secondary, { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true, populatedTranscriptPreserved: true,
+    transcriptMessageId: 'fictional-message-id' });
+  const createdArea = await revealEverydayTopic(sidebar, 'fixture-area');
+  await createdArea.getByRole('button', { name: EVERYDAY_SESSION_LABELS.focusedCreated, exact: true }).press('Enter');
+  await waitForEverydayChat({ page, chatPane, sessionKey: created.sessionKey });
+  const oldMessage = chatPane.getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true });
+  assert.equal(await oldMessage.count(), 2, 'The regression retains both native announcement and visible canonical prose.');
+  await assert.rejects(oldMessage.waitFor({ state: 'visible', timeout: 100 }), /strict mode violation/);
+  const canonical = chatPane.locator('.chat-thread[role="log"] .chat-group.assistant .chat-bubble[data-message-id] .chat-text');
+  await canonical.getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+  const duplicateMessage = await canonical.evaluateHandle(content => { const duplicate = content.closest('.chat-bubble').cloneNode(true); content.closest('.chat-group').append(duplicate); return duplicate; });
+  assert.equal(await canonical.getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true }).count(), 2);
+  await assert.rejects(canonical.getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true }).waitFor({ state: 'visible', timeout: 100 }), /strict mode violation/);
+  await duplicateMessage.evaluate(node => node.remove()); await duplicateMessage.dispose();
   const area = await revealEverydayTopic(sidebar, 'fixture-area');
   await area.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
+  await waitForEverydayChat({ page, chatPane, sessionKey: 'agent:main:fictional-primary' });
   await openEverydayTopicFiles({ page, sidebar, chatPane, fixture: { topicId: 'fixture-area', sessionReferenceId: 'fixture-area-primary',
     sessionId: 'fixture-area-primary-id', sessionKey: 'agent:main:fictional-primary' }, chatKey: 'agent:main:fictional-primary',
     draft: 'Fictional draft retained through native creation Cancel.', readNavigation: () => page.evaluate(() => window.fixture.navigation) });
@@ -242,4 +271,28 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
   await assertEverydayDownloadedOriginal(download, bytes);
   const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1;
   await assert.rejects(assertEverydayDownloadedOriginal(download, changed), /Download must deliver the exact authorized original bytes/);
+});
+
+test('secondary transcript owner rejects missing append, wrong incarnation and changed populated history', async () => {
+  const created = { sessionKey: 'agent:main:fictional-secondary', sessionId: 'fictional-incarnation' };
+  const initial = { ...created, messages: [{ role: 'assistant', content: [{ type: 'text', text: EVERYDAY_SECONDARY_TRANSCRIPT }] }] };
+  let history = initial;
+  const inject = async params => {
+    assert.deepEqual(params, { sessionKey: created.sessionKey, message: EVERYDAY_SECONDARY_TRANSCRIPT });
+    return { ok: true, messageId: 'fictional-owner-message' };
+  };
+  const readHistory = async key => { assert.equal(key, created.sessionKey); return history; };
+  await assert.rejects(seedEverydaySecondaryTranscript({ created, inject: async () => ({ ok: false }), readHistory }));
+  history = { ...initial, messages: [] };
+  await assert.rejects(seedEverydaySecondaryTranscript({ created, inject, readHistory }), /fictional assistant transcript/);
+  history = initial;
+  const retained = await seedEverydaySecondaryTranscript({ created, inject, readHistory });
+  assert.equal(retained.messageId, 'fictional-owner-message');
+  await retained();
+  history = { ...initial, sessionId: 'fictional-replacement' };
+  await assert.rejects(retained());
+  history = { ...initial, sessionKey: 'agent:main:fictional-other' };
+  await assert.rejects(retained());
+  history = { ...initial, messages: [{ role: 'assistant', content: 'Changed fictional transcript' }] };
+  await assert.rejects(retained(), /preserve the populated native transcript exactly/);
 });

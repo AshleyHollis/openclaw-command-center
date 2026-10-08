@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, waitForEverydayChat, openEverydayTopicFiles, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, seedEverydaySecondaryTranscript, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, waitForEverydayChat, openEverydayTopicFiles, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -974,8 +974,18 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
             dispatchCount: creationLoss.dispatchCount, responseLost: creationLoss.responseLost };
         } });
       await retainNativeJourneyStage('native-focused-creation-recovery');
+      const assertTranscript = await seedEverydaySecondaryTranscript({ created: creation,
+        inject: async params => {
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+            method: 'chat.inject', params, scopes: ['operator.admin'], signal });
+          return response?.result ?? response;
+        },
+        readHistory: async sessionKey => {
+          const response = await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, sessionKey, signal });
+          return response?.result ?? response;
+        } });
       const secondaryFiles = await exerciseEverydaySecondaryFiles({ page, sidebar: topicSidebar, chatPane, fixture, resourceFixture,
-        created: creation, readNavigation: () => browserNavigation, onStage: retainNativeJourneyStage });
+        created: creation, readNavigation: () => browserNavigation, assertTranscript, onStage: retainNativeJourneyStage });
       const fixtureDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await fixtureDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
       await waitForEverydayChat({ page, chatPane, sessionKey: fixture.sessionKey });
