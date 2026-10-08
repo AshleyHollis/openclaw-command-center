@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -118,8 +118,15 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     assert.equal(new URL(await headerNew.getAttribute('href'), page.url()).pathname, '/new');
   }
   const sidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
-  await sidebar.getByRole('button', { name: 'Inbox / Unassigned (1)', exact: true }).click();
-  await chooseEverydayAssignment(sidebar.getByRole('listitem').filter({ hasText: 'Fictional Inbox' }), { topicId: 'fixture-area', duplicateTopicId: 'fixture-resource', name: 'Fictional Same Name' });
+  // Regression: the installed driver's old exact heading never matched the
+  // frozen product's counted name and inherited a 185-second attribute wait.
+  const oldInbox = sidebar.getByRole('heading', { name: 'Inbox / Unassigned', exact: true }).locator('xpath=..');
+  assert.equal(await oldInbox.count(), 0);
+  await assert.rejects(oldInbox.locator('[data-topic-control-key="inbox"]').getAttribute('aria-expanded', { timeout: 100 }), /Timeout/);
+  const inbox = await revealEverydayInbox(sidebar);
+  assert.equal(await inbox.getByRole('heading', { name: 'Inbox / Unassigned (1)', exact: true }).count(), 1);
+  await revealEverydayInbox(sidebar); // An already open Inbox stays open.
+  await chooseEverydayAssignment(inbox.getByRole('listitem').filter({ hasText: 'Fictional Inbox' }), { topicId: 'fixture-area', duplicateTopicId: 'fixture-resource', name: 'Fictional Same Name' });
   await page.waitForFunction(() => window.fixture.assignment !== null);
   assert.equal((await page.evaluate(() => window.fixture.assignment)).expectedSessionId, 'fictional-unassigned-id');
   await revealEverydayTopic(sidebar, 'fixture-area');

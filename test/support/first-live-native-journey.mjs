@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import path from 'node:path';
@@ -86,7 +86,9 @@ async function retainNativeJourneyStage(stage) {
   const directory = process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR;
   if (!directory) return;
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, 'journey-stage.json'), `${JSON.stringify({ schemaVersion: 1, stage })}\n`);
+  const observation = `${JSON.stringify({ schemaVersion: 1, stage, observedAtUtc: new Date().toISOString() })}\n`;
+  await writeFile(path.join(directory, 'journey-stage.json'), observation);
+  await appendFile(path.join(directory, 'journey-stages.jsonl'), observation);
 }
 
 function nativeCatalogPageText(page) {
@@ -916,9 +918,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await globalNew.waitFor({ state: 'visible', timeout: 30_000 });
       assert.equal(await globalNew.count(), 1, 'The native header must expose one exact new-conversation entry.');
       assert.notEqual(await globalNew.getAttribute('aria-disabled'), 'true');
-      const inbox = topicSidebar.getByRole('heading', { name: 'Inbox / Unassigned', exact: true }).locator('xpath=..');
-      const inboxDisclosure = inbox.locator('[data-topic-control-key="inbox"]');
-      if (await inboxDisclosure.getAttribute('aria-expanded') !== 'true') await inboxDisclosure.click();
+      await retainNativeJourneyStage('native-inbox-disclosure');
+      const inbox = await revealEverydayInbox(topicSidebar);
+      await retainNativeJourneyStage('native-inbox-open');
       const inboxRow = inbox.getByRole('listitem').filter({ hasText: unassignedFixture.label });
       await inboxRow.waitFor({ state: 'visible', timeout: 30_000 });
       await inboxRow.getByRole('button', { name: 'Open Chat', exact: true }).press('Enter');

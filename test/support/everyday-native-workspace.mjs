@@ -4,6 +4,23 @@ export const EVERYDAY_SESSION_LABELS = Object.freeze({ areaPrimary: 'Fictional N
 
 export const FICTIONAL_TABLE = '\n| Date | Area | Decision | Notes |\n| --- | --- | --- | --- |\n| 2026-10-07 | Kitchen | Keep existing shelving | Compare two fictional quotations before ordering. |\n| 2026-10-08 | Study | Defer desk replacement | This is the final reachable cell. |\n';
 
+export async function revealEverydayInbox(sidebar) {
+  // The accessible heading includes the current count. Bind the existing
+  // disclosure identity, then verify its public name rather than dropping it.
+  const disclosure = sidebar.locator('[data-topic-control-key="inbox"]');
+  await disclosure.waitFor({ state: 'visible', timeout: 30_000 });
+  assert.equal(await disclosure.count(), 1, 'There must be one exact Inbox disclosure.');
+  assert.equal(await sidebar.getByRole('button', { name: /^Inbox \/ Unassigned \(\d+\)$/ }).and(disclosure).count(), 1,
+    'The exact Inbox disclosure must retain its counted accessible name.');
+  const inbox = disclosure.locator('xpath=ancestor::section[1]');
+  assert.equal(await inbox.count(), 1, 'Inbox rows must belong to the disclosure section.');
+  if (await disclosure.getAttribute('aria-expanded', { timeout: 30_000 }) !== 'true') {
+    await disclosure.click({ timeout: 30_000 });
+  }
+  assert.equal(await disclosure.getAttribute('aria-expanded', { timeout: 30_000 }), 'true');
+  return inbox;
+}
+
 export async function revealEverydayTopic(sidebar, topicId) {
   const entry = sidebar.locator(`[data-topic-id=${JSON.stringify(topicId)}]`);
   await entry.waitFor({ state: 'attached' });
