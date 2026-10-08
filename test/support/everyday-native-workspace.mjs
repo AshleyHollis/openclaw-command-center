@@ -37,41 +37,50 @@ export async function chooseEverydayAssignment(row, { topicId, duplicateTopicId,
   await assign.press('Enter');
 }
 
-export async function exerciseEverydayCreation({ page, sidebar, fixture, composer, readSessionKey, armResponseLoss, readCreation }) {
+export async function exerciseEverydayCreation({ page, sidebar, fixture, composer, readSessionKey, armResponseLoss, readCreation, nativeModal = false }) {
   const entry = await revealEverydayTopic(sidebar, fixture.topicId);
   const create = entry.getByRole('button', { name: 'New Topic Conversation', exact: true });
   const originalKey = await readSessionKey();
   const draft = 'Fictional draft retained through native creation Cancel.';
   await composer.fill(draft);
   const dialog = page.getByRole('dialog', { name: `New conversation in ${fixture.name}`, exact: true });
-  for (const cancel of ['button', 'escape']) {
+  // The native accessible dialog is in shadow DOM; its projected form remains
+  // light content of this uniquely named modal host, outside that dialog subtree.
+  const content = nativeModal ? page.locator('openclaw-modal-dialog').filter({
+    has: page.getByRole('heading', { name: `New conversation in ${fixture.name}`, exact: true }) }) : dialog;
+  const openDialog = async () => {
     await create.click(); await dialog.waitFor({ state: 'visible' });
-    if (cancel === 'button') await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await content.waitFor({ state: 'attached' });
+    assert.equal(await content.count(), 1, 'Creation controls must belong to one exact Topic modal.');
+  };
+  for (const cancel of ['button', 'escape']) {
+    await openDialog();
+    if (cancel === 'button') await content.getByRole('button', { name: 'Cancel', exact: true }).click();
     else await page.keyboard.press('Escape');
     await dialog.waitFor({ state: 'hidden' });
     await page.waitForFunction(element => element.matches(':focus'), await create.elementHandle());
     assert.equal(await composer.inputValue(), draft);
     assert.equal(await readSessionKey(), originalKey);
   }
-  await create.click(); await dialog.waitFor({ state: 'visible' });
-  const submit = dialog.getByRole('button', { name: 'Create Conversation', exact: true });
+  await openDialog();
+  const submit = content.getByRole('button', { name: 'Create Conversation', exact: true });
   await page.waitForFunction(element => !element.disabled, await submit.elementHandle());
-  await dialog.getByLabel('Conversation label', { exact: true }).fill(EVERYDAY_SESSION_LABELS.focusedCreated);
+  await content.getByLabel('Conversation label', { exact: true }).fill(EVERYDAY_SESSION_LABELS.focusedCreated);
   await armResponseLoss();
   await submit.click();
-  const check = dialog.getByRole('button', { name: 'Check creation outcome', exact: true });
+  const check = content.getByRole('button', { name: 'Check creation outcome', exact: true, includeHidden: true });
   await check.waitFor({ state: 'visible' });
   await page.waitForFunction(element => !element.disabled, await check.elementHandle());
   assert.equal(await submit.isDisabled(), true);
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await content.getByRole('button', { name: 'Cancel', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(await composer.inputValue(), draft);
-  await create.click(); await dialog.waitFor({ state: 'visible' });
+  await openDialog();
   // Actual inspect may already prove applied. Do not demand a fabricated
   // unknown response or force a reconcile after the real owner completed.
-  const open = dialog.getByRole('button', { name: 'Open created Conversation', exact: true });
-  await page.waitForFunction(element => [...element.querySelectorAll('button')].some(button =>
-    !button.hidden && !button.disabled && ['Open created Conversation', 'Check creation outcome'].includes(button.textContent)), await dialog.elementHandle());
+  const open = content.getByRole('button', { name: 'Open created Conversation', exact: true, includeHidden: true });
+  await page.waitForFunction(({ open, check }) => [open, check].some(button =>
+    !button.hidden && !button.disabled && button.getClientRects().length > 0), { open: await open.elementHandle(), check: await check.elementHandle() });
   if (await check.isVisible()) { await check.click(); }
   await open.waitFor({ state: 'visible' });
   await page.waitForFunction(element => !element.disabled, await open.elementHandle());

@@ -909,10 +909,13 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const topicSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
       await topicSidebar.waitFor({ state: 'visible', timeout: 30_000 });
       await retainNativeJourneyDiagnostics(diagnosticPage, process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR, 'native-sidebar-ready');
-      // Global New remains native and unassigned; assignment is a separate,
-      // visible Inbox action that must use the exact current Session identity.
-      const globalNew = page.locator('openclaw-app-sidebar').getByRole('link', { name: 'New session', exact: true }).first();
+      // This fixture presents native agent mode. Its header opens a native
+      // draft route; durable creation is exercised through the Topic owner below.
+      // Recent conversations has a second same-name link, so scope the header.
+      const globalNew = page.locator('openclaw-app-sidebar .sidebar-brand__actions').getByRole('link', { name: 'New conversation', exact: true });
       await globalNew.waitFor({ state: 'visible', timeout: 30_000 });
+      assert.equal(await globalNew.count(), 1, 'The native header must expose one exact new-conversation entry.');
+      assert.notEqual(await globalNew.getAttribute('aria-disabled'), 'true');
       const inbox = topicSidebar.getByRole('heading', { name: 'Inbox / Unassigned', exact: true }).locator('xpath=..');
       const inboxDisclosure = inbox.locator('[data-topic-control-key="inbox"]');
       if (await inboxDisclosure.getAttribute('aria-expanded') !== 'true') await inboxDisclosure.click();
@@ -941,6 +944,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await assignedDetails.getByRole('button', { name: assignedLabel, exact: true }).waitFor({ timeout: 30_000 });
       await retainNativeJourneyStage('native-sidebar-assignment');
       const creation = await exerciseEverydayCreation({ page, sidebar: topicSidebar, fixture,
+        nativeModal: true,
         composer: chatPane.locator('textarea[aria-label="Chat composer"]'),
         readSessionKey: () => chatPane.evaluate(element => element.sessionKey),
         armResponseLoss: () => { assert.equal(creationLoss.dispatchCount, 0); creationLoss.armed = true; },
@@ -963,6 +967,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const fixtureDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await fixtureDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
       await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
+      assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), 'Fictional draft retained through native creation Cancel.', 'Returning to Primary must restore its original unsent draft.');
       await fixtureDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
       const reader = page.locator('[data-topic-reader-page="panel"]');
       try {
