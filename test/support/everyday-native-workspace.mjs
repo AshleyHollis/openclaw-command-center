@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
+import { selectors } from 'playwright';
 
 export const EVERYDAY_SESSION_LABELS = Object.freeze({ areaPrimary: 'Fictional Native Area Primary Conversation', resourcePrimary: 'Fictional Native Resource Primary Conversation', unassigned: 'Fictional unassigned Conversation', focusedCreated: 'Fictional Everyday created Conversation' });
 
@@ -51,6 +53,104 @@ export function assertEverydayNoteRead(observation, fixture) {
   assert.ok(typeof observation?.value.revision === 'string' && observation.value.revision.length > 0);
   assert.equal(observation?.value.revision, observation.input.observedRevision);
   assert.equal(observation?.value.sourceReference?.observedRevision, observation.value.revision);
+}
+
+export async function waitForEverydayChat({ page, chatPane, sessionKey }) {
+  await page.waitForFunction(key => {
+    const panes = [...document.querySelectorAll('openclaw-chat-pane')].filter(pane =>
+      pane.sessionKey === key && pane.active === true && pane.presented === true &&
+      pane.getAttribute('aria-hidden') === 'false' && !pane.closest('[inert]'));
+    return panes.length === 1;
+  }, sessionKey, { timeout: 30_000 });
+  assert.equal(await chatPane.count(), 1, 'Exactly one current Chat owner may be presented.');
+  assert.equal(await chatPane.evaluate(pane => pane.sessionKey), sessionKey);
+}
+
+await selectors.register('everyday-files', () => ({
+    queryAll(root, identity) {
+      const target = JSON.parse(identity); const pending = [root]; const matches = [];
+      if (root.shadowRoot) pending.push(root.shadowRoot);
+      // Native owner hosts use display:contents. Their public presented/props
+      // contract supplies identity; child-reader visibility is checked later.
+      while (pending.length) {
+        for (const element of pending.pop().querySelectorAll('*')) {
+          if (element.shadowRoot) pending.push(element.shadowRoot);
+          if (element.localName === 'openclaw-plugin-view' && element.isConnected &&
+              element.surface === 'session-files' && element.presented === true &&
+              element.props?.sessionKey === target.sessionKey && element.props?.agentId === target.agentId) matches.push(element);
+        }
+      }
+      return matches;
+    }
+  }));
+
+export async function locateEverydayFilesView({ page, chatPane, fixture }) {
+  return chatPane.locator('everyday-files=' + JSON.stringify({ sessionKey: fixture.sessionKey, agentId: fixture.sessionKey.split(':')[1] }))
+    .filter({ has: page.locator('[data-topic-reader-page="panel"]') });
+}
+
+export async function openEverydayTopicFiles({ page, sidebar, chatPane, fixture, chatKey, draft, readNavigation }) {
+  const entry = await revealEverydayTopic(sidebar, fixture.topicId);
+  const previousSequence = (await readNavigation())?.sequence ?? 0;
+  await entry.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
+  const deadline = performance.now() + 30_000;
+  let observation;
+  while ((observation = await readNavigation())?.sequence <= previousSequence || !observation) {
+    assert.ok(performance.now() < deadline, 'The Files action must complete a new native resolver request.');
+    await delay(25);
+  }
+  assertEverydayResolvedTarget(observation, fixture);
+  const filesView = await locateEverydayFilesView({ page, chatPane, fixture });
+  const explorer = await assertEverydayFilesTarget({ page, chatPane, filesView, fixture, chatKey, draft });
+  const reader = filesView.locator('[data-topic-reader-page="panel"]');
+  assert.equal(await reader.count(), 1, 'The verified visible Files owner must contain one reader.');
+  await reader.waitFor({ state: 'visible', timeout: 30_000 });
+  return { filesView, reader, explorer };
+}
+
+export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, fixture, resourceFixture, created, readNavigation, onStage }) {
+  const secondary = { ...fixture, sessionReferenceId: created.referenceId, sessionId: created.sessionId, sessionKey: created.sessionKey };
+  const composer = chatPane.getByLabel('Chat composer', { exact: true });
+  // Explicit sidebar selection also records the exact secondary preference;
+  // dialog creation alone does not populate that presentation state.
+  await page.getByRole('button', { name: 'Refresh Topic workspace', exact: true }).press('Enter');
+  const area = await revealEverydayTopic(sidebar, fixture.topicId);
+  await area.getByRole('button', { name: EVERYDAY_SESSION_LABELS.focusedCreated, exact: true }).press('Enter');
+  await waitForEverydayChat({ page, chatPane, sessionKey: secondary.sessionKey });
+  const secondaryDraft = 'Fictional secondary Chat draft retained through Files close and reopen.';
+  await composer.fill(secondaryDraft);
+  const openAreaFiles = async (chatKey, draft) => (await openEverydayTopicFiles({ page, sidebar, chatPane,
+    fixture: secondary, chatKey, draft, readNavigation })).explorer;
+  const explorer = await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  const close = chatPane.getByRole('button', { name: 'Close Files', exact: true });
+  await close.waitFor({ state: 'visible', timeout: 30_000 });
+  assert.equal(await close.count(), 1, 'Close the actual native Files slot.');
+  await close.press('Enter');
+  await explorer.waitFor({ state: 'hidden', timeout: 30_000 });
+  assert.equal(await chatPane.evaluate(pane => pane.sessionKey), secondary.sessionKey);
+  assert.equal(await composer.inputValue(), secondaryDraft);
+  await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  await onStage?.('native-secondary-files-reopened');
+  const resource = await revealEverydayTopic(sidebar, resourceFixture.topicId);
+  await resource.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
+  await waitForEverydayChat({ page, chatPane, sessionKey: resourceFixture.sessionKey });
+  const resourceDraft = 'Fictional Resource Chat draft retained through remembered Area Files.';
+  await composer.fill(resourceDraft);
+  await openAreaFiles(resourceFixture.sessionKey, resourceDraft);
+  await onStage?.('native-secondary-files-remembered');
+  return { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true };
+}
+
+export async function assertEverydayDownloadedOriginal(download, expectedBytes) {
+  const stream = await download.createReadStream();
+  assert.ok(stream, 'The completed original download must expose its actual bytes.');
+  const chunks = []; let length = 0;
+  for await (const chunk of stream) {
+    length += chunk.length;
+    assert.ok(length <= expectedBytes.length, 'Downloaded bytes cannot exceed the exact fictional original.');
+    chunks.push(chunk);
+  }
+  assert.deepEqual(Buffer.concat(chunks), expectedBytes, 'Download must deliver the exact authorized original bytes.');
 }
 
 export async function revealEverydayTopic(sidebar, topicId) {
@@ -143,7 +243,7 @@ export async function exerciseEverydayCreation({ page, sidebar, fixture, compose
   return saved;
 }
 
-export async function assertEverydayTable({ page, reading, source, originalText }) {
+export async function assertEverydayTable({ page, reader, reading, source, originalText }) {
   const region = reading.getByRole('region', { name: 'Table 1', exact: true });
   await region.waitFor({ state: 'visible' });
   const metrics = await region.evaluate(element => {
@@ -165,11 +265,11 @@ export async function assertEverydayTable({ page, reading, source, originalText 
     return cell.textContent === 'This is the final reachable cell.' && end.right <= bounds.right + 2 && end.right > bounds.left;
   }), true, 'Final table cell is reachable inside the pane.');
   await source.click();
-  const sourceRegion = page.getByRole('region', { name: 'Note source', exact: true });
+  const sourceRegion = reader.getByRole('region', { name: 'Note source', exact: true });
   await sourceRegion.waitFor();
   await page.waitForFunction(({ element, text }) => element.textContent === text, { element: await sourceRegion.elementHandle(), text: originalText });
-  assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), originalText);
-  await page.getByRole('button', { name: 'Reading', exact: true }).click();
+  assert.equal(await sourceRegion.textContent(), originalText);
+  await reader.getByRole('button', { name: 'Reading', exact: true }).click();
   await region.waitFor({ state: 'visible' });
   return metrics;
 }

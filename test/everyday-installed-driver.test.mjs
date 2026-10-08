@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, openEverydayTopicFiles, locateEverydayFilesView, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -26,10 +26,15 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  let browser;
-  t.after(async () => { await browser?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } }); page.setDefaultTimeout(5000);
+  let browser; let managedZoom;
+  t.after(async () => { if (managedZoom) await managedZoom.close(); else await browser?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const browserOptions = { headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) };
+  if (process.env.COMMAND_CENTER_REAL_BROWSER_ZOOM === '1') {
+    const { launchManagedBrowser } = await import('./support/real-host-runtime.mjs');
+    managedZoom = await launchManagedBrowser({ ...browserOptions, browserUiZoom: 2 });
+    browser = managedZoom.context;
+  } else browser = await chromium.launch(browserOptions);
+  const page = await browser.newPage(); await page.setViewportSize({ width: 1440, height: 900 }); page.setDefaultTimeout(5000);
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.evaluate(async ({ text, labels, nativeComponents }) => {
     const { mountTopicSidebar } = await import('/topic-sidebar.mjs');
@@ -38,15 +43,16 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     const delay = () => new Promise(resolve => setTimeout(resolve, 15));
     const topics = ['fixture-area', 'fixture-resource'].map((topicId, index) => ({ topicId, name: 'Fictional Same Name', paraCategory: index ? 'resource' : 'area', revision: 4, lifecycle: 'active', usable: true, health: 'ready', noteFolderReferenceId: 'fictional-folder' }));
     const signal = new AbortController().signal;
-    const chat = document.querySelector('openclaw-chat-pane'); chat.sessionKey = 'agent:main:fictional-primary';
+    const chat = document.querySelector('openclaw-chat-pane'); chat.sessionKey = 'agent:main:fictional-primary'; chat.active = true; chat.presented = true;
     // This host boundary models the pinned native independent Files contract.
     // The actual Native26 host/pane test separately proves Chat/draft retention.
     const filesView = document.createElement('openclaw-plugin-view');
-    filesView.surface = 'session-files'; filesView.presented = true;
+    filesView.surface = 'session-files'; filesView.presented = true; filesView.style.display = 'contents';
     filesView.props = { sessionKey: chat.sessionKey, agentId: 'main' };
-    const reader = document.querySelector('#reader'); reader.before(filesView); filesView.append(reader);
+    const reader = document.querySelector('#reader'); filesView.append(reader); chat.append(filesView);
     window.fixture = { dispatchCount: 0, responseLost: false, armed: false, assignment: null, operation: null };
     const f = window.fixture;
+    const drafts = new Map();
     const claimedLabels = new Set();
     for (const role of ['areaPrimary', 'resourcePrimary', 'unassigned']) {
       if (claimedLabels.has(labels[role])) throw new Error('Native setup label already in use');
@@ -54,9 +60,10 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     }
     f.seedLabels = [...claimedLabels];
     const host = { signal, connection: { connected: true, canRead: true, canWrite: true }, redact: x => x, subscribe: () => () => {},
-      sessions: { async openChat({ sessionKey }) { await delay(); chat.sessionKey = sessionKey; },
-        async openFiles(target) { await delay(); f.filesTarget = target; filesView.props = target;
-          window.reader.update({ host, signal, presented: true, props: { topicId: 'fixture-resource' }, panel: { showInMain() {} } }); } },
+      sessions: { async openChat({ sessionKey }) { await delay(); const composer = chat.querySelector('textarea');
+          drafts.set(chat.sessionKey, composer.value); chat.sessionKey = sessionKey; composer.value = drafts.get(sessionKey) ?? ''; },
+        async openFiles(target) { await delay(); f.filesTarget = target; filesView.props = target; filesView.hidden = false; filesView.presented = true;
+          window.reader.update({ host, signal, presented: true, props: { topicId: target.sessionKey === 'agent:main:fictional-resource' ? 'fixture-resource' : 'fixture-area' }, panel: { showInMain() {} } }); } },
       navigation: { async openPage() { await delay(); } },
       components: {
         mountSelectPicker(container, props) {
@@ -84,11 +91,11 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
         if (method.endsWith('topics.get')) return { result: { topic: topics.find(topic => topic.topicId === params.topicId) } };
         if (method.endsWith('sessions.topic-context')) return { result: f.assignment ? { status: 'bound', ...f.assignment } : { status: 'unbound' } };
         if (method.endsWith('sessions.assign-topic')) { f.assignment = params; return { result: { status: 'applied', logicalOperationId: params.logicalOperationId, referenceId: `conversation-assignment:${params.logicalOperationId}`, topicId: params.topicId, sessionKey: params.sessionKey, sessionId: params.expectedSessionId } }; }
-        if (method.endsWith('sessions.browse')) return { result: { topicId: params.topicId, conversations: [{ referenceId: `${params.topicId}-primary`, sessionId: `${params.topicId}-primary-id`, status: 'open', isPrimary: true }, ...(f.operation && params.topicId === f.operation.topicId ? [{ referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', status: 'open' }] : [])] } };
+        if (method.endsWith('sessions.browse')) return { result: { topicId: params.topicId, conversations: [{ referenceId: `${params.topicId}-primary`, sessionId: `${params.topicId}-primary-id`, status: 'open', isPrimary: true }, ...(f.operation && params.topicId === f.operation.topicId ? [{ referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', status: 'open', displayName: labels.focusedCreated }] : [])] } };
         if (method.endsWith('histories.list')) return { result: { histories: [] } };
         if (method.endsWith('sessions.create')) { f.dispatchCount++; assertInput(params); if (claimedLabels.has(params.label)) throw new Error('Native label already in use'); claimedLabels.add(params.label); f.operation = params; if (f.armed) { f.armed = false; f.responseLost = true; throw new Error('Fictional response lost after owner settlement'); } throw new Error('An unexpected second creation is forbidden.'); }
         if (method.endsWith('sessions.resolve-native')) { const sessionKey = params.referenceId === 'fixture-resource-primary' ? 'agent:main:fictional-resource' : params.referenceId === 'fixture-area-primary' ? 'agent:main:fictional-primary' : 'agent:main:fictional-created';
-          const value = { sessionKey }; f.navigation = { input: params, value }; return { result: value }; }
+          const value = { sessionKey }; f.navigation = { input: params, value, sequence: (f.navigation?.sequence ?? 0) + 1 }; return { result: value }; }
         const isResource = params.topicId === 'fixture-resource';
         const sourceReference = { topicId: params.topicId, referenceId: isResource ? 'fictional-resource-note' : 'fictional-note', observedRevision: 'r1' };
         if (method.endsWith('notes.browse')) return { notes: [{ path: isResource ? 'Resource-05.md' : 'Overview.md', revision: 'r1', sourceReference }], total: 1, offset: 0, hasMore: false, cursor: 'fictional-catalog' };
@@ -121,7 +128,24 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     }
     function assertInput(params) { if (params.isPrimary !== false || params.topicId !== topics[0].topicId || !params.logicalOperationId) throw new Error('Invalid closed creation fixture input.'); }
     window.sidebar = mountTopicSidebar(document.querySelector('#side'), { host, signal, presented: true, props: { sessions: [{ key: 'agent:main:fictional-unassigned', sessionId: 'fictional-unassigned-id', updatedAt: 8, displayName: 'Fictional Inbox' }] }, mountDefault: () => () => {} }, undefined, createNativeState());
+    const close = document.createElement('button'); close.textContent = 'Close Files'; chat.append(close);
+    close.onclick = () => { filesView.hidden = true; filesView.presented = false; };
     window.reader = mountTopicPage(document.querySelector('#reader'), { host, signal, props: { topicId: topics[0].topicId }, presented: true, panel: { showInMain() {} } }, undefined, { panel: true });
+    // Model Native's retained owners: an inactive Chat with a Files panel and
+    // an inactive contribution inside current Chat. Neither may satisfy a read.
+    const retainedChat = document.createElement('openclaw-chat-pane');
+    retainedChat.setAttribute('aria-hidden', 'true'); retainedChat.hidden = true;
+    retainedChat.sessionKey = 'agent:main:fictional-retired'; retainedChat.active = false; retainedChat.presented = false;
+    for (const parent of [retainedChat, chat]) {
+      const retained = document.createElement('openclaw-plugin-view'); retained.hidden = true;
+      retained.surface = 'session-files'; retained.presented = false;
+      retained.props = { sessionKey: 'agent:main:fictional-retired', agentId: 'main' };
+      const panel = document.createElement('section'); retained.append(panel); parent.prepend(retained);
+      mountTopicPage(panel, { host, signal, props: { topicId: topics[1].topicId }, presented: false,
+        panel: { showInMain() {} } }, undefined, { panel: true });
+    }
+    document.body.prepend(retainedChat);
+
   }, { text: '# Fictional Note\n' + FICTIONAL_TABLE, labels: EVERYDAY_SESSION_LABELS, nativeComponents: !!nativeComponentsRoot });
   if (nativeComponentsRoot) {
     const headerNew = page.locator('openclaw-app-sidebar .sidebar-brand__actions').getByRole('link', { name: 'New conversation', exact: true });
@@ -145,34 +169,77 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
   await revealEverydayTopic(sidebar, 'fixture-area');
   const created = await exerciseEverydayCreation({ page, sidebar, fixture: { topicId: 'fixture-area', name: 'Fictional Same Name' }, composer: page.getByLabel('Chat composer'),
     nativeModal: !!nativeComponentsRoot,
-    readSessionKey: () => page.locator('openclaw-chat-pane').evaluate(element => element.sessionKey),
+    readSessionKey: () => page.locator('openclaw-chat-pane[aria-hidden="false"]').evaluate(element => element.sessionKey),
     armResponseLoss: () => page.evaluate(() => { window.fixture.armed = true; }),
     readCreation: () => page.evaluate(() => ({ ...window.fixture, logicalOperationId: window.fixture.operation.logicalOperationId, referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', sessionKey: 'agent:main:fictional-created' })) });
   assert.equal(created.dispatchCount, 1);
   assert.deepEqual(created.seedLabels, [EVERYDAY_SESSION_LABELS.areaPrimary, EVERYDAY_SESSION_LABELS.resourcePrimary, EVERYDAY_SESSION_LABELS.unassigned]);
   assert.equal(created.operation.label, EVERYDAY_SESSION_LABELS.focusedCreated);
-  await page.getByRole('button', { name: nativeComponentsRoot ? 'Overview.md' : 'Read Overview.md', exact: true }).click();
-  for (const width of [1440, 412, 360, 320]) { await page.setViewportSize({ width, height: 900 }); await assertEverydayTable({ page, reading: page.getByRole('region', { name: 'Note content', exact: true }), source: page.getByRole('button', { name: 'Source', exact: true }), originalText: '# Fictional Note\n' + FICTIONAL_TABLE }); }
-  assert.equal(await page.getByLabel('Chat composer').inputValue(), 'Fictional draft retained through native creation Cancel.');
-  await page.setViewportSize({ width: 1440, height: 900 });
+  const resourceFixture = { topicId: 'fixture-resource', sessionReferenceId: 'fixture-resource-primary', sessionId: 'fixture-resource-primary-id',
+    sessionKey: 'agent:main:fictional-resource', notePath: 'Resource-05.md' };
+  const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+  assert.equal(await page.locator('[data-topic-reader-page="panel"]').count(), 3,
+    'The diagnostic must retain multiple mounted readers, as the installed host does.');
+  assert.equal(await chatPane.locator('[data-topic-reader-page="panel"]').count(), 2);
+  const filesView = await locateEverydayFilesView({ page, chatPane, fixture: { sessionKey: 'agent:main:fictional-primary' } });
+  const reader = filesView.locator('[data-topic-reader-page="panel"]');
+  assert.equal(await filesView.count(), 1); assert.equal(await reader.count(), 1);
+  const duplicate = await filesView.evaluateHandle(view => {
+    const copy = view.cloneNode(true); copy.surface = view.surface; copy.presented = true; copy.props = { ...view.props };
+    view.after(copy); return copy;
+  });
+  assert.equal(await filesView.count(), 2, 'Two presented owners must remain ambiguous, never choose the first.');
+  await assert.rejects(assertEverydayFilesTarget({ page, chatPane, filesView,
+    fixture: { sessionKey: 'agent:main:fictional-primary' }, chatKey: created.sessionKey, draft: '' }), /strict mode violation|One mounted Topic Files/);
+  await duplicate.evaluate(view => view.remove()); await duplicate.dispose();
+  assert.equal(await filesView.count(), 1);
+
+
+  const secondary = await exerciseEverydaySecondaryFiles({ page, sidebar, chatPane,
+    fixture: { topicId: 'fixture-area', sessionKey: 'agent:main:fictional-primary' }, resourceFixture, created,
+    readNavigation: () => page.evaluate(() => window.fixture.navigation) });
+  assert.deepEqual(secondary, { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true });
   const area = await revealEverydayTopic(sidebar, 'fixture-area');
   await area.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
-  const chatPane = page.locator('openclaw-chat-pane');
+  await openEverydayTopicFiles({ page, sidebar, chatPane, fixture: { topicId: 'fixture-area', sessionReferenceId: 'fixture-area-primary',
+    sessionId: 'fixture-area-primary-id', sessionKey: 'agent:main:fictional-primary' }, chatKey: 'agent:main:fictional-primary',
+    draft: 'Fictional draft retained through native creation Cancel.', readNavigation: () => page.evaluate(() => window.fixture.navigation) });
+  await reader.getByRole('button', { name: nativeComponentsRoot ? 'Overview.md' : 'Read Overview.md', exact: true }).click();
+  for (const width of [1440, 412, 360, 320]) { await page.setViewportSize({ width: managedZoom ? width * 2 : width, height: 900 }); await assertEverydayTable({ page, reader, reading: reader.getByRole('region', { name: 'Note content', exact: true }), source: reader.getByRole('button', { name: 'Source', exact: true }), originalText: '# Fictional Note\n' + FICTIONAL_TABLE }); }
+  if (managedZoom) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const actual = await page.evaluate(() => ({ width: innerWidth, ratio: devicePixelRatio,
+      font: getComputedStyle(document.body).fontSize, visualScale: visualViewport.scale }));
+    assert.deepEqual(actual, { width: 720, ratio: 2, font: '16px', visualScale: 1 });
+    await assertEverydayTable({ page, reader, reading: reader.getByRole('region', { name: 'Note content', exact: true }),
+      source: reader.getByRole('button', { name: 'Source', exact: true }), originalText: '# Fictional Note\n' + FICTIONAL_TABLE });
+    console.log(JSON.stringify({ browserLayoutZoom: { factor: 2, actual, tablePassed: true, fullInstalledPair: false } }));
+  }
+  assert.equal(await page.getByLabel('Chat composer').inputValue(), 'Fictional draft retained through native creation Cancel.');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await area.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
   await page.waitForFunction(pane => pane.sessionKey === 'agent:main:fictional-primary', await chatPane.elementHandle());
   const resource = await revealEverydayTopic(sidebar, 'fixture-resource');
   await resource.getByRole('button', { name: 'Open Topic Files', exact: true }).click();
-  const resourceFixture = { topicId: 'fixture-resource', sessionReferenceId: 'fixture-resource-primary', sessionId: 'fixture-resource-primary-id',
-    sessionKey: 'agent:main:fictional-resource', notePath: 'Resource-05.md' };
-  const filesView = page.locator('openclaw-plugin-view').filter({ has: page.locator('[data-topic-reader-page="panel"]') });
-  const explorer = await assertEverydayFilesTarget({ page, chatPane, filesView, fixture: resourceFixture,
+  const resourceFilesView = await locateEverydayFilesView({ page, chatPane, fixture: resourceFixture });
+  const explorer = await assertEverydayFilesTarget({ page, chatPane, filesView: resourceFilesView, fixture: resourceFixture,
     chatKey: 'agent:main:fictional-primary', draft: 'Fictional draft retained through native creation Cancel.' });
   assertEverydayResolvedTarget(await page.evaluate(() => window.fixture.navigation), resourceFixture);
   await assert.rejects(page.waitForFunction(pane => pane.sessionKey === 'agent:main:fictional-resource', await chatPane.elementHandle(), { timeout: 100 }), /Timeout/);
   await explorer.getByRole('button', { name: nativeComponentsRoot ? 'Resource-05.md' : 'Read Resource-05.md', exact: true }).click();
-  await filesView.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { name: 'Fictional Resource 5', exact: true }).waitFor();
+  await resourceFilesView.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { name: 'Fictional Resource 5', exact: true }).waitFor();
   assertEverydayNoteRead(await page.evaluate(() => window.fixture.note), resourceFixture);
   assert.throws(() => assertEverydayResolvedTarget({ input: { topicId: 'fixture-area' } }, resourceFixture), /AssertionError/);
   assert.throws(() => assertEverydayNoteRead({ input: { topicId: 'fixture-area' } }, resourceFixture), /AssertionError/);
   assert.equal(await chatPane.evaluate(pane => pane.sessionKey), 'agent:main:fictional-primary');
   assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), 'Fictional draft retained through native creation Cancel.');
+  const bytes = Buffer.from('%PDF fictional original download\n');
+  await page.evaluate(encoded => { const anchor = document.createElement('a'); anchor.href = `data:application/pdf;base64,${encoded}`;
+    anchor.download = 'fictional-original.pdf'; anchor.textContent = 'Download fictional original'; document.body.append(anchor); }, bytes.toString('base64'));
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'Download fictional original', exact: true }).click();
+  const download = await downloaded;
+  await assertEverydayDownloadedOriginal(download, bytes);
+  const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1;
+  await assert.rejects(assertEverydayDownloadedOriginal(download, changed), /Download must deliver the exact authorized original bytes/);
 });
