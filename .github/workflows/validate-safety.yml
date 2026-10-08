@@ -24,4 +24,5 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
+      - run: node --test test/conversation-plans.test.mjs test/conversation-plan-source.test.mjs test/conversation-plan-attention.test.mjs test/conversation-plan-native-contract.test.mjs test/attention-service.integration.test.mjs
       - run: npm run check

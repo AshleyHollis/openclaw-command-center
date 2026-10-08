@@ -3,6 +3,7 @@ import { readNativeNote, readNativeDocument } from './note-read.mjs';
 import { encodeNoteText, beginNativeNoteOperation, settleNativeNoteOperation, createNativeState, subscribeNativeState } from './mutations.mjs';
 import { createNativeCreationForm, createNativeNoteCreationForm } from './creation-form.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountConversationPlanWorkspace } from './conversation-plan-workspace.mjs';
 import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
 import { topicSourceAvailable } from './topic-source-availability.mjs';
@@ -28,6 +29,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let reading = new AbortController();
   let writing = new AbortController();
   let topic;
+  let planWorkspace;
+  const planHost = container.ownerDocument.createElement('div');
   let selected;
   let catalogAllNotes = [];
   let catalogNotes = [];
@@ -163,6 +166,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   container.replaceChildren(readerStyles(document), toolbar, ...(panel ? [] : [back, chat, history]), status, announcement, paneHelp, ...(panel ? [] : [creationActions, conversationsLabel, conversationStatus, conversations, historiesLabel, historyStatus, histories]), notesWorkspace, ...(FIRST_LIVE_FEATURES.search && !panel ? [searchPane] : []),
     ...(FIRST_LIVE_FEATURES.noteWrite ? [editing] : [footer]));
   const readable = () => host.connection.connected && host.connection.canRead;
+  if (FIRST_LIVE_FEATURES.conversationPlans && !panel) container.append(planHost);
   function showPanelInMain() {
     if (!panel) return true;
     if (typeof activeContext.panel?.showInMain !== 'function') {
@@ -179,7 +183,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const currentCatalog = (pending) => !signal.aborted && presented && readable() && pending === catalogGeneration;
   const report = (error) => { if (!signal.aborted && presented && error?.name !== 'AbortError') { status.textContent = host.redact(error?.message || 'Topic is unavailable.'); renderNativeExplorer(); } };
   let searchGeneration = 0;
-  function cancel() { generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
+  function cancel() { planWorkspace?.dispose(); planWorkspace = undefined; generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
   function clearDocumentUrls() { for (const url of documentUrls) URL.revokeObjectURL(url); documentUrls.clear(); }
   const draftKey = (descriptor) => JSON.stringify([descriptor.topicId, descriptor.referenceId]);
   const sameDocumentSelection = (candidate, descriptor) => candidate?.sourceKind === 'document' && candidate.topicId === descriptor.topicId && candidate.referenceId === descriptor.referenceId && candidate.path === descriptor.path && candidate.observedRevision === descriptor.observedRevision;
@@ -382,6 +386,15 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         void navigation.open({ topicId, referenceId: conversation.referenceId, expectedSessionId: conversation.sessionId }).catch((error) => { if (current(pending)) report(error); });
       }, { signal });
       row.append(button, element('span', conversation.isPrimary ? ' · Primary' : ' · Linked'));
+      if (FIRST_LIVE_FEATURES.conversationPlans && !panel) {
+        const plan = element('button', 'Review agreed plan'); plan.type = 'button';
+        plan.addEventListener('click', () => {
+          if (!presented || !readable()) return;
+          planWorkspace?.dispose();
+          const originalTopic = topicId;
+          planWorkspace = mountConversationPlanWorkspace(planHost, { host, signal, topicId, referenceId: conversation.referenceId, current: () => presented && readable() && topicId === originalTopic });
+        }, { signal }); row.append(plan);
+      }
       fragment.append(row);
     }
     conversations.replaceChildren(fragment);
@@ -572,6 +585,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     } catch (error) { if (!readSignal.aborted && current(pending)) report(error); }
   }
   async function load() {
+    planWorkspace?.dispose(); planWorkspace = undefined;
     cancel(); const pending = catalogGeneration;
     searchResults.replaceChildren(); searchStatus.textContent = ''; searchInput.value = '';
     pendingCatalogOffset = null;

@@ -7,6 +7,7 @@ const browserHeavyTests = new Set([
   'test/native-operating-mode.test.mjs',
   'test/first-live-native-ui.test.mjs',
   'test/native-ui-attention.test.mjs',
+  'test/native-ui-conversation-plan.test.mjs',
   'test/native-ui-editing.test.mjs',
   'test/native-ui-page.test.mjs',
   'test/keyboard-batch.test.mjs',
