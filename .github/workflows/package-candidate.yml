@@ -76,6 +76,8 @@ jobs:
           PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$browser" node --test --test-concurrency=1 test/managed-browser-executable.test.mjs
       - name: Exercise the coherent asynchronous packaged-UI diagnostic
         run: node --test test/everyday-installed-driver.test.mjs
+      - name: Verify private bounded failed-page evidence mechanics
+        run: node --test test/native-journey-diagnostics.test.mjs
       - name: Retain existing picker dialog reader and navigation contracts
         run: node --test --test-concurrency=1 test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/native-reader-tables.test.mjs test/native-reader-workspace.test.mjs test/native-document-preview.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
       - run: node scripts/check.mjs

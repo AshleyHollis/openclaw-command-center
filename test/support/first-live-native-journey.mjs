@@ -27,6 +27,7 @@ import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first
 import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster, rememberNativeScaleNotePage } from './first-live-native-scale.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
+import { retainNativeJourneyDiagnostics } from './native-journey-diagnostics.mjs';
 
 // Bounded fictional fixture bytes. These enter only the isolated world and
 // let the native Files replacement exercise its real document owner without
@@ -717,6 +718,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
     const evidence = { requests: [], responses: [], console: [], errors: [] };
     let managedBrowser;
     const evidencePages = [];
+    let diagnosticPage;
     const abortBrowser = () => { void managedBrowser?.server.kill().catch(() => {}); };
     signal.addEventListener('abort', abortBrowser, { once: true });
     let failure;
@@ -863,6 +865,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         return nextPage;
       };
       const page = await createPage();
+      if (nativeFilesWorkspace) diagnosticPage = page;
       const entryResponse = observeBrowserResponse(page.waitForResponse((candidate) => candidate.request().method() === 'GET' && candidate.url() === entryUrl.href, { timeout: 60_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       // Navigate only through the real host router; its native loader imports
       // the revisioned entry and reports activation on its own live connection.
@@ -905,6 +908,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       if (await expandSidebar.count()) await expandSidebar.press('Enter');
       const topicSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
       await topicSidebar.waitFor({ state: 'visible', timeout: 30_000 });
+      await retainNativeJourneyDiagnostics(diagnosticPage, process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR, 'native-sidebar-ready');
       // Global New remains native and unassigned; assignment is a separate,
       // visible Inbox action that must use the exact current Session identity.
       const globalNew = page.locator('openclaw-app-sidebar').getByRole('link', { name: 'New session', exact: true }).first();
@@ -1733,7 +1737,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         startup: { hostReceipt: { schemaVersion: descriptor.schemaVersion ?? 1, commit: host.host.commit, ...descriptor.integrity }, startupMigrationVerified: !!bootstrapped.completion, routeGrantObserved: true,
           nativeUi: { pluginId: 'command-center', revision: native.revision, activationObserved: activation.status === 'activated', authenticatedHttpObserved: true } } };
       }
-    } catch (error) { failure = error; }
+    } catch (error) {
+      failure = error;
+      await retainNativeJourneyDiagnostics(diagnosticPage, process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR, 'native-journey-failure');
+    }
     finally {
       // Keep failure reporting inside the enclosing bounded slice: cleanup is
       // diagnostic evidence, never authority to consume its entire deadline.
