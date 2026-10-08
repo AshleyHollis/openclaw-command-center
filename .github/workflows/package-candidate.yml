@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   pr368-harness:
-    if: inputs.test_only_harness == true || github.head_ref == 'candidate/pr368-installed-journey-test' || github.head_ref == 'candidate/pr368-acceptance-supplement'
+    if: inputs.test_only_harness == true || github.head_ref == 'candidate/pr368-installed-journey-test' || github.head_ref == 'candidate/pr368-acceptance-supplement' || github.head_ref == 'candidate/pr368-secondary-transcript'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -84,9 +84,9 @@ jobs:
         run: node --test --test-concurrency=1 test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/native-reader-tables.test.mjs test/native-reader-workspace.test.mjs test/native-document-preview.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
       - run: node scripts/check.mjs
       - name: Record proof boundaries
-        run: echo 'Original product018f4aa artifact reused. Supplemental contract diagnostic only; original f60 desktop proof passed. Supplement installed checks, actual Android and full native browser UI200%zoom remain unproved.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Original product018f4aa artifact reused. CI verifies this exact test closure through contract diagnostics; it does not execute installed acceptance. Retain separately admitted installed and Android evidence within their recorded scope.' >> "$GITHUB_STEP_SUMMARY"
   package:
-    if: inputs.test_only_harness != true && github.head_ref != 'candidate/pr368-installed-journey-test' && github.head_ref != 'candidate/pr368-acceptance-supplement'
+    if: inputs.test_only_harness != true && github.head_ref != 'candidate/pr368-installed-journey-test' && github.head_ref != 'candidate/pr368-acceptance-supplement' && github.head_ref != 'candidate/pr368-secondary-transcript'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
