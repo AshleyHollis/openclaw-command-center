@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, waitForEverydayChat, openEverydayTopicFiles, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -498,8 +498,9 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
         });
       });
       await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      const nativePage = page.locator('openclaw-plugin-page');
+      const nativePage = page.locator('openclaw-plugin-page').filter({ has: page.getByRole('heading', { name: 'Topics', exact: true }) });
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await nativePage.count(), 1);
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
       await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
@@ -798,20 +799,24 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         await waitForNativeControlUiReadiness({ world, host, signal, scale: false });
       }
       progress('browser-launch');
-      managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
+      managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000,
+        ...(nativeFilesWorkspace && process.env.COMMAND_CENTER_REAL_BROWSER_ZOOM === '1' ? { browserUiZoom: 2 } : {}) }), 60_000, signal);
       let browserTopics;
       let browserNavigation; let browserNavigationSequence = 0;
       let browserHistory;
       let browserNote;
       let browserChatSend;
       let browserChatAcknowledgement;
+      let browserZoomEvidence;
       const creationLoss = { armed: false, responseLost: false, dispatchCount: 0, input: null, requestId: null };
       const scaleResponses = { notePages: new Map(), rosters: [], rosterOverflow: false };
       const conversationLabel = scale ? 'Fictional Native Scale 100' : 'Fictional Native Follow-up';
       const messageText = 'Fictional native Conversation message for exact Session readback.';
       const attachmentMessageText = 'File this fictional native attachment into the exact Topic Documents folder.';
       const createPage = async () => {
-        const nextPage = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
+        const nextPage = managedBrowser.context ? await managedBrowser.context.newPage() :
+          await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
+        if (managedBrowser.context) await nextPage.setViewportSize({ width: 2880, height: 900 });
         if (keyboard) await nextPage.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
         evidencePages.push(await configureEvidencePage(nextPage, browserGuard, evidence));
         if (scaleDiagnostic) nextPage.setDefaultTimeout(10_000);
@@ -902,7 +907,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         const diagnostic = await page.locator('body').innerText().then((text) => text.slice(0, 4_000)).catch(() => 'unavailable');
         throw new Error(`Exact Topic navigation did not present native Chat: ${JSON.stringify(diagnostic)}`, { cause: error });
       }
-      await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
+      await waitForEverydayChat({ page, chatPane, sessionKey: fixture.sessionKey });
       await retainNativeJourneyStage('native-chat-open');
 
       // The native sidebar is initially collapsed. Open its public control
@@ -911,6 +916,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const expandSidebar = page.getByRole('button', { name: 'Expand sidebar', exact: true });
       if (await expandSidebar.count()) await expandSidebar.press('Enter');
       const topicSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
+      assert.equal(await topicSidebar.count(), 1);
       await topicSidebar.waitFor({ state: 'visible', timeout: 30_000 });
       await retainNativeJourneyDiagnostics(diagnosticPage, process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR, 'native-sidebar-ready');
       // This fixture presents native agent mode. Its header opens a native
@@ -926,10 +932,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const inboxRow = inbox.getByRole('listitem').filter({ hasText: unassignedFixture.label });
       await inboxRow.waitFor({ state: 'visible', timeout: 30_000 });
       await inboxRow.getByRole('button', { name: 'Open Chat', exact: true }).press('Enter');
-      await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, unassignedFixture.sessionKey, { timeout: 30_000 });
+      await waitForEverydayChat({ page, chatPane, sessionKey: unassignedFixture.sessionKey });
       const assignmentDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await assignmentDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
-      await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
+      await waitForEverydayChat({ page, chatPane, sessionKey: fixture.sessionKey });
       const currentInboxRow = inbox.getByRole('listitem').filter({ hasText: unassignedFixture.label });
       await chooseEverydayAssignment(currentInboxRow, { topicId: fixture.topicId, duplicateTopicId: resourceFixture.topicId, name: fixture.name });
       await waitForConsecutiveReadiness(async () => {
@@ -972,52 +978,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         created: creation, readNavigation: () => browserNavigation, onStage: retainNativeJourneyStage });
       const fixtureDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await fixtureDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
-      await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
+      await waitForEverydayChat({ page, chatPane, sessionKey: fixture.sessionKey });
       assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), 'Fictional draft retained through native creation Cancel.', 'Returning to Primary must restore its original unsent draft.');
-      await fixtureDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
-      const reader = page.locator('[data-topic-reader-page="panel"]');
-      try {
-        await reader.waitFor({ state: 'visible', timeout: 30_000 });
-      } catch (error) {
-        const diagnostic = await page.locator('body').innerText().then((text) => text.slice(0, 4_000)).catch(() => 'unavailable');
-        const selection = await page.evaluate(() => {
-          const views = () => [...document.querySelectorAll('openclaw-plugin-view')].map((view) => ({
-            surface: view.surface ?? null,
-            text: view.textContent?.slice(0, 200) ?? '',
-          }));
-          for (const element of document.querySelectorAll('*')) {
-            const plugins = element.context?.plugins;
-            if (plugins && typeof plugins.selectedReplacement === 'function') {
-              const selected = plugins.selectedReplacement('session-files');
-              return {
-                owner: element.tagName.toLowerCase(),
-                selectedKey: selected?.key ?? null,
-                registrations: plugins.registrations?.('replacements')?.map((entry) => ({
-                  key: entry.key,
-                  surface: entry.value?.surface,
-                  aborted: entry.signal?.aborted === true,
-                })) ?? [],
-                views: views(),
-                assets: performance.getEntriesByType('resource')
-                  .map((entry) => entry.name)
-                  .filter((name) => name.includes('control-ui-boot') || name.includes('control-ui-loader')),
-              };
-            }
-          }
-          return {
-            owner: null,
-            selectedKey: null,
-            registrations: [],
-            views: views(),
-            assets: performance.getEntriesByType('resource')
-              .map((entry) => entry.name)
-              .filter((name) => name.includes('control-ui-boot') || name.includes('control-ui-loader')),
-          };
-        }).catch(() => ({ owner: 'unavailable', selectedKey: null, registrations: [] }));
-        throw new Error(`Native Chat did not present its selected Files replacement: ${JSON.stringify({ diagnostic, selection })}`, { cause: error });
-      }
-      const explorer = reader.locator('.control-ui-file-explorer');
-      await explorer.waitFor({ state: 'visible', timeout: 30_000 });
+      const { reader, explorer } = await openEverydayTopicFiles({ page, sidebar: topicSidebar, chatPane, fixture,
+        chatKey: fixture.sessionKey, draft: 'Fictional draft retained through native creation Cancel.', readNavigation: () => browserNavigation });
       await explorer.getByText(fixture.name, { exact: true }).waitFor({ timeout: 30_000 });
       // The host, not this replacement, owns pane movement.  Keep a bounded
       // inventory of the controls it actually presents in this real browser
@@ -1048,12 +1012,39 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // The first selection promotes the exact same Files contribution into
       // the main pane.  Its compact native tree remains mounted with the
       // reader, rather than returning to a flat Topic page.
-      const noteContent = page.getByRole('region', { name: 'Note content', exact: true });
+      const noteContent = reader.getByRole('region', { name: 'Note content', exact: true });
       await assertNativeFormattedNote(noteContent, { ...fixture, noteText: fixture.noteText.replace(FICTIONAL_TABLE, '') });
-      const tableMetrics = await assertEverydayTable({ page, reading: noteContent, source: page.getByRole('button', { name: 'Source', exact: true }), originalText: fixture.noteText });
+      const tableMetrics = await assertEverydayTable({ page, reader, reading: noteContent, source: reader.getByRole('button', { name: 'Source', exact: true }), originalText: fixture.noteText });
       assert.equal(browserNote?.input.topicId, fixture.topicId);
       assert.equal(browserNote?.input.path, fixture.notePath);
       assert.equal(browserNote?.value.sourceReference?.topicId, fixture.topicId);
+      if (managedBrowser.browserUiZoom === 2) {
+        // Native hides desktop docking controls below1099 CSSpx. Exercise
+        // actual reflow at720 separately, then keep zoom2 while returning to
+        // the supported desktop layout for the retained dock/resize journey.
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const zoom = await page.evaluate(() => ({ width: innerWidth, ratio: devicePixelRatio,
+          font: getComputedStyle(document.body).fontSize, visualScale: visualViewport.scale }));
+        assert.equal(zoom.width, 720); assert.equal(zoom.ratio, 2); assert.equal(zoom.visualScale, 1);
+        const shown = await assertEverydayTable({ page, reader, reading: noteContent,
+          source: reader.getByRole('button', { name: 'Source', exact: true }), originalText: fixture.noteText });
+        await retainTopicNotesScreenshot(page, 'native-real-browser-200-css720-files-shown');
+        await reader.getByRole('button', { name: 'Hide Files', exact: true }).press('Enter');
+        await explorer.waitFor({ state: 'hidden', timeout: 5_000 });
+        const hidden = await assertEverydayTable({ page, reader, reading: noteContent,
+          source: reader.getByRole('button', { name: 'Source', exact: true }), originalText: fixture.noteText });
+        await retainTopicNotesScreenshot(page, 'native-real-browser-200-css720-files-hidden');
+        await reader.getByRole('button', { name: 'Show Files', exact: true }).press('Enter');
+        await explorer.waitFor({ state: 'visible', timeout: 5_000 });
+        assert.equal(await chatPane.evaluate(pane => pane.sessionKey), fixture.sessionKey);
+        assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), 'Fictional draft retained through native creation Cancel.');
+        await page.setViewportSize({ width: 2880, height: 900 });
+        await chatPane.locator('.chat-panel-layout-menu').waitFor({ state: 'visible', timeout: 5_000 });
+        const desktop = await page.evaluate(() => ({ width: innerWidth, ratio: devicePixelRatio, visualScale: visualViewport.scale }));
+        assert.deepEqual(desktop, { width: 1440, ratio: 2, visualScale: 1 });
+        browserZoomEvidence = { factor: 2, reflow: zoom, shown, hidden, desktop, physicalReflowWidth: 1440, physicalDesktopWidth: 2880 };
+        await retainNativeJourneyStage('native-real-browser-200-table');
+      }
       await retainNativeJourneyStage('native-files-overview');
 
       // Discover the live native composer shape before driving a draft through
@@ -1156,7 +1147,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await retainNativeJourneyStage('native-files-draft-ready');
       const swap = chatPane.locator('.chat-panel-swap');
       await swap.click({ timeout: 5_000 });
-      await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 5_000 });
+      await waitForEverydayChat({ page, chatPane, sessionKey: fixture.sessionKey });
       await reader.waitFor({ state: 'visible', timeout: 5_000 });
       assert.equal(await composer.inputValue(), unsentDraft, 'Swapping native Chat and Files must retain the unsent Chat draft.');
       assert.equal(await reader.evaluate((element) => element.closest('[data-region]')?.getAttribute('data-region')), 'side', 'Files must move to the native side region after swap.');
@@ -1180,8 +1171,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await chatPane.locator('.sidebar-region--left').waitFor({ state: 'visible', timeout: 5_000 });
       await reader.waitFor({ state: 'visible', timeout: 5_000 });
       assert.equal(await composer.inputValue(), unsentDraft, 'Docking native Files must retain the unsent Chat draft.');
-      const sideRegion = chatPane.locator('[data-region="side"]').first();
-      const mainRegion = chatPane.locator('[data-region="main"]').first();
+      const sideRegion = reader.locator('xpath=ancestor::*[@data-region][1]');
+      const mainRegion = composer.locator('xpath=ancestor::*[@data-region][1]');
+      assert.equal(await sideRegion.count(), 1); assert.equal(await mainRegion.count(), 1);
+      assert.equal(await sideRegion.getAttribute('data-region'), 'side');
+      assert.equal(await mainRegion.getAttribute('data-region'), 'main');
       const [sideBeforeResize, mainBeforeResize] = await Promise.all([sideRegion.boundingBox(), mainRegion.boundingBox()]);
       assert.ok(sideBeforeResize && mainBeforeResize && sideBeforeResize.width > 0 && mainBeforeResize.width > 0, 'Docked Files and Chat must remain visible.');
       const divider = chatPane.getByRole('separator', { name: 'Resize side panel', exact: true });
@@ -1206,16 +1200,16 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.keyboard.press('Enter');
       const nestedFixture = fixture.catalogNotes.find((entry) => entry.path.endsWith('Fictional-Document-111.md'));
       assert.ok(nestedFixture, 'The native Files fixture must contain the selected nested document.');
-      await assertNativeFormattedNote(page.getByRole('region', { name: 'Note content', exact: true }), { noteText: nestedFixture.text });
+      await assertNativeFormattedNote(reader.getByRole('region', { name: 'Note content', exact: true }), { noteText: nestedFixture.text });
       await retainNativeJourneyStage('native-files-filtered-selection');
 
-      const sourceToggle = page.getByRole('button', { name: 'Source', exact: true });
+      const sourceToggle = reader.getByRole('button', { name: 'Source', exact: true });
       await sourceToggle.focus();
       await page.keyboard.press('Enter');
-      const source = page.getByRole('region', { name: 'Note source', exact: true });
+      const source = reader.getByRole('region', { name: 'Note source', exact: true });
       await source.filter({ hasText: nestedFixture.text.trim() }).waitFor({ timeout: 30_000 });
       assert.equal(await source.textContent(), nestedFixture.text);
-      const readingToggle = page.getByRole('button', { name: 'Reading', exact: true });
+      const readingToggle = reader.getByRole('button', { name: 'Reading', exact: true });
       await readingToggle.focus();
       await page.keyboard.press('Enter');
       await filter.focus();
@@ -1233,16 +1227,16 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const pdf = explorer.getByRole('button', { name: pdfName, exact: true });
       await tabTo(pdf);
       await page.keyboard.press('Enter');
-      const preview = page.getByRole('region', { name: 'Original attachment preview', exact: true });
+      const preview = reader.getByRole('region', { name: 'Original attachment preview', exact: true });
       await preview.getByRole('status').filter({ hasText: 'Page 1 of 2' }).waitFor({ timeout: 30_000 });
       await preview.getByRole('button', { name: 'Next page', exact: true }).press('Enter');
       await preview.getByRole('status').filter({ hasText: 'Page 2 of 2' }).waitFor({ timeout: 30_000 });
       const pdfWidth = await preview.locator('canvas').evaluate(canvas => canvas.width);
       await preview.getByRole('button', { name: 'Zoom in', exact: true }).press('Enter');
-      await page.waitForFunction(width => (document.querySelector('[aria-label="Original attachment preview"] canvas')?.width ?? 0) > width, pdfWidth, { timeout: 30_000 });
+      await page.waitForFunction(({ canvas, width }) => canvas.width > width, { canvas: await preview.locator('canvas').elementHandle(), width: pdfWidth }, { timeout: 30_000 });
       await preview.getByRole('status').filter({ hasText: 'Page 2 of 2' }).waitFor({ timeout: 30_000 });
       const download = page.waitForEvent('download', { timeout: 30_000 });
-      await page.getByRole('button', { name: 'Download original attachment', exact: true }).press('Enter');
+      await reader.getByRole('button', { name: 'Download original attachment', exact: true }).press('Enter');
       const originalDownload = await download;
       assert.equal(originalDownload.suggestedFilename(), pdfName);
       await assertEverydayDownloadedOriginal(originalDownload, await readFile(path.join(fixture.folder, fixture.documents.pdfPath)));
@@ -1278,7 +1272,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const unavailable = explorer.getByRole('button', { name: 'unavailable.bin', exact: true });
       await tabTo(unavailable);
       await page.keyboard.press('Enter');
-      await page.getByText(/Preview unavailable:/u).waitFor({ timeout: 30_000 });
+      await reader.getByText(/Preview unavailable:/u).waitFor({ timeout: 30_000 });
       // A prior unsupported document cannot poison a later exact preview.
       await filter.focus();
       await page.keyboard.press('ControlOrMeta+A');
@@ -1304,13 +1298,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // opening Resource Files must preserve Area Chat and its unsent draft.
       await page.getByRole('button', { name: 'Refresh Topic workspace', exact: true }).press('Enter');
       const workspaceSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
+      assert.equal(await workspaceSidebar.count(), 1);
       const resourceDetails = await revealEverydayTopic(workspaceSidebar, resourceFixture.topicId);
       await retainNativeJourneyStage('native-resource-files-request');
-      await resourceDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
-      const resourceFilesView = chatPane.locator('openclaw-plugin-view').filter({ has: page.locator('[data-topic-reader-page="panel"]') });
-      const resourceExplorer = await assertEverydayFilesTarget({ page, chatPane, filesView: resourceFilesView,
-        fixture: resourceFixture, chatKey: fixture.sessionKey, draft: unsentDraft });
-      assertEverydayResolvedTarget(browserNavigation, resourceFixture);
+      const { filesView: resourceFilesView, explorer: resourceExplorer } = await openEverydayTopicFiles({ page,
+        sidebar: workspaceSidebar, chatPane, fixture: resourceFixture, chatKey: fixture.sessionKey, draft: unsentDraft,
+        readNavigation: () => browserNavigation });
       await retainNativeJourneyStage('native-resource-files-target');
       const resourceFilter = resourceExplorer.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
       await resourceFilter.fill(resourceFixture.notePath);
@@ -1329,8 +1322,15 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // exact original Topic via its visible disclosure before choosing it.
       const originalTopicDetails = await revealEverydayTopic(workspaceSidebar, fixture.topicId);
       await originalTopicDetails.getByRole('button', { name: /Imported History \(read-only\)/u }).press('Enter');
-      await page.getByText('Read-only preserved history. Continue ongoing conversations in native Chat.', { exact: true }).waitFor({ timeout: 30_000 });
-      await page.getByText('Fictional preserved imported history.', { exact: true }).waitFor({ timeout: 30_000 });
+      const historyNotice = 'Read-only preserved history. Continue ongoing conversations in native Chat.';
+      const historyPage = page.locator('openclaw-plugin-page').filter({ has:
+        page.getByText(historyNotice, { exact: true }).and(page.locator(':visible')) });
+      await historyPage.getByText(historyNotice, { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await historyPage.count(), 1);
+      const historyOwner = await historyPage.evaluate(owner => ({ pluginId: owner.pluginId, params: owner.params }));
+      assert.equal(historyOwner.pluginId, 'command-center');
+      assert.equal(historyOwner.params.topicId, fixture.topicId); assert.equal(historyOwner.params.historyId, importedHistory.historyId);
+      await historyPage.getByText('Fictional preserved imported history.', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(browserHistory?.input.historyId, importedHistory.historyId);
       assert.equal(browserHistory?.value.historyId, importedHistory.historyId);
       assert.equal(browserHistory?.value.topicId, fixture.topicId);
@@ -1339,6 +1339,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await retainNativeJourneyStage('native-files-imported-history');
       result = { existingTopicVerified: true, nativeFilesReplacement: true, nestedTreeBrowsing: true,
         everydayAssignment: true, focusedCreationRecovery: creation, secondaryFiles, formattedTable: tableMetrics,
+        actualBrowserUi200PercentProved: !!browserZoomEvidence, browserZoomEvidence,
         filenameFiltering: true, authoritativeFormattedRead: true, sourceToggle: true,
         keyboardNativeFilesSelection: true, pdfPreview: true, verifiedOriginalDownload: true, imagePreview: true, jpegPreview: true, webpPreview: true, previewFallback: true,
         exactNativeChatHandoff: true, nativeChatVisible: true, secondTopicExactFilesRoot: true,

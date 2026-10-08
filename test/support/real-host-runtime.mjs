@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromium } from 'playwright';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { HarnessFailure, redact, stopPinnedHost } from '../../src/host-harness.mjs';
 import { assertWebSocketDestination, boundedTrafficEvidence } from '../../src/isolation.mjs';
 import { recordBounded } from '../../src/browser-evidence.mjs';
@@ -70,15 +73,38 @@ function managedChromiumOptions(options) {
 }
 
 export async function launchManagedBrowser(options) {
+  const { browserUiZoom, ...launchOptions } = options ?? {};
+  if (browserUiZoom !== undefined) {
+    assert.equal(browserUiZoom, 2, 'Only the selected browser 200% qualification mode is supported.');
+    const profile = await mkdtemp(path.join(tmpdir(), 'cc-native-browser-zoom-'));
+    let context;
+    const close = async () => {
+      try { await context?.close(); }
+      finally { await rm(profile, { recursive: true, force: true }); }
+    };
+    try {
+      await mkdir(path.join(profile, 'Default'));
+      // Chrome stores native layout zoom as an exponent of its 1.2 step.
+      // This new private profile has no external account or prior state.
+      await writeFile(path.join(profile, 'Default', 'Preferences'), JSON.stringify({
+        partition: { default_zoom_level: { x: Math.log(2) / Math.log(1.2) } }
+      }));
+      context = await chromium.launchPersistentContext(profile, managedChromiumOptions(launchOptions));
+      return { browser: context.browser(), context, browserUiZoom, server: { kill: close }, close };
+    } catch (error) {
+      try { await close(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Browser zoom launch and profile cleanup failed'); }
+      throw error;
+    }
+  }
   // A direct connection avoids the additional CDP WebSocket client used by
   // launchServer/connect. Keep the same Chromium options and lifecycle shape
   // so focused diagnosis can distinguish host/UI behavior from that transport.
   if (process.env.COMMAND_CENTER_BROWSER_TRANSPORT === 'direct') {
-    const browser = await chromium.launch(managedChromiumOptions(options));
+    const browser = await chromium.launch(managedChromiumOptions(launchOptions));
     const close = async () => { await browser.close(); };
     return { browser, server: { kill: close }, close };
   }
-  const server = await chromium.launchServer(managedChromiumOptions(options));
+  const server = await chromium.launchServer(managedChromiumOptions(launchOptions));
   try {
     const browser = await chromium.connect(server.wsEndpoint());
     return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
