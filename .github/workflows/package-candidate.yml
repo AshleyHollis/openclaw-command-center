@@ -72,7 +72,9 @@ jobs:
       - name: Exercise existing explicit browser binding with an empty managed cache
         run: |
           set -euo pipefail
-          browser=$(command -v chromium || command -v google-chrome || node --input-type=module -e "import { chromium } from 'playwright'; console.log(chromium.executablePath())")
+          # Reuse the browser this workflow provisioned above. System Chromium
+          # is a separate runner dependency and can stall before DevTools opens.
+          browser=$(node --input-type=module -e "import { chromium } from 'playwright'; console.log(chromium.executablePath())")
           PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$browser" node --test --test-concurrency=1 test/managed-browser-executable.test.mjs
       - name: Exercise the coherent asynchronous packaged-UI diagnostic
         run: node --test test/everyday-installed-driver.test.mjs
