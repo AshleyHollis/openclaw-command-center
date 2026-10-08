@@ -145,7 +145,10 @@ export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, 
   await composer.fill(secondaryDraft);
   const assertVisibleTranscript = async () => {
     await waitForEverydayChat({ page, chatPane, sessionKey: secondary.sessionKey });
-    const message = chatPane.getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true });
+    // Native repeats the latest text in a sibling screen-reader status. The
+    // canonical assistant bubble's prose owns the visible transcript content.
+    const message = chatPane.locator('.chat-thread[role="log"] .chat-group.assistant .chat-bubble[data-message-id] .chat-text')
+      .getByText(EVERYDAY_SECONDARY_TRANSCRIPT, { exact: true });
     await message.waitFor({ state: 'visible', timeout: 30_000 });
     assert.equal(await message.count(), 1, 'The populated transcript must belong to the exact current secondary Chat.');
     assert.equal(await composer.inputValue(), secondaryDraft);
