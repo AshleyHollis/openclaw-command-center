@@ -5,16 +5,88 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      test_only_harness:
+        description: 'Verify the PR368 test closure against its original artifact without rebuilding product'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: package-candidate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  pr368-harness:
+    if: inputs.test_only_harness == true || github.head_ref == 'candidate/pr368-installed-journey-test'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+          cache: npm
+      - name: Require a test-only successor of frozen PR368
+        run: |
+          set -euo pipefail
+          base=018f4aa10a52c1122f0f045063034dbef05e9d05
+          git merge-base --is-ancestor "$base" HEAD
+          while IFS= read -r file; do
+            case "$file" in
+              test/*|docs/research/pr368-installed-journey.md|.github/workflows/package-candidate.yml) ;;
+              *) echo "Unexpected product change: $file"; exit 1 ;;
+            esac
+          done < <(git diff --name-only "$base" HEAD)
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Admit the existing PR368 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/pr368-harness"
+          mkdir -p "$RUNNER_TEMP/pr368-original"
+          gh run download 37586208412 --repo AshleyHollis/openclaw-command-center \
+            --name command-center-candidate-018f4aa10a52c1122f0f045063034dbef05e9d05 --dir "$RUNNER_TEMP/pr368-original"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          import { verifyPluginArtifact } from './src/plugin-artifact.mjs';
+          import { resolveRealHostAcceptancePlan } from './src/test-selection.mjs';
+          assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
+          const parent = process.env.RUNNER_TEMP;
+          const receipt = JSON.parse(await readFile(`${parent}/pr368-original/receipt.json`, 'utf8'));
+          assert.equal(receipt.sourceCommit, '018f4aa10a52c1122f0f045063034dbef05e9d05');
+          assert.equal(receipt.buildDigest, '9faf423fd7d2702a108e28fb7cd9fe8324177a5a1e4d2a4b169dde9e75e0e7c2');
+          assert.equal(receipt.archive.sha256, '9a2a793da18a1f04180cae36e280f8d2846d69710945efa593c5264f20a7a444');
+          await verifyPluginArtifact({ archivePath: `${parent}/pr368-original/command-center.tgz`, expectedReceipt: receipt, destinationDirectory: `${parent}/pr368-harness/verified` });
+          NODE
+          echo "COMMAND_CENTER_NATIVE_UI_ROOT=$RUNNER_TEMP/pr368-harness/verified/dist/native-ui" >> "$GITHUB_ENV"
+      - name: Exercise existing explicit browser binding with an empty managed cache
+        run: |
+          set -euo pipefail
+          # Reuse the browser this workflow provisioned above. System Chromium
+          # is a separate runner dependency and can stall before DevTools opens.
+          browser=$(node --input-type=module -e "import { chromium } from 'playwright'; console.log(chromium.executablePath())")
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$browser" node --test --test-concurrency=1 test/managed-browser-executable.test.mjs
+      - name: Exercise the coherent asynchronous packaged-UI diagnostic
+        run: node --test test/everyday-installed-driver.test.mjs
+      - name: Verify private bounded failed-page evidence mechanics
+        run: node --test test/native-journey-diagnostics.test.mjs
+      - name: Retain existing picker dialog reader and navigation contracts
+        run: node --test --test-concurrency=1 test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/native-reader-tables.test.mjs test/native-reader-workspace.test.mjs test/native-document-preview.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
+      - run: node scripts/check.mjs
+      - name: Record proof boundaries
+        run: echo 'Original product018f4aa artifact reused. Async contract diagnostic only; installed native desktop, actual Android and browser UI200%zoom remain unproved.' >> "$GITHUB_STEP_SUMMARY"
   package:
+    if: inputs.test_only_harness != true && github.head_ref != 'candidate/pr368-installed-journey-test'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
