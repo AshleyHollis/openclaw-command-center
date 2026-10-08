@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 
+export const EVERYDAY_SESSION_LABELS = Object.freeze({ areaPrimary: 'Fictional Native Area Primary Conversation', resourcePrimary: 'Fictional Native Resource Primary Conversation', unassigned: 'Fictional unassigned Conversation', focusedCreated: 'Fictional Everyday created Conversation' });
+
 export const FICTIONAL_TABLE = '\n| Date | Area | Decision | Notes |\n| --- | --- | --- | --- |\n| 2026-10-07 | Kitchen | Keep existing shelving | Compare two fictional quotations before ordering. |\n| 2026-10-08 | Study | Defer desk replacement | This is the final reachable cell. |\n';
 
 export async function revealEverydayTopic(sidebar, topicId) {
@@ -54,7 +56,7 @@ export async function exerciseEverydayCreation({ page, sidebar, fixture, compose
   await create.click(); await dialog.waitFor({ state: 'visible' });
   const submit = dialog.getByRole('button', { name: 'Create Conversation', exact: true });
   await page.waitForFunction(element => !element.disabled, await submit.elementHandle());
-  await dialog.getByLabel('Conversation label', { exact: true }).fill('Fictional Everyday created Conversation');
+  await dialog.getByLabel('Conversation label', { exact: true }).fill(EVERYDAY_SESSION_LABELS.focusedCreated);
   await armResponseLoss();
   await submit.click();
   const check = dialog.getByRole('button', { name: 'Check creation outcome', exact: true });

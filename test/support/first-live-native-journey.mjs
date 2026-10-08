@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -211,6 +211,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   await waitForConsecutiveReadiness(async () => isCommandCenterMetadataReady(resolveCommandCenterDatabasePath(stateDir)), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const topicId = '44444444-4444-4444-8444-444444444444';
   const name = 'Fictional Native Journey';
+  const sessionLabel = catalog ? EVERYDAY_SESSION_LABELS.areaPrimary : name;
   const paraCategory = 'area';
   const folderReferenceId = 'fictional-native-journey-folder';
   const sessionReferenceId = 'fictional-native-journey-primary';
@@ -220,7 +221,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   // Fixture setup uses the real Session owner, not a fabricated catalog row or
   // the deferred Topic-provisioning/legacy authoritativeSession escape hatch.
   const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-    method: 'sessions.create', params: { agentId: 'main', key: sessionKey, label: name }, scopes: ['operator.read', 'operator.write'], signal });
+    method: 'sessions.create', params: { agentId: 'main', key: sessionKey, label: sessionLabel }, scopes: ['operator.read', 'operator.write'], signal });
   const created = response?.result ?? response;
   assert.equal(created?.key, sessionKey);
   assert.equal(typeof created?.sessionId, 'string');
@@ -290,13 +291,15 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
 // exact Conversation changes the visible Files root, rather than carrying
 // over a browser state from the prior Topic.
 async function seedNativeResourceTopic({ world, signal, name = 'Fictional Resource Workspace' }) {
+  // Topic names deliberately collide; native Session labels must not.
+  const sessionLabel = EVERYDAY_SESSION_LABELS.resourcePrimary;
   const stateDir = path.join(world.root, '.openclaw');
   const topicId = '55555555-5555-4555-8555-555555555555';
   const folderReferenceId = 'fictional-resource-folder';
   const sessionReferenceId = 'fictional-resource-primary';
   const sessionKey = `agent:main:command-center:acceptance-native:${topicId}`;
   const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-    method: 'sessions.create', params: { agentId: 'main', key: sessionKey, label: name }, scopes: ['operator.read', 'operator.write'], signal });
+    method: 'sessions.create', params: { agentId: 'main', key: sessionKey, label: sessionLabel }, scopes: ['operator.read', 'operator.write'], signal });
   const created = response?.result ?? response;
   assert.equal(created?.key, sessionKey); assert.ok(typeof created?.sessionId === 'string' && created.sessionId.length > 0);
   const folder = path.join(world.paths.vault, 'Resources', name);
@@ -323,7 +326,7 @@ async function seedNativeResourceTopic({ world, signal, name = 'Fictional Resour
 
 async function seedNativeUnassignedConversation({ world, signal }) {
   const sessionKey = 'agent:main:command-center:acceptance-native:unassigned';
-  const label = 'Fictional unassigned Conversation';
+  const label = EVERYDAY_SESSION_LABELS.unassigned;
   const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
     method: 'sessions.create', params: { agentId: 'main', key: sessionKey, label }, scopes: ['operator.read', 'operator.write'], signal });
   const created = response?.result ?? response;

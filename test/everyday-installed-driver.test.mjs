@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -23,7 +23,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } }); page.setDefaultTimeout(5000);
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.evaluate(async text => {
+  await page.evaluate(async ({ text, labels }) => {
     const { mountTopicSidebar } = await import('/topic-sidebar.mjs');
     const { mountTopicPage } = await import('/topic-page.mjs');
     const { createNativeState } = await import('/mutations.mjs');
@@ -33,6 +33,12 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     const chat = document.querySelector('openclaw-chat-pane'); chat.sessionKey = 'agent:main:fictional-primary';
     window.fixture = { dispatchCount: 0, responseLost: false, armed: false, assignment: null, operation: null };
     const f = window.fixture;
+    const claimedLabels = new Set();
+    for (const role of ['areaPrimary', 'resourcePrimary', 'unassigned']) {
+      if (claimedLabels.has(labels[role])) throw new Error('Native setup label already in use');
+      claimedLabels.add(labels[role]);
+    }
+    f.seedLabels = [...claimedLabels];
     const host = { signal, connection: { connected: true, canRead: true, canWrite: true }, redact: x => x, subscribe: () => () => {},
       sessions: { async openChat({ sessionKey }) { await delay(); chat.sessionKey = sessionKey; } }, navigation: { async openPage() { await delay(); } },
       components: {
@@ -63,7 +69,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
         if (method.endsWith('sessions.assign-topic')) { f.assignment = params; return { result: { status: 'applied', logicalOperationId: params.logicalOperationId, referenceId: `conversation-assignment:${params.logicalOperationId}`, topicId: params.topicId, sessionKey: params.sessionKey, sessionId: params.expectedSessionId } }; }
         if (method.endsWith('sessions.browse')) return { result: { topicId: params.topicId, conversations: [{ referenceId: `${params.topicId}-primary`, sessionId: `${params.topicId}-primary-id`, status: 'open', isPrimary: true }, ...(f.operation && params.topicId === f.operation.topicId ? [{ referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', status: 'open' }] : [])] } };
         if (method.endsWith('histories.list')) return { result: { histories: [] } };
-        if (method.endsWith('sessions.create')) { f.dispatchCount++; assertInput(params); f.operation = params; if (f.armed) { f.armed = false; f.responseLost = true; throw new Error('Fictional response lost after owner settlement'); } throw new Error('An unexpected second creation is forbidden.'); }
+        if (method.endsWith('sessions.create')) { f.dispatchCount++; assertInput(params); if (claimedLabels.has(params.label)) throw new Error('Native label already in use'); claimedLabels.add(params.label); f.operation = params; if (f.armed) { f.armed = false; f.responseLost = true; throw new Error('Fictional response lost after owner settlement'); } throw new Error('An unexpected second creation is forbidden.'); }
         if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:fictional-created' } };
         const sourceReference = { topicId: params.topicId, referenceId: 'fictional-note' };
         if (method.endsWith('notes.browse')) return { notes: [{ path: 'Overview.md', revision: 'r1', sourceReference }], total: 1, offset: 0, hasMore: false, cursor: 'fictional-catalog' };
@@ -80,7 +86,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     function assertInput(params) { if (params.isPrimary !== false || params.topicId !== topics[0].topicId || !params.logicalOperationId) throw new Error('Invalid closed creation fixture input.'); }
     window.sidebar = mountTopicSidebar(document.querySelector('#side'), { host, signal, presented: true, props: { sessions: [{ key: 'agent:main:fictional-unassigned', sessionId: 'fictional-unassigned-id', updatedAt: 8, displayName: 'Fictional Inbox' }] }, mountDefault: () => () => {} }, undefined, createNativeState());
     window.reader = mountTopicPage(document.querySelector('#reader'), { host, signal, props: { topicId: topics[0].topicId }, presented: true, panel: { showInMain() {} } }, undefined, { panel: true });
-  }, '# Fictional Note\n' + FICTIONAL_TABLE);
+  }, { text: '# Fictional Note\n' + FICTIONAL_TABLE, labels: EVERYDAY_SESSION_LABELS });
   const sidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
   await sidebar.getByRole('button', { name: 'Inbox / Unassigned (1)', exact: true }).click();
   await chooseEverydayAssignment(sidebar.getByRole('listitem').filter({ hasText: 'Fictional Inbox' }), { topicId: 'fixture-area', duplicateTopicId: 'fixture-resource', name: 'Fictional Same Name' });
@@ -92,6 +98,8 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     armResponseLoss: () => page.evaluate(() => { window.fixture.armed = true; }),
     readCreation: () => page.evaluate(() => ({ ...window.fixture, logicalOperationId: window.fixture.operation.logicalOperationId, referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', sessionKey: 'agent:main:fictional-created' })) });
   assert.equal(created.dispatchCount, 1);
+  assert.deepEqual(created.seedLabels, [EVERYDAY_SESSION_LABELS.areaPrimary, EVERYDAY_SESSION_LABELS.resourcePrimary, EVERYDAY_SESSION_LABELS.unassigned]);
+  assert.equal(created.operation.label, EVERYDAY_SESSION_LABELS.focusedCreated);
   await page.getByRole('button', { name: 'Read Overview.md', exact: true }).click();
   for (const width of [1440, 412, 360, 320]) { await page.setViewportSize({ width, height: 900 }); await assertEverydayTable({ page, reading: page.getByRole('region', { name: 'Note content', exact: true }), source: page.getByRole('button', { name: 'Source', exact: true }), originalText: '# Fictional Note\n' + FICTIONAL_TABLE }); }
   assert.equal(await page.getByLabel('Chat composer').inputValue(), 'Fictional draft retained through native creation Cancel.');
