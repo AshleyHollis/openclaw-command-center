@@ -23,10 +23,11 @@ export async function chooseEverydayAssignment(row, { topicId, duplicateTopicId,
   await trigger.waitFor({ state: 'visible' });
   assert.match(await trigger.innerText(), /Choose a Topic/);
   await trigger.click();
-  for (const id of [topicId, duplicateTopicId]) {
+  for (const [id, category] of [[topicId, 'area'], [duplicateTopicId, 'resource']]) {
     const option = row.locator(`[role="option"][data-value=${JSON.stringify(id)}]`);
     await option.waitFor({ state: 'visible' });
     assert.ok((await option.innerText()).includes(name));
+    assert.match(await option.innerText(), new RegExp(`\\b${category}\\b`, 'i'), 'Same-name options retain PARA category context.');
     assert.ok((await option.innerText()).includes(id), 'Same-name Topics retain exact identity context.');
   }
   await row.locator(`[role="option"][data-value=${JSON.stringify(topicId)}]`).click();
@@ -104,7 +105,9 @@ export async function assertEverydayTable({ page, reading, source, originalText 
     return cell.textContent === 'This is the final reachable cell.' && end.right <= bounds.right + 2 && end.right > bounds.left;
   }), true, 'Final table cell is reachable inside the pane.');
   await source.click();
-  await page.getByRole('region', { name: 'Note source', exact: true }).waitFor();
+  const sourceRegion = page.getByRole('region', { name: 'Note source', exact: true });
+  await sourceRegion.waitFor();
+  await page.waitForFunction(({ element, text }) => element.textContent === text, { element: await sourceRegion.elementHandle(), text: originalText });
   assert.equal(await page.getByRole('region', { name: 'Note source', exact: true }).textContent(), originalText);
   await page.getByRole('button', { name: 'Reading', exact: true }).click();
   await region.waitFor({ state: 'visible' });

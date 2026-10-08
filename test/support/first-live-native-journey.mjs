@@ -807,8 +807,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         if (keyboard) await nextPage.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
         evidencePages.push(await configureEvidencePage(nextPage, browserGuard, evidence));
         if (scaleDiagnostic) nextPage.setDefaultTimeout(10_000);
-        // Observe the existing real-server WebSocket route without substituting
-        // any request, response, authentication or activation report.
+        // Observe the existing real-server route; only the explicitly armed
+        // creation response is lost after settlement. Requests and authentication stay unchanged.
         await nextPage.routeWebSocket('**/*', (socket) => {
         try { assertWebSocketDestination(browserGuard, socket.url()); }
         catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); void socket.close(); return; }
@@ -883,7 +883,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const fixtureTopic = browserTopics.activeGroups.area.find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The native Files journey must start from an exact usable Topic.');
-      await nativePage.getByRole('button', { name: `Open ${fixture.name} in Chat`, exact: true }).press('Enter');
+      const areaTopics = nativePage.getByRole('heading', { name: 'Areas', exact: true }).locator('xpath=following-sibling::ul[1]');
+      await areaTopics.getByRole('button', { name: `Open ${fixture.name} in Chat`, exact: true }).press('Enter');
       const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
       try {
         await chatPane.waitFor({ timeout: 30_000 });
@@ -906,6 +907,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const globalNew = page.locator('openclaw-app-sidebar').getByRole('link', { name: 'New session', exact: true }).first();
       await globalNew.waitFor({ state: 'visible', timeout: 30_000 });
       const inbox = topicSidebar.getByRole('heading', { name: 'Inbox / Unassigned', exact: true }).locator('xpath=..');
+      const inboxDisclosure = inbox.locator('[data-topic-control-key="inbox"]');
+      if (await inboxDisclosure.getAttribute('aria-expanded') !== 'true') await inboxDisclosure.click();
       const inboxRow = inbox.getByRole('listitem').filter({ hasText: unassignedFixture.label });
       await inboxRow.waitFor({ state: 'visible', timeout: 30_000 });
       await inboxRow.getByRole('button', { name: 'Open Chat', exact: true }).press('Enter');

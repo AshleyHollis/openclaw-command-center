@@ -51,6 +51,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/pr368-harness"
           mkdir -p "$RUNNER_TEMP/pr368-original"
           gh run download 37586208412 --repo AshleyHollis/openclaw-command-center \
             --name command-center-candidate-018f4aa10a52c1122f0f045063034dbef05e9d05 --dir "$RUNNER_TEMP/pr368-original"
@@ -63,9 +64,9 @@ jobs:
           assert.equal(receipt.sourceCommit, '018f4aa10a52c1122f0f045063034dbef05e9d05');
           assert.equal(receipt.buildDigest, '9faf423fd7d2702a108e28fb7cd9fe8324177a5a1e4d2a4b169dde9e75e0e7c2');
           assert.equal(receipt.archive.sha256, '9a2a793da18a1f04180cae36e280f8d2846d69710945efa593c5264f20a7a444');
-          await verifyPluginArtifact({ archivePath: `${parent}/pr368-original/command-center.tgz`, expectedReceipt: receipt, destinationDirectory: `${parent}/pr368-verified` });
+          await verifyPluginArtifact({ archivePath: `${parent}/pr368-original/command-center.tgz`, expectedReceipt: receipt, destinationDirectory: `${parent}/pr368-harness/verified` });
           NODE
-          echo "COMMAND_CENTER_NATIVE_UI_ROOT=$RUNNER_TEMP/pr368-verified/dist/native-ui" >> "$GITHUB_ENV"
+          echo "COMMAND_CENTER_NATIVE_UI_ROOT=$RUNNER_TEMP/pr368-harness/verified/dist/native-ui" >> "$GITHUB_ENV"
       - name: Exercise the coherent asynchronous packaged-UI diagnostic
         run: node --test test/everyday-installed-driver.test.mjs
       - name: Retain existing picker dialog reader and navigation contracts
