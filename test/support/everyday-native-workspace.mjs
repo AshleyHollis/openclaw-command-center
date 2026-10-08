@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const EVERYDAY_SESSION_LABELS = Object.freeze({ areaPrimary: 'Fictional Native Area Primary Conversation', resourcePrimary: 'Fictional Native Resource Primary Conversation', unassigned: 'Fictional unassigned Conversation', focusedCreated: 'Fictional Everyday created Conversation' });
 
@@ -51,6 +52,66 @@ export function assertEverydayNoteRead(observation, fixture) {
   assert.ok(typeof observation?.value.revision === 'string' && observation.value.revision.length > 0);
   assert.equal(observation?.value.revision, observation.input.observedRevision);
   assert.equal(observation?.value.sourceReference?.observedRevision, observation.value.revision);
+}
+
+export async function exerciseEverydaySecondaryFiles({ page, sidebar, chatPane, fixture, resourceFixture, created, readNavigation, onStage }) {
+  const secondary = { ...fixture, sessionReferenceId: created.referenceId, sessionId: created.sessionId, sessionKey: created.sessionKey };
+  const composer = chatPane.getByLabel('Chat composer', { exact: true });
+  // Explicit sidebar selection also records the exact secondary preference;
+  // dialog creation alone does not populate that presentation state.
+  await page.getByRole('button', { name: 'Refresh Topic workspace', exact: true }).press('Enter');
+  const area = await revealEverydayTopic(sidebar, fixture.topicId);
+  await area.getByRole('button', { name: EVERYDAY_SESSION_LABELS.focusedCreated, exact: true }).press('Enter');
+  await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key,
+    secondary.sessionKey, { timeout: 30_000 });
+  const secondaryDraft = 'Fictional secondary Chat draft retained through Files close and reopen.';
+  await composer.fill(secondaryDraft);
+  const filesView = chatPane.locator('openclaw-plugin-view').filter({ has: page.locator('[data-topic-reader-page="panel"]') });
+  const openAreaFiles = async (chatKey, draft) => {
+    const entry = await revealEverydayTopic(sidebar, fixture.topicId);
+    const previousSequence = (await readNavigation())?.sequence ?? 0;
+    await entry.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
+    const deadline = performance.now() + 30_000;
+    let observation;
+    while ((observation = await readNavigation())?.sequence <= previousSequence || !observation) {
+      assert.ok(performance.now() < deadline, 'The Files action must complete a new native resolver request.');
+      await delay(25);
+    }
+    assertEverydayResolvedTarget(observation, secondary);
+    const explorer = await assertEverydayFilesTarget({ page, chatPane, filesView, fixture: secondary, chatKey, draft });
+    return explorer;
+  };
+  const explorer = await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  const close = chatPane.getByRole('button', { name: 'Close Files', exact: true });
+  await close.waitFor({ state: 'visible', timeout: 30_000 });
+  assert.equal(await close.count(), 1, 'Close the actual native Files slot.');
+  await close.press('Enter');
+  await explorer.waitFor({ state: 'hidden', timeout: 30_000 });
+  assert.equal(await chatPane.evaluate(pane => pane.sessionKey), secondary.sessionKey);
+  assert.equal(await composer.inputValue(), secondaryDraft);
+  await openAreaFiles(secondary.sessionKey, secondaryDraft);
+  await onStage?.('native-secondary-files-reopened');
+  const resource = await revealEverydayTopic(sidebar, resourceFixture.topicId);
+  await resource.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
+  await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key,
+    resourceFixture.sessionKey, { timeout: 30_000 });
+  const resourceDraft = 'Fictional Resource Chat draft retained through remembered Area Files.';
+  await composer.fill(resourceDraft);
+  await openAreaFiles(resourceFixture.sessionKey, resourceDraft);
+  await onStage?.('native-secondary-files-remembered');
+  return { currentSecondary: true, closedAndReopened: true, rememberedSecondary: true };
+}
+
+export async function assertEverydayDownloadedOriginal(download, expectedBytes) {
+  const stream = await download.createReadStream();
+  assert.ok(stream, 'The completed original download must expose its actual bytes.');
+  const chunks = []; let length = 0;
+  for await (const chunk of stream) {
+    length += chunk.length;
+    assert.ok(length <= expectedBytes.length, 'Downloaded bytes cannot exceed the exact fictional original.');
+    chunks.push(chunk);
+  }
+  assert.deepEqual(Buffer.concat(chunks), expectedBytes, 'Download must deliver the exact authorized original bytes.');
 }
 
 export async function revealEverydayTopic(sidebar, topicId) {

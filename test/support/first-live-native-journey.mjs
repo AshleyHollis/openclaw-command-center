@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -800,7 +800,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       progress('browser-launch');
       managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
       let browserTopics;
-      let browserNavigation;
+      let browserNavigation; let browserNavigationSequence = 0;
       let browserHistory;
       let browserNote;
       let browserChatSend;
@@ -857,7 +857,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
-          if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value };
+          if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value, sequence: ++browserNavigationSequence };
           if (request.method === 'command-center.v1.histories.read') browserHistory = { input: request.params, value };
           if (scale && request.method === 'command-center.v1.notes.browse') rememberNativeScaleNotePage(scaleResponses.notePages, request.params, value);
           if (request.method === 'sessions.list') {
@@ -968,6 +968,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
             dispatchCount: creationLoss.dispatchCount, responseLost: creationLoss.responseLost };
         } });
       await retainNativeJourneyStage('native-focused-creation-recovery');
+      const secondaryFiles = await exerciseEverydaySecondaryFiles({ page, sidebar: topicSidebar, chatPane, fixture, resourceFixture,
+        created: creation, readNavigation: () => browserNavigation, onStage: retainNativeJourneyStage });
       const fixtureDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await fixtureDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
       await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
@@ -1241,7 +1243,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await preview.getByRole('status').filter({ hasText: 'Page 2 of 2' }).waitFor({ timeout: 30_000 });
       const download = page.waitForEvent('download', { timeout: 30_000 });
       await page.getByRole('button', { name: 'Download original attachment', exact: true }).press('Enter');
-      assert.equal((await download).suggestedFilename(), pdfName);
+      const originalDownload = await download;
+      assert.equal(originalDownload.suggestedFilename(), pdfName);
+      await assertEverydayDownloadedOriginal(originalDownload, await readFile(path.join(fixture.folder, fixture.documents.pdfPath)));
       await retainTopicNotesScreenshot(page, 'native-files-pdf-1530');
       await retainNativeJourneyStage('native-files-pdf');
 
@@ -1253,6 +1257,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.keyboard.press('Enter');
       await preview.getByRole('img', { name: pngName, exact: true }).waitFor({ timeout: 30_000 });
       await preview.getByRole('button', { name: 'Zoom in', exact: true }).press('Enter');
+      await preview.getByRole('button', { name: 'Fit image', exact: true }).press('Enter');
+      await preview.getByRole('status').filter({ hasText: 'Fit to pane' }).waitFor({ timeout: 30_000 });
       await retainTopicNotesScreenshot(page, 'native-files-image-1530');
       await retainNativeJourneyStage('native-files-image');
 
@@ -1332,7 +1338,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await retainTopicNotesScreenshot(page, 'native-files-imported-history-1440');
       await retainNativeJourneyStage('native-files-imported-history');
       result = { existingTopicVerified: true, nativeFilesReplacement: true, nestedTreeBrowsing: true,
-        everydayAssignment: true, focusedCreationRecovery: creation, formattedTable: tableMetrics,
+        everydayAssignment: true, focusedCreationRecovery: creation, secondaryFiles, formattedTable: tableMetrics,
         filenameFiltering: true, authoritativeFormattedRead: true, sourceToggle: true,
         keyboardNativeFilesSelection: true, pdfPreview: true, verifiedOriginalDownload: true, imagePreview: true, jpegPreview: true, webpPreview: true, previewFallback: true,
         exactNativeChatHandoff: true, nativeChatVisible: true, secondTopicExactFilesRoot: true,
