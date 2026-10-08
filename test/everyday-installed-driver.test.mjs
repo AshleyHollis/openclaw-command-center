@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { EVERYDAY_SESSION_LABELS, EVERYDAY_SECONDARY_TRANSCRIPT, seedEverydaySecondaryTranscript, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, openEverydayTopicFiles, locateEverydayFilesView, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, waitForEverydayChat, EVERYDAY_SECONDARY_TRANSCRIPT, seedEverydaySecondaryTranscript, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, exerciseEverydaySecondaryFiles, openEverydayTopicFiles, locateEverydayFilesView, assertEverydayDownloadedOriginal, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -209,6 +209,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     transcriptMessageId: 'fictional-message-id' });
   const area = await revealEverydayTopic(sidebar, 'fixture-area');
   await area.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
+  await waitForEverydayChat({ page, chatPane, sessionKey: 'agent:main:fictional-primary' });
   await openEverydayTopicFiles({ page, sidebar, chatPane, fixture: { topicId: 'fixture-area', sessionReferenceId: 'fixture-area-primary',
     sessionId: 'fixture-area-primary-id', sessionKey: 'agent:main:fictional-primary' }, chatKey: 'agent:main:fictional-primary',
     draft: 'Fictional draft retained through native creation Cancel.', readNavigation: () => page.evaluate(() => window.fixture.navigation) });
