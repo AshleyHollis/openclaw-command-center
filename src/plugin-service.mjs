@@ -190,18 +190,14 @@ export function createMetadataService(api) {
     assertCurrent();
     const transcripts = await import('openclaw/plugin-sdk/session-transcript-runtime'); assertCurrent();
     const gatewaySdk = await import('openclaw/plugin-sdk/gateway-runtime'); assertCurrent();
-    const nativeGateway = createNativePlanGatewayAdapter({ sdk: gatewaySdk, gateway: runtime.sourceBoundGateway, assertCurrent });
+    const { dispatchGatewayMethod } = await import('openclaw/plugin-sdk/gateway-method-runtime'); assertCurrent();
+    const nativeGateway = createNativePlanGatewayAdapter({ sdk: gatewaySdk, gateway: runtime.sourceBoundGateway, dispatchGatewayMethod, assertCurrent });
     const nativeTranscript = createNativePlanTranscriptAdapter(transcripts);
     const source = createConversationPlanSource({ metadata, sources, assertCurrent,
       readEntries: nativeTranscript.readEntries, readRecentEntries: nativeTranscript.readRecentEntries,
       assertCreateAdmissionAvailable(origin) {
         nativePlanSourceSelection(origin);
         nativeGateway.assertAvailable();
-        // Native #67's runtime dispatcher only admits bundled/trusted official
-        // plugins. CC is external; its entitled public dispatcher drops source
-        // custody. Keep this refusal before journal reservation until that
-        // public contract is implemented and independently qualified.
-        throw new SourceServiceError('capability-unavailable', 'Native authenticated source admission for external plugins is unavailable.');
       },
       withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
     const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,

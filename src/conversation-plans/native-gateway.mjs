@@ -3,12 +3,11 @@ import { nativePlanSourceSelection } from './native-source.mjs';
 
 // This adapter uses the host's authenticated dispatcher. Custody is minted and
 // consumed by native code; neither the capability nor the guard is RPC JSON.
-export function createNativePlanGatewayAdapter({ sdk, gateway, assertCurrent }) {
-  const request = gateway?.request;
+export function createNativePlanGatewayAdapter({ sdk, gateway, dispatchGatewayMethod, assertCurrent }) {
   const sync = guard => { const result = guard(); if (result?.then) { void Promise.resolve(result).catch(() => {}); throw sourceError('capability-unavailable', 'Source admission guards must be synchronous.'); } };
   const assertAvailable = () => {
     sync(assertCurrent);
-    if (typeof request !== 'function' || gateway.request !== request || typeof sdk?.assertSessionTranscriptGatewaySourceAdmissionAvailable !== 'function' || sdk.SESSION_TRANSCRIPT_GATEWAY_SOURCE_ADMISSION_VERSION !== 1) throw sourceError('capability-unavailable', 'Native authenticated source admission is unavailable.');
+    if (typeof dispatchGatewayMethod !== 'function' || gateway?.authenticatedSessionTranscriptSourceAdmissionVersion !== 1 || typeof sdk?.assertSessionTranscriptGatewaySourceAdmissionAvailable !== 'function' || sdk.SESSION_TRANSCRIPT_GATEWAY_SOURCE_ADMISSION_VERSION !== 1) throw sourceError('capability-unavailable', 'Native external authenticated source admission is unavailable.');
     try { sdk.assertSessionTranscriptGatewaySourceAdmissionAvailable(gateway); }
     catch { throw sourceError('capability-unavailable', 'The actual Gateway host lacks source admission version 1.'); }
     sync(assertCurrent);
@@ -22,7 +21,16 @@ export function createNativePlanGatewayAdapter({ sdk, gateway, assertCurrent }) 
       const guard = () => { assertAvailable(); sync(ownerGuard); assertAvailable(); };
       guard();
       let result;
-      try { result = await request.call(gateway, 'workboard.cards.create', params, { timeoutMs: 45000, sessionTranscriptSource: Object.freeze({ selection, assertCurrent: guard }) }); }
+      try {
+        const response = await dispatchGatewayMethod('workboard.cards.create', params, { expectFinal: true, timeoutMs: 45000, sessionTranscriptSource: Object.freeze({ selection, assertCurrent: guard }) });
+        guard();
+        if (response?.ok !== true) {
+          const code = String(response?.error?.code ?? 'unavailable').toLowerCase().replaceAll('_', '-');
+          throw sourceError(['conflict', 'workboard-conflict'].includes(code) ? 'conflict' : ['invalid-request', 'not-found', 'unavailable', 'unauthenticated', 'read-only'].includes(code) ? code : 'unavailable', 'The authenticated native plan request was refused.');
+        }
+        if (!Object.hasOwn(response, 'payload')) throw sourceError('unavailable', 'The authenticated native plan response omitted its payload.');
+        result = response.payload;
+      }
       catch (error) {
         assertAvailable();
         // A sent local deadline is uncertainty, never proof of non-creation.
