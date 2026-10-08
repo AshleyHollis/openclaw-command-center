@@ -5,12 +5,15 @@ import { planDigest } from './contract.mjs';
 // Pending-list absence is uncertainty, never proof of an answer or approval.
 // Result review has no qualified native owner on the pinned fork; its optional
 // verifier is an explicitly injected adapter seam, not a new native RPC.
-export async function verifyPlanHumanRequest({ card, request, known, nativeRequest, assertCurrent, now = Date.now, verifyResultReview }) {
+export async function verifyPlanHumanRequest({ card, request, known, requestLink, nativeRequest, assertCurrent, now = Date.now, verifyResultReview }) {
   assertCurrent();
   const unknown = { availability: 'unavailable' };
   const result = (state, identity) => ({ availability: 'available', state, request: identity, observedAtMs: now() });
   const attempt = (card.metadata?.attempts ?? []).findLast(item => item.sessionKey === card.sessionKey && item.runId === card.runId);
-  if (known && request.requestRevision && (card.status === 'done' || request.expiresAtMs <= now() || request.kind !== 'requested-result-review' && ['failed', 'stopped', 'succeeded'].includes(attempt?.status))) return result('withdrawn', request);
+  // Terminal-run relevance belongs to the request's original admitted linkage.
+  // A later run on the same card cannot retire an earlier request receipt.
+  const sameRun = requestLink?.sessionKey && requestLink?.runId && requestLink.sessionKey === card.sessionKey && requestLink.runId === card.runId;
+  if (known && request.requestRevision && (card.status === 'done' || request.expiresAtMs <= now() || sameRun && request.kind !== 'requested-result-review' && ['failed', 'stopped', 'succeeded'].includes(attempt?.status))) return result('withdrawn', request);
   if (request.kind === 'requested-result-review') return typeof verifyResultReview === 'function' ? verifyResultReview({ card, request, known, assertCurrent }) : unknown;
   try {
     const response = request.kind === 'question' ? await nativeRequest('question.get', { id: request.id }) : await nativeRequest('exec.approval.list', {});

@@ -201,7 +201,7 @@ export function createMetadataService(api) {
       },
       withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
     const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,
-      verifyRequest: ({ card, request, known, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;
+      verifyRequest: ({ card, request, known, requestLink, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, requestLink, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;
     const owner = createConversationPlanOwner({ metadata, nativeRequest: (method, params, options) => method === 'workboard.cards.create' ? nativeGateway.create(params, options) : runtime.nativeRequest(method, params, options),
       projectHumanRequests: requestEpisodes ? requestEpisodes.project : async () => ({ availability: 'unavailable', eligible: false, requests: [], unavailableCount: 0, resultReviewAvailability: 'unqualified' }),
       readHumanRequests: (card, assertCurrent) => readPlanHumanRequests({ card, nativeRequest: runtime.nativeRequest, assertCurrent }),

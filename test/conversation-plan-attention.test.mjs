@@ -96,7 +96,73 @@ test('pinned native question/approval contracts: absent pending list is unknown,
   assert.equal((await verify(approval, { known: true })).availability, 'unavailable');
   card.status = 'done'; assert.equal((await verify(approval, { known: true })).state, 'withdrawn');
   card.status = 'review'; card.metadata.attempts = [{ sessionKey: 'session', runId: 'run', status: 'stopped' }];
-  assert.equal((await verify(approval, { known: true })).state, 'withdrawn');
+  assert.equal((await verify(approval, { known: true, requestLink: { sessionKey: 'session', runId: 'run' } })).state, 'withdrawn');
   assert.equal((await verify({ ...approval, kind: 'requested-result-review' }, { known: true })).availability, 'unavailable');
   assert.equal((await readPlanHumanRequests({ card, nativeRequest: async method => method === 'question.list' ? { questions: [] } : [], assertCurrent() {} })).eligible, false);
+});
+
+test('routine card/run completion and review prose cannot manufacture requested result review', async () => {
+  const calls = [];
+  const nativeRequest = async method => {
+    calls.push(method);
+    if (method === 'question.list') return { questions: [] };
+    if (method === 'exec.approval.list') return [];
+    assert.fail(`Unexpected native dispatch: ${method}`);
+  };
+  for (const status of ['triage', 'backlog', 'todo', 'scheduled', 'ready', 'running', 'review', 'blocked', 'done']) {
+    for (const runStatus of ['running', 'succeeded', 'failed', 'blocked', 'stopped']) {
+      const card = { id: 'fictional-card', status, sessionKey: 'fictional-session', runId: 'fictional-run', notes: 'Please review this completed result', events: [{ id: 'fictional-move', kind: 'moved', at: 1, toStatus: 'review' }, { id: 'fictional-notification', kind: 'notification', at: 2 }], metadata: { attempts: [{ sessionKey: 'fictional-session', runId: 'fictional-run', status: runStatus }] } };
+      const result = await readPlanHumanRequests({ card, nativeRequest, assertCurrent() {}, now: () => 100 });
+      assert.equal(result.eligible, false); assert.deepEqual(result.requests, []);
+    }
+  }
+  assert.ok(calls.every(method => ['question.list', 'exec.approval.list'].includes(method)));
+});
+
+test('an explicit review-worded native question keeps its question identity and exact run scope', async () => {
+  const card = { id: 'fictional-card', status: 'review', sessionKey: 'fictional-session', runId: 'fictional-run', metadata: { attempts: [] } };
+  const question = { id: 'fictional-review-question', status: 'pending', sessionKey: card.sessionKey, runId: card.runId, createdAtMs: 1, expiresAtMs: 10000, questions: [{ id: 'review-choice', prompt: 'Please review this result' }] };
+  const nativeRequest = async method => method === 'question.list' ? { questions: [question, { ...question, id: 'unrelated-question', runId: 'another-run' }] } : method === 'question.get' ? { question } : [];
+  const observation = await readPlanHumanRequests({ card, nativeRequest, assertCurrent() {}, now: () => 100 });
+  assert.equal(observation.requests.length, 1); assert.equal(observation.requests[0].kind, 'question');
+  const proof = await verifyPlanHumanRequest({ card, request: observation.requests[0], known: false, nativeRequest, assertCurrent() {}, now: () => 100 });
+  assert.equal(proof.state, 'pending'); assert.equal(proof.request.kind, 'question');
+  card.runId = 'another-run';
+  assert.equal((await verifyPlanHumanRequest({ card, request: proof.request, known: true, nativeRequest, assertCurrent() {}, now: () => 100 })).availability, 'unavailable');
+});
+
+test('missing native result-review owner admits no Attention receipt and dispatches no invented RPC', async t => {
+  const f = fixture(t), a = f.attention();
+  const calls = [];
+  const owner = createPlanRequestEpisodeOwner({ metadata: f.metadata, attention: a, now: () => 100000,
+    verifyRequest: args => verifyPlanHumanRequest({ ...args, nativeRequest: async method => { calls.push(method); assert.fail('No result-review RPC exists'); }, now: () => 100000 }) });
+  f.request.kind = 'requested-result-review';
+  const result = await f.project(owner);
+  assert.equal(result.eligible, false); assert.equal(result.availability, 'partial');
+  assert.equal(result.resultReviewAvailability, 'unqualified');
+  assert.deepEqual(calls, []); assert.deepEqual(a.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard), []);
+});
+
+test('an unrelated terminal run cannot withdraw an original human request across episode-owner restart', async t => {
+  const f = fixture(t), a = f.attention();
+  const question = { id: f.request.id, status: 'pending', sessionKey: f.card.sessionKey, runId: f.card.runId, createdAtMs: 1000, expiresAtMs: 10000000, questions: [{ id: 'choice', prompt: 'Review the fictional plan?' }] };
+  const owner = service => createPlanRequestEpisodeOwner({ metadata: f.metadata, attention: service, now: () => 100000,
+    verifyRequest: args => verifyPlanHumanRequest({ ...args, nativeRequest: async method => { assert.equal(method, 'question.get'); return { question }; }, now: () => 100000 }) });
+  const admitted = await f.project(owner(a));
+  assert.equal(admitted.eligible, true); const episodeId = admitted.requests[0].episodeId;
+  f.card.runId = 'unrelated-run';
+  const restarted = f.attention();
+  for (const status of ['succeeded', 'failed', 'stopped']) {
+    f.card.metadata.attempts = [{ sessionKey: f.card.sessionKey, runId: f.card.runId, status }];
+    const observed = await f.project(owner(restarted), []);
+    assert.equal(observed.eligible, false); assert.equal(observed.availability, 'partial');
+    const receipt = restarted.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard)[0];
+    assert.equal(receipt.episodeId, episodeId); assert.equal(receipt.state, 'Active');
+  }
+  f.card.runId = question.runId;
+  f.card.metadata.attempts = [{ sessionKey: question.sessionKey, runId: question.runId, status: 'stopped' }];
+  assert.equal((await f.project(owner(restarted), [])).eligible, false);
+  assert.equal(restarted.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard)[0].state, 'Withdrawn');
+  f.card.metadata.attempts = [];
+  assert.equal((await f.project(owner(f.attention()))).eligible, false);
 });

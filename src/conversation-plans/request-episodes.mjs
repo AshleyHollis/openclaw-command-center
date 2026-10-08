@@ -59,7 +59,9 @@ export function createPlanRequestEpisodeOwner({ metadata, attention, verifyReque
     for (const { candidate, existing } of candidates.values()) {
       guard();
       let proof;
-      try { proof = await verifyRequest({ input, card, request: candidate, known: !!existing, assertCurrent: guard }); } catch { guard(); unavailableCount++; continue; }
+      try { proof = await verifyRequest({ input, card, request: candidate, known: !!existing,
+        requestLink: existing ? { sessionKey: existing.evidenceFacts.sessionKey, runId: existing.evidenceFacts.runId } : undefined,
+        assertCurrent: guard }); } catch { guard(); unavailableCount++; continue; }
       guard();
       if (proof?.availability !== 'available') { unavailableCount++; continue; }
       if (!['pending', 'resolved', 'withdrawn'].includes(proof.state) || !Number.isSafeInteger(proof.observedAtMs)) fail('Native request state proof is invalid.');
