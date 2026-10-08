@@ -21,6 +21,38 @@ export async function revealEverydayInbox(sidebar) {
   return inbox;
 }
 
+export async function assertEverydayFilesTarget({ page, chatPane, filesView, fixture, chatKey, draft }) {
+  await filesView.waitFor({ state: 'attached', timeout: 30_000 });
+  assert.equal(await filesView.count(), 1, 'One mounted Topic Files contribution must own the independent target.');
+  await page.waitForFunction(({ view, key, agentId }) => view.isConnected && view.surface === 'session-files' && view.presented === true &&
+    view.props?.sessionKey === key && view.props?.agentId === agentId,
+  { view: await filesView.elementHandle(), key: fixture.sessionKey, agentId: fixture.sessionKey.split(':')[1] }, { timeout: 30_000 });
+  assert.equal(await chatPane.evaluate(pane => pane.sessionKey), chatKey, 'Opening Files must preserve the exact current Chat.');
+  assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), draft, 'Opening Files must preserve the unsent Chat draft.');
+  const explorer = filesView.locator('.control-ui-file-explorer');
+  await explorer.waitFor({ state: 'visible', timeout: 30_000 });
+  return explorer;
+}
+
+export function assertEverydayResolvedTarget(observation, fixture) {
+  assert.equal(observation?.input.topicId, fixture.topicId);
+  assert.equal(observation?.input.referenceId, fixture.sessionReferenceId);
+  assert.equal(observation?.input.expectedSessionId, fixture.sessionId);
+  assert.equal(observation?.value?.sessionKey ?? observation?.value?.result?.sessionKey, fixture.sessionKey);
+}
+
+export function assertEverydayNoteRead(observation, fixture) {
+  assert.equal(observation?.input.topicId, fixture.topicId);
+  assert.equal(observation?.input.path, fixture.notePath);
+  assert.equal(observation?.value.path, fixture.notePath);
+  assert.equal(observation?.value.sourceReference?.topicId, fixture.topicId);
+  assert.ok(typeof observation?.input.referenceId === 'string' && observation.input.referenceId.length > 0);
+  assert.equal(observation?.value.sourceReference?.referenceId, observation.input.referenceId);
+  assert.ok(typeof observation?.value.revision === 'string' && observation.value.revision.length > 0);
+  assert.equal(observation?.value.revision, observation.input.observedRevision);
+  assert.equal(observation?.value.sourceReference?.observedRevision, observation.value.revision);
+}
+
 export async function revealEverydayTopic(sidebar, topicId) {
   const entry = sidebar.locator(`[data-topic-id=${JSON.stringify(topicId)}]`);
   await entry.waitFor({ state: 'attached' });

@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './support/everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './support/everyday-native-workspace.mjs';
 
 // Exercises the same driver against the frozen packaged UI. These asynchronous
 // contract fixtures diagnose driver behavior, not installed/native owner proof.
@@ -39,6 +39,12 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     const topics = ['fixture-area', 'fixture-resource'].map((topicId, index) => ({ topicId, name: 'Fictional Same Name', paraCategory: index ? 'resource' : 'area', revision: 4, lifecycle: 'active', usable: true, health: 'ready', noteFolderReferenceId: 'fictional-folder' }));
     const signal = new AbortController().signal;
     const chat = document.querySelector('openclaw-chat-pane'); chat.sessionKey = 'agent:main:fictional-primary';
+    // This host boundary models the pinned native independent Files contract.
+    // The actual Native26 host/pane test separately proves Chat/draft retention.
+    const filesView = document.createElement('openclaw-plugin-view');
+    filesView.surface = 'session-files'; filesView.presented = true;
+    filesView.props = { sessionKey: chat.sessionKey, agentId: 'main' };
+    const reader = document.querySelector('#reader'); reader.before(filesView); filesView.append(reader);
     window.fixture = { dispatchCount: 0, responseLost: false, armed: false, assignment: null, operation: null };
     const f = window.fixture;
     const claimedLabels = new Set();
@@ -48,7 +54,10 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
     }
     f.seedLabels = [...claimedLabels];
     const host = { signal, connection: { connected: true, canRead: true, canWrite: true }, redact: x => x, subscribe: () => () => {},
-      sessions: { async openChat({ sessionKey }) { await delay(); chat.sessionKey = sessionKey; } }, navigation: { async openPage() { await delay(); } },
+      sessions: { async openChat({ sessionKey }) { await delay(); chat.sessionKey = sessionKey; },
+        async openFiles(target) { await delay(); f.filesTarget = target; filesView.props = target;
+          window.reader.update({ host, signal, presented: true, props: { topicId: 'fixture-resource' }, panel: { showInMain() {} } }); } },
+      navigation: { async openPage() { await delay(); } },
       components: {
         mountSelectPicker(container, props) {
           let active = true; let element;
@@ -65,7 +74,7 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
           return { dispose() { active = false; element?.close(); element?.remove(); queueMicrotask(() => props.returnFocusTarget?.focus()); } };
         },
         mountFileExplorer(container, props) {
-          let active = true; let element; const draw = next => { if (!active) return; element?.remove(); element = document.createElement('div'); element.className = 'control-ui-file-explorer'; const button = document.createElement('button'); button.textContent = 'Read Overview.md'; button.onclick = () => next.onSelect('Overview.md'); element.append(button); container.append(element); };
+          let active = true; let element; const draw = next => { if (!active) return; element?.remove(); element = document.createElement('div'); element.className = 'control-ui-file-explorer'; const notePath = next.entries?.[0]?.path ?? 'Overview.md'; const button = document.createElement('button'); button.textContent = `Read ${notePath}`; button.onclick = () => next.onSelect(notePath); element.append(button); container.append(element); };
           void delay().then(() => draw(props)); return { update(next) { void delay().then(() => draw(next)); }, dispose() { active = false; element?.remove(); } };
         }
       },
@@ -78,10 +87,14 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
         if (method.endsWith('sessions.browse')) return { result: { topicId: params.topicId, conversations: [{ referenceId: `${params.topicId}-primary`, sessionId: `${params.topicId}-primary-id`, status: 'open', isPrimary: true }, ...(f.operation && params.topicId === f.operation.topicId ? [{ referenceId: 'fictional-created-ref', sessionId: 'fictional-created-id', status: 'open' }] : [])] } };
         if (method.endsWith('histories.list')) return { result: { histories: [] } };
         if (method.endsWith('sessions.create')) { f.dispatchCount++; assertInput(params); if (claimedLabels.has(params.label)) throw new Error('Native label already in use'); claimedLabels.add(params.label); f.operation = params; if (f.armed) { f.armed = false; f.responseLost = true; throw new Error('Fictional response lost after owner settlement'); } throw new Error('An unexpected second creation is forbidden.'); }
-        if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:fictional-created' } };
-        const sourceReference = { topicId: params.topicId, referenceId: 'fictional-note' };
-        if (method.endsWith('notes.browse')) return { notes: [{ path: 'Overview.md', revision: 'r1', sourceReference }], total: 1, offset: 0, hasMore: false, cursor: 'fictional-catalog' };
-        if (method.endsWith('notes.read')) return { path: params.path, revision: 'r1', sourceReference, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true };
+        if (method.endsWith('sessions.resolve-native')) { const sessionKey = params.referenceId === 'fixture-resource-primary' ? 'agent:main:fictional-resource' : params.referenceId === 'fixture-area-primary' ? 'agent:main:fictional-primary' : 'agent:main:fictional-created';
+          const value = { sessionKey }; f.navigation = { input: params, value }; return { result: value }; }
+        const isResource = params.topicId === 'fixture-resource';
+        const sourceReference = { topicId: params.topicId, referenceId: isResource ? 'fictional-resource-note' : 'fictional-note', observedRevision: 'r1' };
+        if (method.endsWith('notes.browse')) return { notes: [{ path: isResource ? 'Resource-05.md' : 'Overview.md', revision: 'r1', sourceReference }], total: 1, offset: 0, hasMore: false, cursor: 'fictional-catalog' };
+        if (method.endsWith('notes.read')) { const noteText = isResource ? '# Fictional Resource 5\nRead-only fixture content.\n' : text;
+          const value = { path: params.path, revision: 'r1', sourceReference, contentEncoding: 'identity', contentBase64: btoa(noteText), byteOffset: 0, nextOffset: noteText.length, totalBytes: noteText.length, complete: true };
+          f.note = { input: params, value }; return value; }
         throw new Error(`Unexpected fixture method ${method}`);
       },
       async httpRequest({ body }) {
@@ -141,4 +154,25 @@ test('frozen packaged Everyday journey uses asynchronous picker/dialog/navigatio
   await page.getByRole('button', { name: nativeComponentsRoot ? 'Overview.md' : 'Read Overview.md', exact: true }).click();
   for (const width of [1440, 412, 360, 320]) { await page.setViewportSize({ width, height: 900 }); await assertEverydayTable({ page, reading: page.getByRole('region', { name: 'Note content', exact: true }), source: page.getByRole('button', { name: 'Source', exact: true }), originalText: '# Fictional Note\n' + FICTIONAL_TABLE }); }
   assert.equal(await page.getByLabel('Chat composer').inputValue(), 'Fictional draft retained through native creation Cancel.');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const area = await revealEverydayTopic(sidebar, 'fixture-area');
+  await area.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
+  const chatPane = page.locator('openclaw-chat-pane');
+  await page.waitForFunction(pane => pane.sessionKey === 'agent:main:fictional-primary', await chatPane.elementHandle());
+  const resource = await revealEverydayTopic(sidebar, 'fixture-resource');
+  await resource.getByRole('button', { name: 'Open Topic Files', exact: true }).click();
+  const resourceFixture = { topicId: 'fixture-resource', sessionReferenceId: 'fixture-resource-primary', sessionId: 'fixture-resource-primary-id',
+    sessionKey: 'agent:main:fictional-resource', notePath: 'Resource-05.md' };
+  const filesView = page.locator('openclaw-plugin-view').filter({ has: page.locator('[data-topic-reader-page="panel"]') });
+  const explorer = await assertEverydayFilesTarget({ page, chatPane, filesView, fixture: resourceFixture,
+    chatKey: 'agent:main:fictional-primary', draft: 'Fictional draft retained through native creation Cancel.' });
+  assertEverydayResolvedTarget(await page.evaluate(() => window.fixture.navigation), resourceFixture);
+  await assert.rejects(page.waitForFunction(pane => pane.sessionKey === 'agent:main:fictional-resource', await chatPane.elementHandle(), { timeout: 100 }), /Timeout/);
+  await explorer.getByRole('button', { name: nativeComponentsRoot ? 'Resource-05.md' : 'Read Resource-05.md', exact: true }).click();
+  await filesView.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { name: 'Fictional Resource 5', exact: true }).waitFor();
+  assertEverydayNoteRead(await page.evaluate(() => window.fixture.note), resourceFixture);
+  assert.throws(() => assertEverydayResolvedTarget({ input: { topicId: 'fixture-area' } }, resourceFixture), /AssertionError/);
+  assert.throws(() => assertEverydayNoteRead({ input: { topicId: 'fixture-area' } }, resourceFixture), /AssertionError/);
+  assert.equal(await chatPane.evaluate(pane => pane.sessionKey), 'agent:main:fictional-primary');
+  assert.equal(await chatPane.getByLabel('Chat composer', { exact: true }).inputValue(), 'Fictional draft retained through native creation Cancel.');
 });

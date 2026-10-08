@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
+import { EVERYDAY_SESSION_LABELS, FICTIONAL_TABLE, revealEverydayInbox, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayFilesTarget, assertEverydayResolvedTarget, assertEverydayNoteRead, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -801,6 +801,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
       let browserTopics;
       let browserNavigation;
+      let browserHistory;
       let browserNote;
       let browserChatSend;
       let browserChatAcknowledgement;
@@ -828,7 +829,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
             creationLoss.dispatchCount++;
             if (creationLoss.armed) { creationLoss.input = message.params; creationLoss.requestId = message.id; }
           }
-          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
+          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(nativeFilesWorkspace ? ['command-center.v1.histories.read'] : []), ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
             requests.set(message.id, { method: message.method, params: message.params });
             if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native', 'command-center.v1.notes.read'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
           }
@@ -857,6 +858,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
           if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value };
+          if (request.method === 'command-center.v1.histories.read') browserHistory = { input: request.params, value };
           if (scale && request.method === 'command-center.v1.notes.browse') rememberNativeScaleNotePage(scaleResponses.notePages, request.params, value);
           if (request.method === 'sessions.list') {
             if (scaleResponses.rosters.length < 256) scaleResponses.rosters.push({ input: request.params, value });
@@ -1292,34 +1294,27 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // already prove the request used this Topic's persisted reference.
       assert.equal(browserNavigation?.value?.sessionKey ?? browserNavigation?.value?.result?.sessionKey, fixture.sessionKey);
       // Refresh the presentation-only sidebar after the second exact Topic has
-      // been admitted. The public Topic Files action performs the atomic,
-      // resolver-authorized handoff to that Topic's Primary Chat and Files
-      // surface; do not chain a stale sidebar locator through an intervening
-      // host-owned session selection.
+      // been admitted. Native Files has an independent resolved Session target;
+      // opening Resource Files must preserve Area Chat and its unsent draft.
       await page.getByRole('button', { name: 'Refresh Topic workspace', exact: true }).press('Enter');
       const workspaceSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
       const resourceDetails = await revealEverydayTopic(workspaceSidebar, resourceFixture.topicId);
+      await retainNativeJourneyStage('native-resource-files-request');
       await resourceDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
-      await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, resourceFixture.sessionKey, { timeout: 30_000 });
-      const resourceChatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-      try {
-        await resourceChatPane.locator('.control-ui-file-explorer').getByText(resourceFixture.name, { exact: true }).waitFor({ timeout: 30_000 });
-      } catch (error) {
-        const diagnostic = await page.evaluate(() => [...document.querySelectorAll('openclaw-plugin-view')].map((view) => ({
-          surface: view.surface ?? null,
-          props: view.props ?? null,
-          text: view.textContent?.slice(0, 400) ?? '',
-        }))).catch(() => []);
-        throw new Error(`The native Files replacement did not follow the selected Conversation: ${JSON.stringify(diagnostic)}`, { cause: error });
-      }
-      const resourceExplorer = resourceChatPane.locator('.control-ui-file-explorer');
+      const resourceFilesView = chatPane.locator('openclaw-plugin-view').filter({ has: page.locator('[data-topic-reader-page="panel"]') });
+      const resourceExplorer = await assertEverydayFilesTarget({ page, chatPane, filesView: resourceFilesView,
+        fixture: resourceFixture, chatKey: fixture.sessionKey, draft: unsentDraft });
+      assertEverydayResolvedTarget(browserNavigation, resourceFixture);
+      await retainNativeJourneyStage('native-resource-files-target');
       const resourceFilter = resourceExplorer.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
-      await resourceFilter.focus();
-      await page.keyboard.type(resourceFixture.notePath);
+      await resourceFilter.fill(resourceFixture.notePath);
       const resourceNote = resourceExplorer.getByRole('button', { name: resourceFixture.notePath, exact: true });
       await tabTo(resourceNote);
       await page.keyboard.press('Enter');
-      await assertNativeFormattedNote(page.getByRole('region', { name: 'Note content', exact: true }), resourceFixture);
+      await assertNativeFormattedNote(resourceFilesView.getByRole('region', { name: 'Note content', exact: true }), resourceFixture);
+      assertEverydayNoteRead(browserNote, resourceFixture);
+      await assertEverydayFilesTarget({ page, chatPane, filesView: resourceFilesView,
+        fixture: resourceFixture, chatKey: fixture.sessionKey, draft: unsentDraft });
       await retainTopicNotesScreenshot(page, 'native-files-resource-1440');
       await retainNativeJourneyStage('native-files-second-topic');
       // Imported history is a distinct, configured read-only source. It is
@@ -1330,13 +1325,18 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await originalTopicDetails.getByRole('button', { name: /Imported History \(read-only\)/u }).press('Enter');
       await page.getByText('Read-only preserved history. Continue ongoing conversations in native Chat.', { exact: true }).waitFor({ timeout: 30_000 });
       await page.getByText('Fictional preserved imported history.', { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(browserHistory?.input.historyId, importedHistory.historyId);
+      assert.equal(browserHistory?.value.historyId, importedHistory.historyId);
+      assert.equal(browserHistory?.value.topicId, fixture.topicId);
+      assert.equal(browserHistory?.value.readOnly, true);
       await retainTopicNotesScreenshot(page, 'native-files-imported-history-1440');
       await retainNativeJourneyStage('native-files-imported-history');
       result = { existingTopicVerified: true, nativeFilesReplacement: true, nestedTreeBrowsing: true,
         everydayAssignment: true, focusedCreationRecovery: creation, formattedTable: tableMetrics,
         filenameFiltering: true, authoritativeFormattedRead: true, sourceToggle: true,
         keyboardNativeFilesSelection: true, pdfPreview: true, verifiedOriginalDownload: true, imagePreview: true, jpegPreview: true, webpPreview: true, previewFallback: true,
-        exactNativeChatHandoff: true, nativeChatVisible: true, secondTopicExactFilesRoot: true, configuredReadOnlyHistory: importedHistory?.historyId != null,
+        exactNativeChatHandoff: true, nativeChatVisible: true, secondTopicExactFilesRoot: true,
+        independentResourceFilesTarget: true, areaChatDraftRetainedThroughResourceFiles: true, configuredReadOnlyHistory: importedHistory?.historyId != null,
         nativePaneControls, nativeLayoutControls, nativeComposerControls, nativeChatDraftRetainedThroughSwap: true, nativeChatDraftRetainedThroughDock: true };
       } else if (notesWorkspaceOnly) {
       await retainNativeJourneyStage('topics-loaded');
