@@ -59,6 +59,8 @@ jobs:
           import assert from 'node:assert/strict';
           import { readFile } from 'node:fs/promises';
           import { verifyPluginArtifact } from './src/plugin-artifact.mjs';
+          import { resolveRealHostAcceptancePlan } from './src/test-selection.mjs';
+          assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
           const parent = process.env.RUNNER_TEMP;
           const receipt = JSON.parse(await readFile(`${parent}/pr368-original/receipt.json`, 'utf8'));
           assert.equal(receipt.sourceCommit, '018f4aa10a52c1122f0f045063034dbef05e9d05');
