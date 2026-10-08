@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { FICTIONAL_TABLE, revealEverydayTopic, chooseEverydayAssignment, exerciseEverydayCreation, assertEverydayTable } from './everyday-native-workspace.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -205,7 +206,7 @@ function isCommandCenterMaintenanceJob(job, sessionKey) {
 
 // The receipt wrapper and future retained variants share this actual native
 // journey. Host admission, exact source proofs and finalization stay mandatory.
-export async function seedNativeExistingTopic({ world, host, signal, catalog = false }) {
+export async function seedNativeExistingTopic({ world, host, signal, catalog = false, table = false }) {
   const stateDir = path.join(world.root, '.openclaw');
   await waitForConsecutiveReadiness(async () => isCommandCenterMetadataReady(resolveCommandCenterDatabasePath(stateDir)), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const topicId = '44444444-4444-4444-8444-444444444444';
@@ -214,7 +215,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   const folderReferenceId = 'fictional-native-journey-folder';
   const sessionReferenceId = 'fictional-native-journey-primary';
   const notePath = 'Overview.md';
-  const noteText = '# Fictional Native Journey\nExisting authoritative Note — read only.\n';
+  const noteText = '# Fictional Native Journey\nExisting authoritative Note — read only.\n' + (table ? FICTIONAL_TABLE : '');
   const sessionKey = `agent:main:command-center:acceptance-native:${topicId}`;
   // Fixture setup uses the real Session owner, not a fabricated catalog row or
   // the deferred Topic-provisioning/legacy authoritativeSession escape hatch.
@@ -288,10 +289,9 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
 // from the first Topic so the acceptance journey can prove that changing an
 // exact Conversation changes the visible Files root, rather than carrying
 // over a browser state from the prior Topic.
-async function seedNativeResourceTopic({ world, signal }) {
+async function seedNativeResourceTopic({ world, signal, name = 'Fictional Resource Workspace' }) {
   const stateDir = path.join(world.root, '.openclaw');
   const topicId = '55555555-5555-4555-8555-555555555555';
-  const name = 'Fictional Resource Workspace';
   const folderReferenceId = 'fictional-resource-folder';
   const sessionReferenceId = 'fictional-resource-primary';
   const sessionKey = `agent:main:command-center:acceptance-native:${topicId}`;
@@ -776,9 +776,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           onReady: () => { startupReadinessMs = scaleNow() - started; } });
       }
       const fixture = keyboard || nativeFilesWorkspace
-        ? await seedNativeExistingTopic({ world, host, signal, catalog: nativeFilesWorkspace })
+        ? await seedNativeExistingTopic({ world, host, signal, catalog: nativeFilesWorkspace, table: nativeFilesWorkspace })
         : bootstrapped.fixture;
-      const resourceFixture = nativeFilesWorkspace ? await seedNativeResourceTopic({ world, signal }) : null;
+      const resourceFixture = nativeFilesWorkspace ? await seedNativeResourceTopic({ world, signal, name: fixture.name }) : null;
       const unassignedFixture = nativeFilesWorkspace ? await seedNativeUnassignedConversation({ world, signal }) : null;
       let importedHistory;
       if (nativeFilesWorkspace) {
@@ -797,6 +797,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       let browserNote;
       let browserChatSend;
       let browserChatAcknowledgement;
+      const creationLoss = { armed: false, responseLost: false, dispatchCount: 0, input: null, requestId: null };
       const scaleResponses = { notePages: new Map(), rosters: [], rosterOverflow: false };
       const conversationLabel = scale ? 'Fictional Native Scale 100' : 'Fictional Native Follow-up';
       const messageText = 'Fictional native Conversation message for exact Session readback.';
@@ -816,6 +817,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
+          if (nativeFilesWorkspace && message?.type === 'req' && message.method === 'command-center.v1.sessions.create') {
+            creationLoss.dispatchCount++;
+            if (creationLoss.armed) { creationLoss.input = message.params; creationLoss.requestId = message.id; }
+          }
           if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
             requests.set(message.id, { method: message.method, params: message.params });
             if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native', 'command-center.v1.notes.read'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
@@ -825,8 +830,16 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           }
         });
         server.onMessage((payload) => {
+          let message; try { message = JSON.parse(String(payload)); } catch { socket.send(payload); return; }
+          // Isolated transport fault only after the real creation owner settles.
+          // The server sees the unchanged original request exactly once.
+          if (creationLoss.armed && message?.type === 'res' && message.id === creationLoss.requestId) {
+            assert.equal(message.ok, true, 'Only an applied real-owner response may be lost.');
+            creationLoss.armed = false; creationLoss.responseLost = true;
+            socket.send(JSON.stringify({ type: 'res', id: message.id, ok: false, error: { code: 'UNAVAILABLE', message: 'Fictional response lost after owner settlement' } }));
+            return;
+          }
           socket.send(payload);
-          let message; try { message = JSON.parse(String(payload)); } catch { return; }
           if (message?.type !== 'res') return;
           if (browserChatSend?.id === message.id) browserChatAcknowledgement = message;
           const request = requests.get(message.id);
@@ -897,14 +910,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await inboxRow.waitFor({ state: 'visible', timeout: 30_000 });
       await inboxRow.getByRole('button', { name: 'Open Chat', exact: true }).press('Enter');
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, unassignedFixture.sessionKey, { timeout: 30_000 });
-      const assignmentTopicSummary = topicSidebar.locator('summary').filter({ hasText: fixture.name });
-      await assignmentTopicSummary.click({ timeout: 5_000 });
-      const assignmentDetails = assignmentTopicSummary.locator('xpath=..');
+      const assignmentDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await assignmentDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       const currentInboxRow = inbox.getByRole('listitem').filter({ hasText: unassignedFixture.label });
-      await currentInboxRow.locator('select').selectOption(fixture.topicId);
-      await currentInboxRow.getByRole('button', { name: 'Assign to Topic', exact: true }).press('Enter');
+      await chooseEverydayAssignment(currentInboxRow, { topicId: fixture.topicId, duplicateTopicId: resourceFixture.topicId, name: fixture.name });
       await waitForConsecutiveReadiness(async () => {
         const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
           method: 'command-center.v1.sessions.topic-context', params: { schemaVersion: 1, sessionKey: unassignedFixture.sessionKey }, signal });
@@ -917,18 +927,32 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const assignedConversation = (assignedBrowseResponse?.result ?? assignedBrowseResponse)?.conversations?.find((row) => row?.sessionId === unassignedFixture.sessionId);
       assert.ok(assignedConversation, 'The authoritative Topic roster must contain the exact assigned Conversation.');
       const assignedLabel = assignedConversation.displayName || 'Linked Conversation';
-      const assignedSummary = topicSidebar.locator('summary').filter({ hasText: fixture.name });
-      const assignedDetails = assignedSummary.locator('xpath=..');
-      if (!await assignedDetails.evaluate((element) => element instanceof HTMLDetailsElement && element.open)) await assignedSummary.click({ timeout: 5_000 });
+      const assignedDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
       await assignedDetails.getByRole('button', { name: assignedLabel, exact: true }).waitFor({ timeout: 30_000 });
       await retainNativeJourneyStage('native-sidebar-assignment');
-      const fixtureSummary = topicSidebar.locator('summary').filter({ hasText: fixture.name });
-      await fixtureSummary.waitFor({ timeout: 30_000 });
-      const fixtureDetails = fixtureSummary.locator('xpath=..');
-      if (!await fixtureDetails.evaluate((element) => element instanceof HTMLDetailsElement && element.open)) {
-        await fixtureSummary.click({ timeout: 5_000 });
-        await page.waitForFunction((element) => element instanceof HTMLDetailsElement && element.open, await fixtureDetails.elementHandle(), { timeout: 5_000 });
-      }
+      const creation = await exerciseEverydayCreation({ page, sidebar: topicSidebar, fixture,
+        composer: chatPane.locator('textarea[aria-label="Chat composer"]'),
+        readSessionKey: () => chatPane.evaluate(element => element.sessionKey),
+        armResponseLoss: () => { assert.equal(creationLoss.dispatchCount, 0); creationLoss.armed = true; },
+        readCreation: async () => {
+          assert.equal(creationLoss.responseLost, true);
+          const metadata = openCommandCenterMetadataService({ stateDir: path.join(world.root, '.openclaw'), capabilities: { notes: true, sessions: true, activity: true } });
+          let operation; try { operation = metadata.getTopicOperation(creationLoss.input.logicalOperationId); } finally { metadata.close(); }
+          assert.equal(operation.state, 'applied');
+          const referenceId = operation.result.value.sourceReference.referenceId;
+          const native = operation.result.nativeResult;
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+            method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: fixture.topicId, includeClosed: false }, signal });
+          const row = (response?.result ?? response).conversations.find(row => row.referenceId === referenceId);
+          assert.equal(row?.sessionId, native.sessionId);
+          assert.equal(row?.status, 'open');
+          return { logicalOperationId: operation.logicalOperationId, referenceId, sessionKey: native.key, sessionId: native.sessionId,
+            dispatchCount: creationLoss.dispatchCount, responseLost: creationLoss.responseLost };
+        } });
+      await retainNativeJourneyStage('native-focused-creation-recovery');
+      const fixtureDetails = await revealEverydayTopic(topicSidebar, fixture.topicId);
+      await fixtureDetails.getByRole('button', { name: 'Primary Conversation', exact: true }).press('Enter');
+      await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
       await fixtureDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
       const reader = page.locator('[data-topic-reader-page="panel"]');
       try {
@@ -1004,7 +1028,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // the main pane.  Its compact native tree remains mounted with the
       // reader, rather than returning to a flat Topic page.
       const noteContent = page.getByRole('region', { name: 'Note content', exact: true });
-      await assertNativeFormattedNote(noteContent, fixture);
+      await assertNativeFormattedNote(noteContent, { ...fixture, noteText: fixture.noteText.replace(FICTIONAL_TABLE, '') });
+      const tableMetrics = await assertEverydayTable({ page, reading: noteContent, source: page.getByRole('button', { name: 'Source', exact: true }), originalText: fixture.noteText });
       assert.equal(browserNote?.input.topicId, fixture.topicId);
       assert.equal(browserNote?.input.path, fixture.notePath);
       assert.equal(browserNote?.value.sourceReference?.topicId, fixture.topicId);
@@ -1256,13 +1281,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // host-owned session selection.
       await page.getByRole('button', { name: 'Refresh Topic workspace', exact: true }).press('Enter');
       const workspaceSidebar = page.getByRole('navigation', { name: 'Topics and Conversations', exact: true });
-      const resourceSummary = workspaceSidebar.locator('summary').filter({ hasText: resourceFixture.name });
-      await resourceSummary.waitFor({ timeout: 30_000 });
-      const resourceDetails = resourceSummary.locator('xpath=..');
-      if (!await resourceDetails.evaluate((element) => element instanceof HTMLDetailsElement && element.open)) {
-        await resourceSummary.click({ timeout: 5_000 });
-        await page.waitForFunction((element) => element instanceof HTMLDetailsElement && element.open, await resourceDetails.elementHandle(), { timeout: 5_000 });
-      }
+      const resourceDetails = await revealEverydayTopic(workspaceSidebar, resourceFixture.topicId);
       await resourceDetails.getByRole('button', { name: 'Open Topic Files', exact: true }).press('Enter');
       await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, resourceFixture.sessionKey, { timeout: 30_000 });
       const resourceChatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
@@ -1290,19 +1309,14 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // deliberately opened only through the Topic sidebar entry; no native
       // Chat composer or active-session resolver is involved. Reopen the
       // exact original Topic via its visible disclosure before choosing it.
-      const originalTopicSummary = workspaceSidebar.locator('summary').filter({ hasText: fixture.name });
-      await originalTopicSummary.waitFor({ timeout: 30_000 });
-      const originalTopicDetails = originalTopicSummary.locator('xpath=..');
-      if (!await originalTopicDetails.evaluate((element) => element instanceof HTMLDetailsElement && element.open)) {
-        await originalTopicSummary.click({ timeout: 5_000 });
-        await page.waitForFunction((element) => element instanceof HTMLDetailsElement && element.open, await originalTopicDetails.elementHandle(), { timeout: 5_000 });
-      }
+      const originalTopicDetails = await revealEverydayTopic(workspaceSidebar, fixture.topicId);
       await originalTopicDetails.getByRole('button', { name: /Imported History \(read-only\)/u }).press('Enter');
       await page.getByText('Read-only preserved history. Continue ongoing conversations in native Chat.', { exact: true }).waitFor({ timeout: 30_000 });
       await page.getByText('Fictional preserved imported history.', { exact: true }).waitFor({ timeout: 30_000 });
       await retainTopicNotesScreenshot(page, 'native-files-imported-history-1440');
       await retainNativeJourneyStage('native-files-imported-history');
       result = { existingTopicVerified: true, nativeFilesReplacement: true, nestedTreeBrowsing: true,
+        everydayAssignment: true, focusedCreationRecovery: creation, formattedTable: tableMetrics,
         filenameFiltering: true, authoritativeFormattedRead: true, sourceToggle: true,
         keyboardNativeFilesSelection: true, pdfPreview: true, verifiedOriginalDownload: true, imagePreview: true, jpegPreview: true, webpPreview: true, previewFallback: true,
         exactNativeChatHandoff: true, nativeChatVisible: true, secondTopicExactFilesRoot: true, configuredReadOnlyHistory: importedHistory?.historyId != null,
