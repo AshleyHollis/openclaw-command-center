@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
       - name: Install pinned candidate dependencies
         run: |
           set -euo pipefail
@@ -36,6 +40,8 @@ jobs:
           COMMAND_CENTER_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          node_toolchain="$(command -v node)"
+          test "$(node --version)" = v24.21.0
           docker pull "$TOOLCHAIN"
           sudo install -d -o 10001 -g 10001 -m 0700 "$RUNNER_TEMP/candidate-package"
           # The interruption fixture executes a temporary npm wrapper. Exec is
@@ -48,14 +54,19 @@ jobs:
             --mount "type=tmpfs,dst=/workspace,tmpfs-size=1073741824,tmpfs-mode=1777" \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/candidate,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/candidate-dependencies/node_modules,dst=/workspace/node_modules,readonly" \
+            --mount "type=bind,src=$node_toolchain,dst=/usr/local/bin/node,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/candidate-package,dst=/output" \
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
+              test "$(node --version)" = v24.21.0
               node --test test/conversation-creation.test.mjs test/topic-page-http.test.mjs test/topic-conversation-assignment.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
+              node --test test/compatibility.test.mjs test/storage-migrations.test.mjs \
+                test/schema-compatibility.test.mjs test/native-compatibility-fixture.test.mjs \
+                test/harness.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
             '
           # Container output is private to its UID until the child has exited.

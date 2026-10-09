@@ -74,9 +74,17 @@ const installedSchemaNineRelease = Object.freeze({
   host: Object.freeze({ range: '=2026.9.7', commit: '0d460e388a3b036d3914e18bb0f2cb47fcafb362' }),
   pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.9.7' })
 });
+// Exact deployed 9.8 family retained when the canonical host advances to 9.9.
+// Its recovery facts remain independent of the new canonical host identity.
+const deployedSchemaNineRelease = Object.freeze({
+  ...historicalSchemaNineRelease,
+  host: Object.freeze({ range: '=2026.9.8', commit: '26a9c0faa4124e53ae2eab34291d68a7245f630c' }),
+  pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.9.8' })
+});
 const committedHistoricalFamilies = Object.freeze([
   { release: historicalSchemaNineRelease, commits: historicalSchemaNineHostCommits },
-  { release: installedSchemaNineRelease, commits: [installedSchemaNineRelease.host.commit] }
+  { release: installedSchemaNineRelease, commits: [installedSchemaNineRelease.host.commit] },
+  { release: deployedSchemaNineRelease, commits: [deployedSchemaNineRelease.host.commit] }
 ]);
 
 const currentRelease = Object.freeze({

@@ -9,6 +9,7 @@ import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import historicalRelease from './fixtures/recovery-release-2026-9-5.json' with { type: 'json' };
 import installedRelease from './fixtures/recovery-release-2026-9-7.json' with { type: 'json' };
+import deployedRelease from './fixtures/recovery-release-2026-9-8.json' with { type: 'json' };
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql, metadataSchemaV8Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
@@ -137,7 +138,7 @@ test('schema-5 to schema-9 preserves Session locators and quarantines unproven l
 });
 
 for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-${schemaVersion} migration manifest remains valid after a compatible host-only upgrade`, async () => {
-  for (const release of [historicalRelease, installedRelease]) for (const historicalCommit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
+  for (const release of [historicalRelease, installedRelease, deployedRelease]) for (const historicalCommit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
     await seedMigratableSchema(stateDir, schemaVersion, `topic-compatible-host-upgrade-${schemaVersion}`);
     const migrated = open({ stateDir });
     assert.equal(migrated.getOperatingStatus().mode, 'ready');
@@ -162,8 +163,8 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-$
   });
 });
 
-test('retained 9.5 and 9.7 schema-6 through schema-8 target families remain readable', async () => {
-  for (const release of [historicalRelease, installedRelease]) for (const targetSchema of [6, 7, 8]) for (const commit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
+test('retained 9.5, 9.7 and 9.8 schema-6 through schema-8 target families remain readable', async () => {
+  for (const release of [historicalRelease, installedRelease, deployedRelease]) for (const targetSchema of [6, 7, 8]) for (const commit of release === historicalRelease ? historicalHostCommits : [release.host.commit]) await withState(async (stateDir) => {
     // Schema-5 snapshots declare the current 5→9 recovery contract. Use the
     // retained 4→5 snapshot for a historical schema-6 target, not a 5→9 forgery.
     await seedMigratableSchema(stateDir, targetSchema === 6 ? 4 : targetSchema - 1);
@@ -225,20 +226,20 @@ test('historical release acceptance rejects prepared, mixed and tampered familie
   });
 });
 
-test('retained 9.7 recovery rejects prepared, mixed, tampered and unknown families without writes', async () => {
-  // This pairing test runs after the candidate host pin moves from installed 9.7.
-  assert.notEqual(canonical.host.commit, installedRelease.host.commit);
+for (const release of [installedRelease, deployedRelease]) test(`retained ${release.host.range} recovery rejects prepared, mixed, tampered and unknown families without writes`, async () => {
+  // This pairing test runs after the candidate host pin moves beyond both installed 9.7 and deployed 9.8.
+  assert.notEqual(canonical.host.commit, release.host.commit);
   const cases = [
     (manifest) => { manifest.state = 'prepared'; },
     (manifest) => { manifest.sourceRelease = historicalReleaseForSchema(8, historicalHostCommits[0]); },
     (manifest) => { manifest.targetRelease.host.commit = '0'.repeat(40); },
-    (manifest) => { manifest.targetRelease.pluginApi.range = '=2026.9.8'; },
+    (manifest) => { manifest.targetRelease.pluginApi.range = '=2026.9.9'; },
     (manifest) => { manifest.sourceRelease.commandCenterSchema.readable.max = 9; },
     (manifest) => { manifest.targetRelease.package.build = 'unqualified'; },
     (manifest) => { manifest.targetRelease.capabilityBridgeProtocol.max = 2; }
   ];
   for (const mutate of cases) await withState(async (stateDir) => {
-    const databasePath = await seedMigratableSchema(stateDir, 8, 'fictional-retained-9-7');
+    const databasePath = await seedMigratableSchema(stateDir, 8, 'fictional-retained-release');
     const migrated = open({ stateDir });
     assert.equal(migrated.getOperatingStatus().mode, 'ready');
     migrated.close();
@@ -246,7 +247,7 @@ test('retained 9.7 recovery rejects prepared, mixed, tampered and unknown famili
     const manifestPath = path.join(directory, 'manifest.json');
     const snapshotPath = path.join(directory, 'metadata.sqlite.snapshot');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    retainHistoricalRelease(manifest, installedRelease.host.commit, 9, installedRelease);
+    retainHistoricalRelease(manifest, release.host.commit, 9, release);
     mutate(manifest);
     const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, manifestBytes);

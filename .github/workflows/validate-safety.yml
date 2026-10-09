@@ -18,9 +18,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 24.12.0
+          node-version: 24.21.0
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs

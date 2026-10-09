@@ -10,9 +10,9 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '26a9c0faa4124e53ae2eab34291d68a7245f630c';
+const controllerIntegrationCommit = 'ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
-const controllerPackageVersion = '2026.9.8';
+const controllerPackageVersion = '2026.9.9';
 const publishedSdkVersion = controllerPackageVersion;
 
 test('release admission refuses unsupported or missing bridge declarations before activation', () => {
@@ -28,7 +28,7 @@ test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(packageJson.openclaw.extensions, ['./dist/plugin.mjs']);
 });
 
-test('pins product compatibility and the controller to the exact Attention successor source boundary', () => {
+test('pins product compatibility and the controller to the exact accepted native 9.9 source boundary', () => {
   assert.equal(canonical.priorRelease.host.range, `=${supportedOpenClaw.version}`);
   assert.equal(canonical.priorRelease.host.commit, supportedOpenClaw.commit);
   assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
