@@ -20,7 +20,7 @@ function legacyOperationId(parts, version) {
 }
 
 for (const kind of ['chat', 'email']) {
-  test(`${kind} tool replays a legacy receipt at a later clock after SQLite reopen and refuses changed intent`, async t => {
+  test(kind === 'chat' ? 'unscoped Chat capture tool refuses before creating legacy effects' : 'email tool replays a legacy receipt at a later clock after SQLite reopen and refuses changed intent', async t => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-tool-replay-'));
     let metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     const sourceService = {
@@ -40,6 +40,16 @@ for (const kind of ['chat', 'email']) {
         ...(kind === 'chat' ? { ...params, topicId: 'topic-fictional', sourceKind: 'chat', sourceExternalId: chatContext.sessionKey, sourceVersion: `tool:${logicalOperationId}` } : sourceParams),
         occurredAt: originalTime, observedAt: originalTime, historicalBaseline: false
       };
+      if (kind === 'chat') {
+        // Accepted Chat replay now owns these effects. A legacy tool call cannot
+        // mint authority by retaining the same timestamps or transport ID.
+        await assert.rejects(() => createCommitmentCaptureService({ metadata, sourceService }).capture(legacyInput), { code: 'source-recovery' });
+        const tool = commitmentCaptureToolFactory({ getOwners: () => ({ metadata, sourceService }) })(chatContext);
+        await assert.rejects(() => tool.execute('original-call', params), { code: 'source-recovery' });
+        assert.equal(metadata.listOpenLoops().length, 0);
+        assert.equal(metadata.listOpenLoopObservations().length, 0);
+        return;
+      }
       const original = await createCommitmentCaptureService({ metadata, sourceService }).capture(legacyInput);
       metadata.close();
       metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
