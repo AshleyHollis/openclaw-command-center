@@ -24,16 +24,18 @@ export function mountConversationPlanWorkspace(container, { host, signal, topicI
         const article = el('article');
         if (!row.input || !row.card) { article.append(el('p', 'An exact native card is unavailable.')); rows.append(article); continue; }
         article.append(el('h3', row.input.snapshot.outcome), el('p', `Native status: ${row.card.status}. ${row.progress.availability === 'available' ? `Linked run: ${row.progress.status}.` : 'Linked run progress is unavailable.'}`));
-        if (row.attention?.eligible) {
-          const open = el('button', 'Review native human request'); open.type = 'button';
+        for (const original of row.attention?.eligible ? row.attention.requests ?? [] : []) {
+          const resultReview = original.kind === 'requested-result-review';
+          const open = el('button', resultReview ? 'Review requested result' : 'Review native human request'); open.type = 'button';
           open.onclick = async () => {
             if (!live(version)) return;
             open.disabled = true;
             try {
               const currentRow = await request('reconcile', { input: row.input, logicalOperationId: row.input.logicalOperationId });
               if (!live(version)) return;
-              if (currentRow.availability !== 'available' || currentRow.card.id !== row.card.id || currentRow.card.sessionKey !== row.card.sessionKey || currentRow.card.runId !== row.card.runId || !currentRow.attention?.eligible || !currentRow.attention.requests?.some(request => row.attention.requests?.some(original => original.id === request.id && original.kind === request.kind && original.requestRevision === request.requestRevision && original.episodeId === request.episodeId && original.episodeRevision === request.episodeRevision))) { status.textContent = 'This native human request changed. Refresh tracked plans.'; return; }
-              host.sessions.openChat({ sessionKey: currentRow.card.sessionKey });
+              if (currentRow.availability !== 'available' || currentRow.card.id !== row.card.id || currentRow.card.sessionKey !== row.card.sessionKey || currentRow.card.runId !== row.card.runId || !currentRow.attention?.eligible || !currentRow.attention.requests?.some(request => original.id === request.id && original.kind === request.kind && original.requestRevision === request.requestRevision && original.episodeId === request.episodeId && original.episodeRevision === request.episodeRevision)) { status.textContent = 'This native human request changed. Refresh tracked plans.'; return; }
+              if (resultReview) host.navigation.openPage(nativeWorkboardCardTarget({ ...row.input.destination, cardId: currentRow.card.id }));
+              else host.sessions.openChat({ sessionKey: currentRow.card.sessionKey });
             } catch { if (live(version)) status.textContent = 'Current native human-request authority is unavailable.'; }
             finally { if (live(version)) open.disabled = false; }
           };

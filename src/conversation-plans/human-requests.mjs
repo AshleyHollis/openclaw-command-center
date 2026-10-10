@@ -1,10 +1,11 @@
 // Native transient requests are the only admission evidence. Workboard status,
 // progress_card, notifications and prose never become human-action requests.
 import { planDigest } from './contract.mjs';
+import { readNativeResultReviews, verifyNativeResultReview } from './native-result-review.mjs';
 
 // Pending-list absence is uncertainty, never proof of an answer or approval.
-// Result review has no qualified native owner on the pinned fork; its optional
-// verifier is an explicitly injected adapter seam, not a new native RPC.
+// Explicit completed-result review requires its durable scoped Workboard owner.
+// Older native builds return unavailable; card/run state never substitutes.
 export async function verifyPlanHumanRequest({ card, request, known, requestLink, nativeRequest, assertCurrent, now = Date.now, verifyResultReview }) {
   assertCurrent();
   const unknown = { availability: 'unavailable' };
@@ -13,8 +14,8 @@ export async function verifyPlanHumanRequest({ card, request, known, requestLink
   // Terminal-run relevance belongs to the request's original admitted linkage.
   // A later run on the same card cannot retire an earlier request receipt.
   const sameRun = requestLink?.sessionKey && requestLink?.runId && requestLink.sessionKey === card.sessionKey && requestLink.runId === card.runId;
+  if (request.kind === 'requested-result-review') return (verifyResultReview ?? verifyNativeResultReview)({ card, request, known, requestLink, nativeRequest, assertCurrent, now });
   if (known && request.requestRevision && (card.status === 'done' || request.expiresAtMs <= now() || sameRun && request.kind !== 'requested-result-review' && ['failed', 'stopped', 'succeeded'].includes(attempt?.status))) return result('withdrawn', request);
-  if (request.kind === 'requested-result-review') return typeof verifyResultReview === 'function' ? verifyResultReview({ card, request, known, assertCurrent }) : unknown;
   try {
     const response = request.kind === 'question' ? await nativeRequest('question.get', { id: request.id }) : await nativeRequest('exec.approval.list', {});
     assertCurrent();
@@ -32,17 +33,18 @@ export async function verifyPlanHumanRequest({ card, request, known, requestLink
 export async function readPlanHumanRequests({ card, nativeRequest, assertCurrent, now = Date.now }) {
   assertCurrent();
   if (card.status === 'done' || !card.sessionKey?.trim() || !card.runId?.trim()) return { availability: 'available', eligible: false, requests: [] };
+  const resultReviews = await readNativeResultReviews({ card, nativeRequest, assertCurrent });
   const matches = request => request.sessionKey === card.sessionKey && request.runId === card.runId;
   const pending = request => typeof request.id === 'string' && Number.isFinite(request.createdAtMs) && Number.isFinite(request.expiresAtMs) && request.expiresAtMs > now();
   try {
     const questions = await nativeRequest('question.list', {}); assertCurrent();
     const approvals = await nativeRequest('exec.approval.list', {}); assertCurrent();
     if (!Array.isArray(questions?.questions) || !Array.isArray(approvals)) throw new Error('Native human requests unavailable');
-    const requests = [];
+    const requests = [...resultReviews.requests];
     for (const request of questions.questions) if (request.status === 'pending' && matches(request) && pending(request)) requests.push({ id: request.id, kind: 'question', createdAtMs: request.createdAtMs, expiresAtMs: request.expiresAtMs });
     for (const request of approvals) if (request.approvalKind === 'exec' && matches(request.request ?? {}) && pending(request)) requests.push({ id: request.id, kind: 'execution-approval', createdAtMs: request.createdAtMs, expiresAtMs: request.expiresAtMs });
-    return { availability: 'available', eligible: requests.length > 0, requests };
+    return { availability: 'available', eligible: requests.length > 0, requests, resultReviewAvailability: resultReviews.availability };
   } catch {
-    assertCurrent(); return { availability: 'unavailable', eligible: false, requests: [] };
+    assertCurrent(); return { availability: resultReviews.requests.length ? 'partial' : 'unavailable', eligible: resultReviews.requests.length > 0, requests: resultReviews.requests, resultReviewAvailability: resultReviews.availability };
   }
 }

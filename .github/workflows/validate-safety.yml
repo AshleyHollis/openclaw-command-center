@@ -25,7 +25,7 @@ jobs:
           node-version: 24.21.0
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --test test/safety.test.mjs
+      - run: node --test test/safety.test.mjs test/enabled-feature-candidate.test.mjs
       - run: node --test test/mutation-architecture.test.mjs test/native-attachment-selection.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs
       - run: node --test --test-name-pattern='attachment review actions' test/topic-page-http.test.mjs
       - run: node --test test/conversation-plans.test.mjs test/conversation-plan-source.test.mjs test/conversation-plan-attention.test.mjs test/conversation-plan-native-contract.test.mjs test/attention-service.integration.test.mjs
@@ -34,7 +34,7 @@ jobs:
       - name: Everyday Topic browser regression
         env:
           COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/everyday-topic-sidebar.png
-        run: node --test --test-concurrency=1 test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/first-live-native-ui.test.mjs
+        run: node --test --test-concurrency=1 test/native-ui-conversation-plan.test.mjs test/native-topic-assignment.test.mjs test/native-topic-creation-dialog.test.mjs test/native-topic-sidebar.test.mjs test/first-live-native-ui.test.mjs
       - name: Topic reader composition regression
         env:
           COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/topic-reader-tables.png

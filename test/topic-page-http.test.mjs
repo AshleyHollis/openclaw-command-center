@@ -323,7 +323,7 @@ test('production proxy delegates Note identity validation to the authoritative s
   assert.deepEqual(calls, [['validate', noteId, { create: false }], ['edit', noteId]]);
 });
 
-test('attachment review actions require captured native authority and keep their build gate closed', async () => {
+test('enabled attachment review actions require captured native authority', async () => {
   let calls = 0;
   const authority = { principalId: 'fictional-operator', assertCurrent() {} };
   const service = { documentsListAttachments(input, runtime) { calls++; assert.equal(runtime.principalId, authority.principalId); runtime.assertCurrent(); assert.equal(input.sessionId, 'fictional-incarnation'); return { schemaVersion: 1, topicId, topicName: 'Fictional project', sessionKey: input.sessionKey, sessionId: input.sessionId, generation: 'g', offset: 0, nextOffset: null, attachments: [] }; } };
@@ -334,9 +334,10 @@ test('attachment review actions require captured native authority and keep their
   assert.deepEqual(result.body.result.attachments, []);
   assert.equal(calls, 1);
   const { assertFirstLiveTopicAction } = await import('../src/release-scope.mjs');
-  const refused = await invoke(service, { body, handlerOptions: { ...options, assertAction: assertFirstLiveTopicAction } });
-  assert.equal(refused.statusCode, 501);
-  assert.equal(calls, 1);
+  const enabled = await invoke(service, { body, handlerOptions: { ...options, assertAction: assertFirstLiveTopicAction } });
+  assert.equal(enabled.statusCode, 200);
+  assert.deepEqual(enabled.body.result.attachments, []);
+  assert.equal(calls, 2);
   assert.equal((await invoke(service, { body })).statusCode, 422);
 });
 

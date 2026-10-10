@@ -47,7 +47,7 @@ export function createConversationPlanOwner({ metadata, nativeRequest, readSourc
       if (!Array.isArray(cards) || cards.length !== 1 || planDigest(exact(cards[0], binding)) !== planDigest(card)) fail('unavailable', 'Native card changed while reading linked human requests.');
       // Expiry can occur during source/card awaits. Native controls revalidate
       // pending request resolution before any user response; CC only navigates.
-      const requests = (attention.requests ?? []).filter(request => request.expiresAtMs > Date.now());
+      const requests = (attention.requests ?? []).filter(request => request.kind === 'requested-result-review' && request.expiresAtMs === null || request.expiresAtMs > Date.now());
       attention = { ...attention, requests, eligible: attention.eligible === true && requests.length > 0 };
       if (projectHumanRequests) {
         attention = await projectHumanRequests({ input, card, principalId, observation: attention, assertCurrent: () => fence(input, principalId) });
@@ -56,7 +56,7 @@ export function createConversationPlanOwner({ metadata, nativeRequest, readSourc
         await source(input, principalId, false);
         const finalCards = final?.cards?.filter(item => item.id === card.id);
         if (!Array.isArray(finalCards) || finalCards.length !== 1 || planDigest(exact(finalCards[0], binding)) !== planDigest(card)) fail('unavailable', 'Native card changed during Attention publication.');
-        attention = { ...attention, requests: attention.requests.filter(request => request.expiresAtMs > Date.now()) };
+        attention = { ...attention, requests: attention.requests.filter(request => request.kind === 'requested-result-review' && request.expiresAtMs === null || request.expiresAtMs > Date.now()) };
         attention.eligible = attention.requests.length > 0;
       }
     }
