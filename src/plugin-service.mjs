@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { createTopicSearchService } from './search/service.mjs';
+import { createCurrentTopicNoteRecallPolicy } from './search/context.mjs';
 import { extractSelectedDocumentText } from './open-loops/selected-document-text.mjs';
 import { createAttentionService } from './attention/service.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
@@ -928,6 +930,20 @@ export function createMetadataService(api) {
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },
     notificationCaptureBinding() { return refuseDeferred('notifications'); },
+    async topicNoteRecallRetrieve(input) {
+      if (!FIRST_LIVE_FEATURES.topicNoteRecall) return refuseDeferred('topicNoteRecall');
+      const metadata = metadataService;
+      const sources = sourceService;
+      if (!metadata || !sources || recoveryOnly) return refuseDeferred('topicNoteRecall');
+      const assertActive = () => {
+        if (stopPromise || metadataService !== metadata || sourceService !== sources || !FIRST_LIVE_FEATURES.topicNoteRecall) unavailable('topicNoteRecall');
+      };
+      const search = createTopicSearchService({ stateDir: api.runtime.state.resolveStateDir(process.env), metadata, sourceService: sources });
+      try {
+        const publication = await createCurrentTopicNoteRecallPolicy({ metadata, searchService: search, assertActive }).retrieve(input);
+        return Object.freeze({ ...publication, close() { publication.close(); search.close(); } });
+      } catch (error) { search.close(); throw error; }
+    },
     topicContextRetrieve() { return refuseDeferred('search'); },
     async searchRebuild() { return refuseDeferred('search'); },
     async searchPrepareRebuild() { return refuseDeferred('search'); }

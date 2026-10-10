@@ -37,3 +37,24 @@ export function topicContextToolFactory(policy) {
     } });
   };
 }
+
+export function currentTopicNoteRecallToolFactory(policy) {
+  return context => Object.freeze({
+    name: 'command_center_recall_topic_notes',
+    description: 'On demand, recall bounded fresh Note excerpts from this Conversation’s current Topic. Cite each exact Note revision and range; unavailable or partial recall is not evidence that the Topic has no Notes.',
+    parameters: { type: 'object', additionalProperties: false, properties: {
+      query: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 8 }
+    }, required: ['query'] },
+    async execute(_id, params, signal) {
+      if (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).some(key => !['query', 'limit'].includes(key))) throw sourceError('invalid-request', 'Recall accepts only query and limit.');
+      signal?.throwIfAborted();
+      const publication = await policy.retrieve({ ...params, sessionKey: context?.sessionKey, sessionId: context?.sessionId, signal });
+      try {
+        signal?.throwIfAborted(); publication.assertCurrent();
+        const text = JSON.stringify(publication.result);
+        publication.assertCurrent();
+        return { content: [{ type: 'text', text }], details: publication.result };
+      } finally { publication.close(); }
+    }
+  });
+}
