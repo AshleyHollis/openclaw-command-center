@@ -205,10 +205,11 @@ test('combined journey diagnostic retains dependent desktop, scale, Activity, ke
   assert.deepEqual(ordinaryTestLanes(['test/topic-review-focus.test.mjs']), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-review-focus.test.mjs'] }]);
 });
 
-test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
+test('ordinary suite keeps both descriptor-owned installed receipt tests in their dedicated lanes', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
     'storage-recovery.test.mjs',
     'real-host.acceptance.test.mjs',
+    'notes-installed-package.test.mjs',
     'attention-service.integration.test.mjs',
     'fixtures'
   ]), [
@@ -254,7 +255,7 @@ test('ordinary suite uses bounded isolated workers on the medium evaluator', () 
 test('package test command selects every current ordinary test and preserves the dedicated receipt path', async () => {
   const entries = await readdir(new URL('./', import.meta.url));
   const selected = selectOrdinaryTestFiles(entries);
-  const ordinary = entries.filter((entry) => entry.endsWith('.test.mjs') && entry !== 'real-host.acceptance.test.mjs');
+  const ordinary = entries.filter((entry) => entry.endsWith('.test.mjs') && !['real-host.acceptance.test.mjs', 'notes-installed-package.test.mjs'].includes(entry));
   assert.equal(selected.length, ordinary.length);
   assert.equal(selected.includes('test/real-host.acceptance.test.mjs'), false);
   assert.equal(entries.includes('real-host.acceptance.test.mjs'), true);
@@ -317,6 +318,7 @@ test('native Chat diagnostic requires the real authenticated mount and native ro
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['native-topic-chat-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-document-filing').scenarioIds, ['topic-document-filing']);
 });
 
 test('reader MVP selection includes its reader ownership boundaries and excludes deferred filing and maintenance', () => {

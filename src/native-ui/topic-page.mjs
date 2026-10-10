@@ -847,6 +847,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   });
   void load();
   return {
+    async openFiledDocument(document) {
+      if (!document || typeof document.referenceId !== 'string' || typeof document.path !== 'string' || typeof document.revision !== 'string') throw new Error('The exact filed document is unavailable.');
+      await load();
+      const entry = { path: document.path, revision: document.revision, sourceKind: 'document', sourceReference: { topicId, referenceId: document.referenceId, sourceKind: 'document' } };
+      validateCatalogNote(entry);
+      await openDocument(entry, { userInitiated: true });
+    },
     update(next) {
       const sourceChanged = sourceRequestKey(activeContext.props) !== sourceRequestKey(next.props);
       activeContext = next;

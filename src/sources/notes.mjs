@@ -7,7 +7,7 @@ import { createSourceReference, effectiveSourceLocator, revisionForBytes } from 
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
-import { readNoteFolderIdentity } from './note-folder-identity.mjs';
+import { readNoteFolderIdentity, withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { sameTransientFilesystemIdentity } from './filesystem-object-identity.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
@@ -557,9 +557,13 @@ export class NoteAdapter {
     return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }
 
-  async create(input = {}) {
+  async create(input = {}, runtime) {
     assertAcceptedChatNote(this.metadata, input);
-    if (!this.recovery.owned) return this.recovery.run(() => this.create(input));
+    if (!this.recovery.owned) return this.recovery.run(() => this.create(input, runtime));
+    if (runtime !== undefined && !runtime.folderWitness) {
+      const root = await this.resolveRoot();
+      return withVerifiedNoteFolderIdentity(root, this.rootObservedRevision, folderWitness => this.create(input, { ...runtime, folderWitness }));
+    }
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
     if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
@@ -599,12 +603,27 @@ export class NoteAdapter {
       // cannot distinguish an unstarted create from a published-then-deleted one.
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
-        // Accepted Chat authority and binding retirement run in this JS realm.
-        // Do not yield between their last synchronous fence and this conditional
-        // publication, just as SQLite effects commit without yielding. All
-        // preparation and verification remain asynchronous; ordinary Note calls
-        // retain the existing asynchronous publication owner.
-        if (assertAcceptedChatNote(this.metadata, input)) linkSync(temporary, parent.target);
+        if (runtime !== undefined) {
+          if (typeof runtime.publish !== 'function') throw sourceError('unauthenticated', 'Trusted native create publication is required.');
+          let published = false;
+          let consumed = false;
+          let active = true;
+          const publish = () => {
+            if (!active) throw sourceError('unauthenticated', 'The create admission callback expired.');
+            if (consumed) throw sourceError('conflict', 'The create admission callback was already consumed.');
+            consumed = true;
+            this.assertCurrentRoot(root);
+            runtime.folderWitness.assertCurrent();
+            for (const part of parent.chain) if (!sameIdentity(lstatSync(part.namedPath), part.stat)) throw sourceError('conflict', 'The destination directory changed before publication.');
+            const staged = lstatSync(temporary);
+            if (!sameStat(staged, temporaryStat)) throw sourceError('conflict', 'The staged original changed before publication.');
+            assertAcceptedChatNote(this.metadata, input);
+            linkSync(temporary, parent.target);
+            published = true;
+          };
+          try { await runtime.publish(publish); } finally { active = false; }
+          if (!published) throw sourceError('unauthenticated', 'Create admission must publish exactly once.');
+        } else if (assertAcceptedChatNote(this.metadata, input)) linkSync(temporary, parent.target);
         else await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {

@@ -25,8 +25,10 @@ jobs:
           node-version: 24.21.0
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --test test/safety.test.mjs
       - run: node --test test/current-topic-note-recall.test.mjs test/topic-search-service.test.mjs test/topic-context-policy.test.mjs
+      - run: node --test test/safety.test.mjs test/enabled-feature-candidate.test.mjs
+      - run: node --test test/mutation-architecture.test.mjs test/native-attachment-selection.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs
+      - run: node --test --test-name-pattern='attachment review actions' test/topic-page-http.test.mjs
       - run: npm run check
       - run: npx playwright install --with-deps chromium
       - run: node --test test/native-note-proposals.test.mjs
@@ -47,3 +49,4 @@ jobs:
             ${{ runner.temp }}/topic-reader-tables-files.png
           if-no-files-found: error
           retention-days: 14
+      - run: node --test test/native-ui-topic-attachment-review.test.mjs test/native-ui-page.test.mjs
