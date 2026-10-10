@@ -80,7 +80,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
     cases.push('immutable-archive-and-build-verified');
 
     await withIsolatedWorld(async world => {
-      const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true }) : null;
+      const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true }) : null;
       const nativeEvents = [];
       const progress = { phase: 'gateway-ui-readiness', successfulReadinessChecks: 0 };
       let host, managed, transport, controlUiBuildId;
@@ -109,6 +109,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
       if (provider) {
         const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
         configureNotesRecallModel(config, provider.baseUrl);
+        assert.equal(config.tools.toolSearch, undefined, 'Recall qualification must preserve native default Tool Search');
         await writeFile(world.manifest.configPath, JSON.stringify(config));
       }
         host = await launchPinnedHost({ descriptor, world, buildReceipt, signal }); await ready();
@@ -208,15 +209,19 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           await composer.fill('[fixture:notes-recall] Recall alpha from my Topic Notes.');
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
           await recallWait('initial-tool-result', async () => provider.recallResults.length > 0);
-          assert.ok(provider.requests.some(row => row.action === 'recall' && row.issuedToolCallId));
+          assert.ok(provider.requests.some(row => row.action === 'recall-search' && row.issuedToolCallId));
+          assert.ok(provider.requests.some(row => row.action === 'recall-call' && row.issuedToolCallId && row.recallCatalogMatched));
+          assert.ok(provider.requests.some(row => row.recallCatalogResultVerified));
           const recalled = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.ok(recalled.every(row => row.originatingTopic.topicId !== foreign.topicId));
           assert.deepEqual(recalled.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
-          const issued = provider.requests.filter(row => row.action === 'recall');
-          assert.ok(issued.every(row => row.tools.includes('command_center_recall_topic_notes')));
+          const issued = provider.requests.filter(row => row.action === 'recall-call');
+          assert.ok(issued.every(row => row.tools.includes('tool_search') && row.tools.includes('tool_call')
+            && !row.tools.includes('command_center_recall_topic_notes') && row.recallCatalogMatched && row.recallCatalogOtherCommandCenterCount === 0));
           for (const name of ['command_center_topic_context', 'command_center_topic_analysis', 'command_center_update_working_note'])
             assert.ok(issued.every(row => !row.tools.includes(name)));
           cases.push('native-model-registration-and-exact-two-note-recall');
+          cases.push('native-default-catalog-discovery-and-authorized-execution');
           // Repeat through the actual native tool after an owned host restart.
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
           progress.phase = 'native-chat-submit';
@@ -227,7 +232,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           await recallWait('restart-tool-result', async () => provider.recallResults.length > count);
           const restarted = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restarted.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
-          assert.equal(new Set(provider.requests.filter(row => row.action === 'recall').map(row => row.issuedToolCallId)).size, 2);
+          assert.equal(new Set(provider.requests.filter(row => row.action === 'recall-call').map(row => row.issuedToolCallId)).size, 2);
           cases.push('native-recall-after-restart');
           const shared = sources.find(row => row.path === 'shared.md');
           const deniedCount = provider.recallResults.length;
@@ -250,6 +255,10 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           const restored = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restored.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
           await recallWait('citation-link', async () => await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count() > priorLinks, 30_000);
+          const allCalls = provider.requests.filter(row => row.action === 'recall-call');
+          assert.equal(allCalls.length, 4);
+          assert.ok(allCalls.every(row => row.recallCatalogMatched && row.recallCatalogOtherCommandCenterCount === 0));
+          assert.equal(provider.requests.filter(row => row.recallCatalogResultVerified).length, 4);
           cases.push('native-recall-permission-recovery');
 
           const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).last(); await link.waitFor({ timeout: 30_000 });
