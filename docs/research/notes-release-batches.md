@@ -5,14 +5,17 @@ proposals originate at PR #365 (`71425a7422a209f4d34fca3ab612a3ad7419859f`);
 current-Topic Note recall originates at PR #376
 (`d3b0ea3df9a187ce6dd6047256bf2bd74ac21d93`). They preserve separate scopes.
 
-The provisional stack uses deployed CC
+The stack uses reviewed compatibility PR #381, initially
+`c2fb192665670948fe55ca9ab62c1b237ada39d7`, preserving deployed CC
 `018f4aa10a52c1122f0f045063034dbef05e9d05`, first proposals, then recall.
 Recall does not inherently require proposals: this ordering tests their shared
 source-service integration and permits serial rollout without mixing their
-qualification claims. The reviewed minimal native 2026.9.9 compatibility base
-must replace this provisional base before source freeze, successor draft PRs,
-exact-head CI and package artifact identification. Compatibility changes remain
-owned by that base's source owner; no duplicate pin or runtime patch is included.
+qualification claims. Native is pinned by that base to
+`ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2`. Compatibility changes remain owned
+by that base's source owner; no duplicate pin or runtime patch is included.
+The final base package/identity handoff remains required before artifact
+qualification. Any reviewed correction to that base must be restacked into both
+lanes and independently checked before final source and package freeze.
 
 Production flags stay false. `notes-release-registration.test.mjs` enables only
 disposable source copies and checks actual SDK plugin registration under each

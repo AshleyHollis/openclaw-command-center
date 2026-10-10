@@ -14,7 +14,7 @@ Output is limited to eight excerpts, 320 Unicode code points each, 12 KiB total.
 
 ## Existing navigation and qualification gap
 
-Pinned native source `26a9c0faa4124e53ae2eab34291d68a7245f630c` already supports ordinary internal plugin links:
+Earlier pinned native source `26a9c0faa4124e53ae2eab34291d68a7245f630c` supports ordinary internal plugin links. Its source-browser evidence is historical: the current compatibility base pins `ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2` (native 2026.9.9), which requires its own installed qualification. The existing route to verify is:
 
 - `ui/src/plugins/control-ui-host.ts` `pageLocation`/`navigation.pageHref` builds canonical plugin routes with `p.*` parameters.
 - `ui/src/pages/plugin/route.ts` forwards those parameters to the registered page.
