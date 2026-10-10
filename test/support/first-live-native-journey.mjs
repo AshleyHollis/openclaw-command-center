@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
+import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -428,7 +428,11 @@ export async function exerciseNativeTopicChatHandoffJourney({ descriptor, buildR
 // This is intentionally separate from the Reader journey: it proves that an
 // actual native primary Chat can invoke our two narrow model tools without
 // coupling that proof to Conversation-creation recovery.
-export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt, signal, onFinalization }) {
+export async function exerciseNativeTopicFilingJourney(options) {
+  return exerciseNativeTopicToolsJourney(options, { filingOnly: true });
+}
+
+export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt, signal, onFinalization }, { filingOnly = false } = {}) {
   let fictionalModel;
   let providerEvidence = { ingress: [], actions: [], tools: [] };
   let nativeEventEvidence = [];
@@ -445,10 +449,11 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
     // configured provider declares this narrow test-only allowance.
     configured.models.providers.fixture.request = { allowPrivateNetwork: true };
     configured.agents.entries = { ...(configured.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
-    // Both Command Center model tools are deliberately optional in production.
-    // The disposable fixture must opt into exactly these two capabilities to
-    // exercise the native agent route; it does not alter release permissions.
-    configured.tools = { ...(configured.tools ?? {}), alsoAllow: [...new Set([...(configured.tools?.alsoAllow ?? []), 'command_center_file_topic_attachment', 'command_center_update_working_note'])] };
+    // Grants are confined to this disposable fictional world. Filing-only uses the explicit Files owner and grants neither legacy model tool.
+    const fixtureTools = filingOnly ? []
+      : ['command_center_file_topic_attachment', 'command_center_update_working_note'];
+    const priorTools = (configured.tools?.alsoAllow ?? []).filter(name => !filingOnly || !['command_center_update_working_note', 'command_center_file_topic_attachment'].includes(name));
+    configured.tools = { ...(configured.tools ?? {}), alsoAllow: [...new Set([...priorTools, ...fixtureTools])] };
     await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
     let host = await withDeadline('native tool host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
     let removeAbortCleanup = stopHostOnAbort(signal, host);
@@ -500,29 +505,31 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
       const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
       await chatPane.waitFor({ timeout: 30_000 });
       await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
-      // A settled native turn without a working-Note result must schedule the
-      // durable catch-up. Verify that host boundary before the following turn
-      // exercises the successful tool path, which correctly suppresses only
-      // its own redundant catch-up.
-      await chatPane.locator('.agent-chat__composer-combobox textarea').fill('[fixture:no-note] Acknowledge this turn without changing a Note.');
-      await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-      await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'final' && entry.currentRole === 'user'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      let jobs;
-      await waitForConsecutiveReadiness(async () => {
-        // Observe scheduling through the authenticated host boundary. The host
-        // owns the SQLite coordinator while it is live, so this test must not
-        // open a competing metadata reader merely to collect diagnostics.
-        const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'cron.list', params: { includeDisabled: true }, scopes: ['operator.read', 'operator.write'], signal });
-        jobs = response?.jobs ?? response?.result?.jobs ?? [];
-        return jobs.some(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey));
-      }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const maintainedNote = '# Fictional Native Journey\n- Native working Note update from an isolated fictional model.\n';
-      await chatPane.locator('.agent-chat__composer-combobox textarea').fill('Record this fictional working Note update.');
-      await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-      await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'maintain'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const maintenance = fictionalModel.requests.find(entry => entry.action === 'maintain');
-      assert.ok(maintenance.tools.includes('command_center_update_working_note'), `The exact fixture model must receive both granted native tools: ${JSON.stringify({ ingress: fictionalModel.ingress, actions: fictionalModel.requests.map(entry => entry.action), tools: fictionalModel.requests.map(entry => entry.tools) })}`);
-      await waitForConsecutiveReadiness(async () => (await readFile(path.join(fixture.folder, fixture.notePath), 'utf8')) === maintainedNote, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      let jobs = [];
+      if (!filingOnly) {
+        // A settled native turn without a working-Note result must schedule the
+        // durable catch-up. Verify that host boundary before the following turn
+        // exercises the successful tool path, which correctly suppresses only
+        // its own redundant catch-up.
+        await chatPane.locator('.agent-chat__composer-combobox textarea').fill('[fixture:no-note] Acknowledge this turn without changing a Note.');
+        await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
+        await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'final' && entry.currentRole === 'user'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        await waitForConsecutiveReadiness(async () => {
+          // Observe scheduling through the authenticated host boundary. The host
+          // owns the SQLite coordinator while it is live, so this test must not
+          // open a competing metadata reader merely to collect diagnostics.
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'cron.list', params: { includeDisabled: true }, scopes: ['operator.read', 'operator.write'], signal });
+          jobs = response?.jobs ?? response?.result?.jobs ?? [];
+          return jobs.some(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey));
+        }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        const maintainedNote = '# Fictional Native Journey\n- Native working Note update from an isolated fictional model.\n';
+        await chatPane.locator('.agent-chat__composer-combobox textarea').fill('Record this fictional working Note update.');
+        await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
+        await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'maintain'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        const maintenance = fictionalModel.requests.find(entry => entry.action === 'maintain');
+        assert.ok(maintenance.tools.includes('command_center_update_working_note'), `The exact fixture model must receive both granted native tools: ${JSON.stringify({ ingress: fictionalModel.ingress, actions: fictionalModel.requests.map(entry => entry.action), tools: fictionalModel.requests.map(entry => entry.tools) })}`);
+        await waitForConsecutiveReadiness(async () => (await readFile(path.join(fixture.folder, fixture.notePath), 'utf8')) === maintainedNote, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      }
       // This compact but structurally valid PDF is a fictional original. The
       // journey verifies its exact stored bytes rather than treating an
       // extension or a requested tool call as filing evidence.
@@ -531,9 +538,29 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
       await chatPane.locator('.chat-attachment-thumb').waitFor({ timeout: 30_000 });
       await chatPane.locator('.agent-chat__composer-combobox textarea').fill('File this fictional attachment in this Topic.');
       await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-      await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'file'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const filing = fictionalModel.requests.find(entry => entry.action === 'file');
-      assert.match(filing.mediaRef, /^media:\/\/inbound\//u);
+      let filing;
+      if (filingOnly) {
+        await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'final' && entry.currentRole === 'user'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        const workspace = await openNativeTopicFiles({ page, fixture });
+        await workspace.getByRole('button', { name: 'File Chat attachment', exact: true }).click();
+        const review = workspace.getByRole('region', { name: 'Review Chat attachment filing', exact: true });
+        await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
+          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).waitFor({ state: 'attached', timeout: 30_000 });
+        const options = await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
+          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).evaluateAll(items => items.map(item => item.value));
+        assert.equal(options.length, 1, 'Select exactly the uploaded fictional original.');
+        await review.getByRole('combobox', { name: 'Chat attachment', exact: true }).selectOption(options[0]);
+        await review.getByRole('button', { name: 'Review destination', exact: true }).click();
+        await review.getByRole('status').filter({ hasText: 'Destination reviewed' }).waitFor({ timeout: 30_000 });
+        assert.equal(await review.getByRole('button', { name: 'File original', exact: true }).isEnabled(), true,
+          'Installed filing qualification requires a separately admitted candidate; disabled builds must refuse.');
+        await review.getByRole('button', { name: 'File original', exact: true }).click();
+        await review.getByRole('status').filter({ hasText: 'Original filed:' }).waitFor({ timeout: 30_000 });
+      } else {
+        await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'file'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        filing = fictionalModel.requests.find(entry => entry.action === 'file');
+        assert.match(filing.mediaRef, /^media:\/\/inbound\//u);
+      }
       // The isolated host owns the exact durable source descriptor.  Verify
       // publication through that authenticated owner rather than treating a
       // harness pathname as authoritative: the latter can refer to a stale
@@ -557,7 +584,22 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
       assert.equal(filedRead?.sourceReference?.topicId, fixture.topicId);
       assert.equal(filedRead?.revision, filedDocument.revision);
       assert.deepEqual(Buffer.from(filedRead?.contentBase64 ?? '', 'base64'), attachment, 'The exact native Topic source must return the original fictional PDF bytes.');
-       result = Object.freeze({ workingNoteTool: true, attachmentFilingTool: true, maintenanceCatchUpScheduled: true, filedMediaRef: filing.mediaRef, maintenanceJobs: jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length });
+      if (filingOnly) {
+        assert.equal(fictionalModel.requests.some(entry => entry.action === 'maintain'), false);
+        const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+          method: 'cron.list', params: { includeDisabled: true }, scopes: ['operator.read', 'operator.write'], signal });
+        jobs = response?.jobs ?? response?.result?.jobs ?? [];
+        assert.equal(jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length, 0,
+          'The filing-only candidate must keep Note maintenance disabled.');
+        const workspace = await openNativeTopicFiles({ page, fixture });
+        await workspace.locator('.control-ui-file-explorer')
+          .getByRole('button', { name: path.basename(filedDocument.path), exact: true }).click({ timeout: 30_000 });
+        await page.getByRole('region', { name: 'Original attachment preview', exact: true })
+          .getByRole('status').filter({ hasText: 'Page 1 of 1' }).waitFor({ timeout: 30_000 });
+      }
+      result = Object.freeze({ workingNoteTool: !filingOnly, attachmentFilingTool: !filingOnly, explicitFilesFiling: filingOnly,
+        maintenanceCatchUpScheduled: !filingOnly, nativeFilesPreview: filingOnly, filedMediaRef: filing?.mediaRef ?? null,
+        maintenanceJobs: jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length });
     } catch (error) { failure = error; }
     finally {
       providerEvidence = Object.freeze({
