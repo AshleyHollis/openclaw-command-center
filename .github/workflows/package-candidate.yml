@@ -65,7 +65,8 @@ jobs:
                 test/source-intake-tool.test.mjs test/producer-intake-accounted.integration.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
-                test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
+                test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs \
+                test/chat-note-lineage.test.mjs test/source-intake-tool.test.mjs test/producer-intake.test.mjs
               node --test test/compatibility.test.mjs test/storage-migrations.test.mjs \
                 test/schema-compatibility.test.mjs test/native-compatibility-fixture.test.mjs \
                 test/harness.test.mjs
