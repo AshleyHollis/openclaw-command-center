@@ -5,6 +5,7 @@ import { acceptedChatResultSchema, CHAT_CAPTURE_METHODS } from './chat-capture-c
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
+import { NOTE_PROPOSAL_METHODS, NOTE_PROPOSAL_PARAMS, NOTE_PROPOSAL_RESULT, proposalFields } from './note-proposal-contracts.mjs';
 
 export const READ_METHODS = Object.freeze([
   'command-center.v1.chat-capture.load',
@@ -50,6 +51,7 @@ export const READ_METHODS = Object.freeze([
 export const WRITE_METHODS = Object.freeze([
   'command-center.v1.chat-capture.accept',
   'command-center.v1.chat-capture.replay',
+  ...NOTE_PROPOSAL_METHODS,
   'command-center.v1.bill-actions.reconcile',
   'command-center.v1.bill-actions.admit',
   'command-center.v1.bill-actions.handle',
@@ -147,6 +149,7 @@ const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dep
 
 function parameterSchema(field, method) {
   if (field === 'planId') return Object.freeze({ type: 'string', minLength: 1 });
+  if (NOTE_PROPOSAL_METHODS.includes(method) && NOTE_PROPOSAL_PARAMS[field]) return NOTE_PROPOSAL_PARAMS[field];
   if (field === 'expectedUpdatedAt' || field === 'offsetMinutes') return Object.freeze({ type: 'number' });
   if (field === 'expectedEligibilityRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedRevisions') return Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ source: { enum: ['topic', 'reference'] }, id: { type: 'string', minLength: 1 }, revision: { type: ['string', 'integer'] } }), required: ['source', 'id', 'revision'] }) });
@@ -183,6 +186,7 @@ function parameterSchema(field, method) {
 
 function actionResultSchema(method) {
   if (CHAT_CAPTURE_METHODS.includes(method)) return acceptedChatResultSchema;
+  if (NOTE_PROPOSAL_METHODS.includes(method)) return NOTE_PROPOSAL_RESULT;
   if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
@@ -631,7 +635,7 @@ const fields = Object.freeze({
 });
 
 export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => {
-  const contractFields = [...common, ...(fields[method] ?? []), ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])];
+  const contractFields = [...common, ...(NOTE_PROPOSAL_METHODS.includes(method) ? proposalFields(method) : fields[method] ?? []), ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])];
   const properties = Object.freeze(Object.fromEntries(
     contractFields.map((key) => [key, parameterSchema(key, method)])
   ));
@@ -647,7 +651,7 @@ export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHOD
       properties,
       required: Object.freeze([
         'schemaVersion',
-        ...(required[method] ?? []),
+        ...(NOTE_PROPOSAL_METHODS.includes(method) ? proposalFields(method).filter(key => key !== 'panel') : required[method] ?? []),
         ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])
       ])
     }),
@@ -698,7 +702,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     }
   }
   if (method === 'command-center.v1.sessions.create' && params.authoritativeSession === undefined && !Number.isInteger(params.expectedRevision)) throw sourceError('invalid-request', 'Native Conversation creation requires the original Topic revision.');
-  const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse');
+  const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse') && !NOTE_PROPOSAL_METHODS.includes(method);
   if (requiresPath && !(typeof params.path === 'string' || typeof params.notePath === 'string' || typeof params.sourcePath === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires a path.');
   if (['notes.create', 'notes.edit'].some((suffix) => method.endsWith(suffix)) && !(typeof params.text === 'string' || typeof params.content === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires Markdown text.');
   if (method.endsWith('notes.rename') && !(typeof params.newPath === 'string' || typeof params.destinationPath === 'string')) throw sourceError('invalid-request', 'Bridge rename requires a destination path.');

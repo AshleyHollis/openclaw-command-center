@@ -5,7 +5,7 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false, acceptedChatCapture: false,
+  notifications: false, noteMaintenance: false, acceptedChatCapture: false, noteProposals: false,
   // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
   billActions: true
 });
@@ -63,6 +63,7 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
 export function assertFirstLiveCommand(surface, command) {
   if (surface === 'bridge' && FIRST_LIVE_FEATURES.acceptedChatCapture &&
       ['command-center.v1.chat-capture.accept', 'command-center.v1.chat-capture.load', 'command-center.v1.chat-capture.replay'].includes(command)) return;
+  if (surface === 'bridge' && FIRST_LIVE_FEATURES.noteProposals && ['prepare', 'context', 'publish', 'inspect', 'discard'].some(action => command === `command-center.v1.notes.proposals.${action}`)) return;
   if (!Object.hasOwn(FIRST_LIVE_COMMANDS, surface) || !FIRST_LIVE_COMMANDS[surface].includes(command)) {
     throw new SourceServiceError('feature-unavailable', 'This feature is not available in the first live release.', { retryable: false });
   }

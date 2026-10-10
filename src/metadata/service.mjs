@@ -61,6 +61,8 @@ import { BILL_ACTION_KINDS, installBillActionMetadata } from './bill-actions.mjs
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { CLARIFICATION_PROPOSAL_OPERATION, CLARIFICATION_WORKER_DISPOSITION_OPERATION, installClarificationProposalMetadata } from './clarification-proposals.mjs';
+import { installNoteProposalMetadata } from './note-proposals.mjs';
+import { NOTE_PROPOSAL_KIND } from '../maintenance/proposal-contract.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
 import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
@@ -2143,6 +2145,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   function recordTopicOperation(db, input = {}, structural = false) {
     const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
     const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || existing?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
     if (input.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE || (existing && jsonValue(existing.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE)) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning progress requires its dedicated owner.');
     reconciliationClaims.assertChildClaim(db, { logicalOperationId }, true);
     const intentJson = JSON.stringify(input.intent ?? {});
@@ -2445,7 +2448,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.listSourceRecovery = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM source_recovery ORDER BY recovery_id', [], mapRecovery) : readMany('SELECT * FROM source_recovery WHERE topic_id = ? ORDER BY recovery_id', [requiredString(topicId, 'topicId')], mapRecovery);
 
   service.completeTopicProvisioning = (input = {}) => mutate(null, (db) => {
-    const parent = db.prepare('SELECT intent_json FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    const parent = db.prepare('SELECT intent_json, operation_kind FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || parent?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
     if (parent && jsonValue(parent.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning activation requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId);
     if (topic?.lifecycle === 'active' && topic.activated_at) {
@@ -2497,6 +2501,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   }
   service.applySessionRecoveryRelink = (input = {}) => mutate(null, db => applySessionRecoveryRelink(db, input));
   service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
+    const reserved = db.prepare('SELECT operation_kind FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || reserved?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
     if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
     const recoveryReference = input.operationKind === 'topics.recovery.verify' ? db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(input.intent.referenceId) : null;
@@ -2559,6 +2565,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   installClarificationProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installNoteProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
   installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   installEntityCorrections(service, { ErrorType: CommandCenterMetadataError });

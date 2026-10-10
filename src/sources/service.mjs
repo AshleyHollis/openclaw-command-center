@@ -18,6 +18,7 @@ import { createSessionAdapter } from './sessions.mjs';
 import { createSchedulerAdapter } from './scheduler.mjs';
 import { createTopicDocumentFilingService } from '../documents/filing.mjs';
 import { createTopicMaintenanceSchedule } from '../maintenance/schedule.mjs';
+import { NoteProposalService } from '../maintenance/proposals.mjs';
 import { getSessionEntry as readPublishedSessionEntry } from 'openclaw/plugin-sdk/session-store-runtime';
 
 function adapterInput(input = {}) {
@@ -203,6 +204,11 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] }); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  notesProposalPrepare(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).prepare(input, runtime); }
+  notesProposalContext(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).context(input, runtime); }
+  notesProposalPublish(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).publish(input, runtime); }
+  notesProposalInspect(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).inspect(input, runtime); }
+  notesProposalDiscard(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).discard(input, runtime); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled
