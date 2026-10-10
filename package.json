@@ -99,7 +99,8 @@
       "features": [
         "noteProposals",
         "topicNoteRecall",
-        "topicDocuments"
+        "topicDocuments",
+        "conversationPlans"
       ],
       "productionAdmission": false
     }

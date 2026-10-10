@@ -6,5 +6,5 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: true,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, topicNoteRecall: true, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false, noteProposals: true
+  notifications: false, noteMaintenance: false, noteProposals: true, conversationPlans: true
 });

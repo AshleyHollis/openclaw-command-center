@@ -125,7 +125,7 @@ function textCompletion({ id, model, text }) {
 }
 
 /** A loopback-only OpenAI-compatible model for fictional host acceptance. */
-export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRecall = false } = {}) {
+export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRecall = false, firstTurnFinalText = 'Fictional native Chat reply without a Note change.' } = {}) {
   const requests = [];
   const recallResults = [];
   const ingress = [];
@@ -251,7 +251,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
       // an OpenAI-compatible provider. This journey needs one explicit
       // tool-free settled turn before it exercises the two granted tools.
       initialTurnCompleted = true;
-      frames = textCompletion({ id, model, text: 'Fictional native Chat reply without a Note change.' });
+      frames = textCompletion({ id, model, text: firstTurnFinalText });
     } else if (noNoteFixtureTurn) {
       frames = textCompletion({ id, model, text: 'Fictional native Chat reply without a Note change.' });
     } else if (mediaRef && tools.has('command_center_file_topic_attachment')) {
