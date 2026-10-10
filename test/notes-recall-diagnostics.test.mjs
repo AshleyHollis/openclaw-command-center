@@ -14,29 +14,29 @@ test('Recall fictional model declares the actual completions API and main-agent 
   assert.deepEqual(config.agents.entries.main, { workspace: 'fictional', model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } });
   assert.deepEqual(config.agents.entries.other, { enabled: false });
   assert.deepEqual(config.tools, { deny: ['fictional-denied'], alsoAllow: ['command_center_recall_topic_notes'] });
-  for (const url of ['https://127.0.0.1/v1', 'http://example.invalid/v1', 'http://127.0.0.1/v1?secret=x', 'http://user:secret@127.0.0.1/v1'])
+  for (const url of ['https://127.0.0.1/v1', 'http://example.invalid/v1', 'http://127.0.0.1/v1?sentinel=x', 'http://user:sentinel@127.0.0.1/v1'])
     assert.throws(() => configureNotesRecallModel(config, url));
 });
 
 test('failure diagnostics retain bounded structural stages while dropping arbitrary source and error strings', () => {
-  const secret = 'fictional-secret-sentinel';
+  const sentinel = 'fictional-sentinel-sentinel';
   const events = [];
   for (let i = 0; i < 40; i++) recordRecallNativeEvent(events, JSON.stringify({ type: 'event', event: 'agent', payload: {
-    stream: 'tool', runId: secret, sessionKey: secret, data: { phase: secret, name: 'command_center_recall_topic_notes',
-      isError: true, error: { code: secret, message: secret }, result: { details: { status: 'partial', content: secret } } } } }));
-  recordRecallNativeEvent(events, JSON.stringify({ type: 'event', event: 'chat', payload: { state: 'error', errorMessage: secret } }));
-  const provider = { ingress: Array.from({ length: 40 }, () => ({ method: 'POST', path: `/v1/responses?token=${secret}` })),
-    requests: Array.from({ length: 40 }, () => ({ action: 'recall', currentRole: 'user', currentToolStatus: secret,
-      completedCurrentTool: false, issuedToolCallId: secret, tools: ['command_center_recall_topic_notes', secret],
-      transcriptShape: Array.from({ length: 40 }, () => ({ role: 'assistant', toolCallId: secret, assistantToolCallIds: [secret], content: secret })) })),
-    recallResults: [{ text: secret }] };
+    stream: 'tool', runId: sentinel, sessionKey: sentinel, data: { phase: sentinel, name: 'command_center_recall_topic_notes',
+      isError: true, error: { code: sentinel, message: sentinel }, result: { details: { status: 'partial', content: sentinel } } } } }));
+  recordRecallNativeEvent(events, JSON.stringify({ type: 'event', event: 'chat', payload: { state: 'error', errorMessage: sentinel } }));
+  const provider = { ingress: Array.from({ length: 40 }, () => ({ method: 'POST', path: `/v1/responses?fixtureMarker=${sentinel}` })),
+    requests: Array.from({ length: 40 }, () => ({ action: 'recall', currentRole: 'user', currentToolStatus: sentinel,
+      completedCurrentTool: false, issuedToolCallId: sentinel, tools: ['command_center_recall_topic_notes', sentinel],
+      transcriptShape: Array.from({ length: 40 }, () => ({ role: 'assistant', toolCallId: sentinel, assistantToolCallIds: [sentinel], content: sentinel })) })),
+    recallResults: [{ text: sentinel }] };
   const result = collectRecallDiagnostics(provider, events);
   assert.equal(result.ingressCount, 40); assert.equal(result.completionCount, 40); assert.equal(result.recallResultCount, 1);
   assert.equal(result.ingress.length, 8); assert.equal(result.completions.length, 8); assert.equal(result.nativeEvents.length, 32);
   assert.equal(result.completions[0].transcript.length, 12);
   assert.equal(result.ingress[0].route, 'other'); assert.equal(result.completions[0].recallToolRegistered, true);
   assert.equal(result.nativeEvents.at(-1).state, 'error'); assert.equal(result.nativeEvents.at(-1).hasError, true);
-  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.equal(JSON.stringify(result).includes(sentinel), false);
 });
 
 test('native observation ignores non-events, invalid JSON and assistant content', () => {
@@ -73,11 +73,11 @@ test('Recall tool and citation timeout labels preserve observation counts and or
 });
 
 test('persisted failure summary excludes arbitrary error text and invalid counters', () => {
-  const summary = summarizeRecallFailure({ category: 'fictional-secret', phase: 'fictional-secret', message: 'fictional-secret',
-    observations: { attempts: 'fictional-secret', successfulObservations: -1, refusedConnections: 0, elapsedMs: 120000 } });
+  const summary = summarizeRecallFailure({ category: 'fictional-sentinel', phase: 'fictional-sentinel', message: 'fictional-sentinel',
+    observations: { attempts: 'fictional-sentinel', successfulObservations: -1, refusedConnections: 0, elapsedMs: 120000 } });
   assert.deepEqual(summary, { category: 'other', phase: 'other', cancelled: false,
     observations: { attempts: null, successfulObservations: null, refusedConnections: 0, elapsedMs: 120000 } });
-  assert.equal(JSON.stringify(summary).includes('fictional-secret'), false);
+  assert.equal(JSON.stringify(summary).includes('fictional-sentinel'), false);
 });
 
 test('Recall wait preserves cancellation, early host failure, and successful completion', async () => {
