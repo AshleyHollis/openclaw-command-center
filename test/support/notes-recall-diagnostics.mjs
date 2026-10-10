@@ -22,11 +22,12 @@ export function configureNotesRecallModel(config, baseUrl) {
 const select = (value, allowed) => allowed.includes(value) ? value : value == null ? null : 'other';
 const roles = ['user', 'assistant', 'tool', 'system', 'developer'];
 const statuses = ['available', 'no-matches', 'ok', 'ready', 'partial', 'unavailable', 'stale', 'empty', 'error', 'cancelled'];
-const phases = ['initial-tool-result', 'restart-tool-result', 'permission-loss-tool-result', 'permission-recovery-tool-result', 'citation-link'];
+const phases = ['initial', 'restart', 'permission-loss', 'permission-recovery'].flatMap(phase => [`${phase}-tool-result`, `${phase}-turn-settled`])
+  .concat(['citation-link', 'citation-navigation', 'stale-citation-navigation', 'restart-chat-reentry']);
 export function summarizeRecallFailure(error) {
   const counters = error.observations;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
-  return { category: select(error.category, ['recall-tool-result-timeout', 'recall-citation-timeout', 'host-early-exit', 'readiness-timeout']),
+  return { category: select(error.category, ['recall-tool-result-timeout', 'recall-turn-settlement-timeout', 'recall-citation-timeout', 'recall-citation-handoff', 'host-early-exit', 'readiness-timeout']),
     phase: select(error.phase, phases), cancelled: error.name === 'AbortError' || error.code === 'ABORT_ERR',
     observations: counters ? { attempts: count(counters.attempts), successfulObservations: count(counters.successfulObservations),
       refusedConnections: count(counters.refusedConnections), elapsedMs: count(counters.elapsedMs) } : null };
@@ -95,7 +96,8 @@ export async function waitForRecallObservation(wait, observe, earlyExit, { phase
     if (options.signal?.aborted || error.category !== 'readiness-timeout') throw error;
     const failure = new Error(`Notes Recall ${phase} did not arrive within ${options.deadlineMs} ms`);
     failure.name = 'NotesRecallWaitFailure';
-    failure.category = phase === 'citation-link' ? 'recall-citation-timeout' : 'recall-tool-result-timeout';
+    failure.category = phase === 'citation-link' ? 'recall-citation-timeout'
+      : phase.endsWith('-turn-settled') ? 'recall-turn-settlement-timeout' : 'recall-tool-result-timeout';
     failure.phase = phase;
     failure.observations = error.readiness;
     throw failure;

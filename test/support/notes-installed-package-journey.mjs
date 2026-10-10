@@ -21,6 +21,7 @@ import { createGatewayDeviceIdentity, requestAuthenticatedGateway, launchManaged
 import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence, assertNotesQualificationReceipt, runInstalledNoteProposalNegatives } from './notes-installed-journey.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
 import { configureNotesRecallModel, collectRecallDiagnostics, recordRecallNativeEvent, waitForRecallObservation, summarizeRecallFailure } from './notes-recall-diagnostics.mjs';
+import { createRecallTurnObserver, recallProviderFinal, recallTurnSettled, pinRecallChat, readRecallPaneState, assertRetainedRecallDraft, recallBrowserState } from './notes-recall-browser-lifecycle.mjs';
 
 // Explicit disposable-host qualification only. No top-level launch or live lookup.
 export async function runNotesInstalledPackageJourney({ signal } = {}) {
@@ -47,6 +48,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
   assert.match(declaredFixtureRevision ?? '', /^[a-f0-9]{40}$/u);
   const fixtureInputs = {};
   for (const name of ['test/support/notes-installed-package-journey.mjs', 'test/support/notes-installed-journey.mjs',
+    ...(mode === 'recall' ? ['test/support/notes-recall-browser-lifecycle.mjs'] : []),
     'test/support/fictional-openai-model.mjs', 'test/support/notes-recall-diagnostics.mjs', 'test/support/first-live-native-journey.mjs', 'test/support/real-host-runtime.mjs',
     'test/support/attention-startup-readiness.mjs', 'test/support/isolated-acceptance-preflight.mjs',
     'test/fixtures/notes-qualification-artifacts.json', 'src/host-harness.mjs', 'src/fixtures.mjs', 'src/build.mjs',
@@ -83,7 +85,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
       const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true }) : null;
       const nativeEvents = [];
       const progress = { phase: 'gateway-ui-readiness', successfulReadinessChecks: 0 };
-      let host, managed, transport, controlUiBuildId;
+      let host, managed, transport, controlUiBuildId, recallPage, recallSessionKey, turnObserver, chat;
       const guard = new TrafficGuard(); const evidence = { requests: [], responses: [], console: [], errors: [] };
       const deviceIdentity = createGatewayDeviceIdentity();
       const ready = async () => {
@@ -146,6 +148,10 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           restart: async () => { host = await restartPinnedHost(host, { signal }); await ready(); } }));
         managed = await launchManagedBrowser({ headless: true });
         const page = await managed.browser.newPage(); transport = await configureEvidencePage(page, guard, evidence);
+        if (provider) {
+          recallPage = page; recallSessionKey = topic.sessionKey;
+          turnObserver = createRecallTurnObserver(topic.sessionKey); turnObserver.attach(page);
+        }
         // Passive observation preserves the existing guarded WebSocket route.
         if (provider) page.on('websocket', socket => socket.on('framereceived', frame => recordRecallNativeEvent(nativeEvents, frame.payload)));
         const href = new URL(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topic',
@@ -203,12 +209,19 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
           progress.phase = 'native-chat-submit';
           await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
-          const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]'); await chatPane.waitFor({ timeout: 30_000 });
-          await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, topic.sessionKey);
-          const composer = chatPane.locator('.agent-chat__composer-combobox textarea');
-          await composer.fill('[fixture:notes-recall] Recall alpha from my Topic Notes.');
-          await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await recallWait('initial-tool-result', async () => provider.recallResults.length > 0);
+          chat = await pinRecallChat(page, topic.sessionKey);
+          const chatPane = chat.locator;
+          const sendRecall = async (phase, prompt) => {
+            const resultCount = provider.recallResults.length, requestCount = provider.requests.length, mark = turnObserver.mark();
+            await chat.composer.fill(prompt);
+            await chat.locator.getByRole('button', { name: 'Send message', exact: true }).click();
+            await recallWait(`${phase}-tool-result`, async () => provider.recallResults.length > resultCount);
+            await recallWait(`${phase}-turn-settled`, async () => {
+              const turn = turnObserver.current(mark); if (!turn) return false;
+              return recallTurnSettled(turn, await readRecallPaneState(chat, turn), recallProviderFinal(provider.requests, requestCount));
+            });
+          };
+          await sendRecall('initial', '[fixture:notes-recall] Recall alpha from my Topic Notes.');
           assert.ok(provider.requests.some(row => row.action === 'recall-search' && row.issuedToolCallId));
           assert.ok(provider.requests.some(row => row.action === 'recall-call' && row.issuedToolCallId && row.recallCatalogMatched));
           assert.ok(provider.requests.some(row => row.recallCatalogResultVerified));
@@ -224,34 +237,27 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           cases.push('native-default-catalog-discovery-and-authorized-execution');
           // Repeat through the actual native tool after an owned host restart.
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
-          progress.phase = 'native-chat-submit';
-          await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
-          const count = provider.recallResults.length;
-          await composer.fill('[fixture:notes-recall] Recall alpha after restart.');
-          await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await recallWait('restart-tool-result', async () => provider.recallResults.length > count);
+          progress.phase = 'restart-chat-reentry';
+          // The native Chat URL survives reload. Reacquire its exact current
+          // Session/client; the Topic-page entry button is absent on this route.
+          await chat.dispose(); chat = await pinRecallChat(page, topic.sessionKey);
+          await sendRecall('restart', '[fixture:notes-recall] Recall alpha after restart.');
           const restarted = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restarted.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
           assert.equal(new Set(provider.requests.filter(row => row.action === 'recall-call').map(row => row.issuedToolCallId)).size, 2);
           cases.push('native-recall-after-restart');
           const shared = sources.find(row => row.path === 'shared.md');
-          const deniedCount = provider.recallResults.length;
           await chmod(path.join(topic.folder, shared.path), 0o000);
           try {
-            await composer.fill('[fixture:notes-recall] Recall alpha with one denied Note.');
-            await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-            await recallWait('permission-loss-tool-result', async () => provider.recallResults.length > deniedCount);
+            await sendRecall('permission-loss', '[fixture:notes-recall] Recall alpha with one denied Note.');
             const denied = provider.recallResults.at(-1);
             assert.equal(denied.status, 'partial');
             const remaining = verifyInstalledRecallEvidence(denied, { topicId: topic.topicId, noteTextByReference: texts });
             assert.deepEqual(remaining.map(row => row.navigation.path), ['nested/source.md']);
           } finally { await chmod(path.join(topic.folder, shared.path), 0o600); }
           cases.push('native-recall-permission-loss-omits-private-source');
-          const restoredCount = provider.recallResults.length;
           const priorLinks = await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count();
-          await composer.fill('[fixture:notes-recall] Recall alpha after Note permission recovery.');
-          await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await recallWait('permission-recovery-tool-result', async () => provider.recallResults.length > restoredCount);
+          await sendRecall('permission-recovery', '[fixture:notes-recall] Recall alpha after Note permission recovery.');
           const restored = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restored.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
           await recallWait('citation-link', async () => await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count() > priorLinks, 30_000);
@@ -262,30 +268,39 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           cases.push('native-recall-permission-recovery');
 
           const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).last(); await link.waitFor({ timeout: 30_000 });
-          const draft = 'Fictional unsent draft: retain punctuation and newline.\nSecond line.';
-          await composer.fill(draft); await composer.evaluate(element => element.setSelectionRange(7, 19));
-          await link.click();
-          const nativePage = page.locator('openclaw-plugin-page');
-          await nativePage.getByRole('region', { name: 'Note content', exact: true }).getByText('alpha fictional shared observation.', { exact: false }).waitFor({ timeout: 30_000 });
-          await nativePage.getByRole('navigation', { name: 'File path', exact: true }).getByText('shared.md', { exact: true }).waitFor();
           const actualLink = new URL(await link.getAttribute('href'), page.url());
           const source = sources.find(row => row.path === 'shared.md');
           for (const [key, value] of Object.entries({ 'p.topicId': topic.topicId, 'p.sourceReferenceId': source.referenceId,
             'p.sourcePath': source.path, 'p.evidenceSourceVersion': source.revision })) assert.equal(actualLink.searchParams.get(key), value);
-          assert.equal(await chatPane.evaluate(element => element.sessionKey), topic.sessionKey);
-          assert.equal(await composer.inputValue(), draft);
-          assert.deepEqual(await composer.evaluate(element => [element.selectionStart, element.selectionEnd]), [7, 19]);
+          const draft = 'Fictional unsent draft: retain punctuation and newline.\nSecond line.';
+          await chat.composer.fill(draft); await chat.composer.evaluate(element => element.setSelectionRange(7, 19));
+          const draftExpected = { sessionKey: topic.sessionKey, draft, selection: [7, 19] };
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: true });
+          progress.phase = 'citation-navigation';
+          await link.click();
+          const nativePage = page.locator('openclaw-plugin-page');
+          await nativePage.getByRole('region', { name: 'Note content', exact: true }).getByText('alpha fictional shared observation.', { exact: false }).waitFor({ timeout: 30_000 });
+          const heading = nativePage.getByRole('heading', { name: 'shared.md', exact: true }); await heading.waitFor();
+          assert.equal(await heading.getAttribute('title'), source.path);
+          // This must fail if a raw citation replaces the document. A new Chat
+          // mount or restored draft is not proof of retained native ownership.
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: false });
           cases.push('citation-reader-exact-identity-and-mounted-chat-draft-caret');
           await writeFile(path.join(topic.folder, 'shared.md'), '# Shared\nalpha fictional newer revision.\n');
           // A new reader mount is explicit; same-route clicks do not promise a reread.
           await nativePage.getByRole('button', { name: 'All Topics', exact: true }).click();
           await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+          // Re-present the retained Chat before interacting with its citation;
+          // hidden/inert pane controls must never be force-clicked.
+          await page.goBack(); await nativePage.getByRole('region', { name: 'Note content', exact: true }).waitFor();
+          await page.goBack(); await chat.composer.waitFor();
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: true });
+          progress.phase = 'stale-citation-navigation';
           await link.click(); await nativePage.getByText(/It was not opened as the earlier evidence/).waitFor({ timeout: 30_000 });
           await nativePage.getByRole('button', { name: 'Open current Note', exact: true }).waitFor();
           assert.equal(await nativePage.getByText('alpha fictional newer revision.', { exact: false }).count(), 0);
           assert.equal(await nativePage.getByRole('region', { name: 'Note content', exact: true }).textContent(), '');
-          assert.equal(await composer.inputValue(), draft);
-          assert.deepEqual(await composer.evaluate(element => [element.selectionStart, element.selectionEnd]), [7, 19]);
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: false, phase: 'stale-citation-navigation' });
           cases.push('stale-citation-on-fresh-reader-retains-draft');
         }
         await transport.drain(); transport.assertClean(); guard.assertClean(); await assertRecordedChildTraffic(world);
@@ -294,11 +309,20 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
         throw error;
       } finally {
         try {
-          try { if (provider) report.recallDiagnostics = { ...progress, ...collectRecallDiagnostics(provider, nativeEvents) }; }
-          finally { if (managed) await closeManagedBrowser(managed, signal); }
+          try { if (provider) {
+            report.recallDiagnostics = { ...progress, ...collectRecallDiagnostics(provider, nativeEvents),
+              browser: recallPage && recallSessionKey ? await recallBrowserState(recallPage, recallSessionKey).catch(() => ({ unavailable: true })) : null };
+          } }
+          finally {
+            try { if (chat) await chat.dispose(); }
+            finally { if (managed) await closeManagedBrowser(managed, signal); }
+          }
         } finally {
-          try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
-          finally { if (provider) await provider.close(); }
+          try { turnObserver?.dispose(); }
+          finally {
+            try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
+            finally { if (provider) await provider.close(); }
+          }
         }
       }
     }, { candidateRoot });
