@@ -1,11 +1,14 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
 import { billActionResultSchema } from './bill-action-contracts.mjs';
+import { conversationPlanResultSchema } from './conversation-plan-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
 
 export const READ_METHODS = Object.freeze([
+  'command-center.v1.conversation-plans.messages',
+  'command-center.v1.conversation-plans.list',
   'command-center.v1.bill-actions.list',
   'command-center.v1.bill-actions.read',
   'command-center.v1.histories.list',
@@ -46,6 +49,8 @@ export const READ_METHODS = Object.freeze([
 ]);
 
 export const WRITE_METHODS = Object.freeze([
+  'command-center.v1.conversation-plans.track',
+  'command-center.v1.conversation-plans.reconcile',
   'command-center.v1.bill-actions.reconcile',
   'command-center.v1.bill-actions.admit',
   'command-center.v1.bill-actions.handle',
@@ -177,6 +182,7 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (conversationPlanResultSchema(method)) return conversationPlanResultSchema(method);
   if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
@@ -417,6 +423,10 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': [],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
   'command-center.v1.bill-actions.list': [],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
@@ -516,6 +526,10 @@ const required = Object.freeze({
   'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt']
 });
 const fields = Object.freeze({
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': ['topicId'],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
   'command-center.v1.bill-actions.list': ['topicId', 'offset', 'limit'],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
