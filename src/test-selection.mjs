@@ -107,6 +107,7 @@ const focusedRealHostScenarios = Object.freeze({
   'native-control-ui-activation': Object.freeze(['native-control-ui-activation']),
   'topic-notes-visual': Object.freeze(['native-topic-files-workspace']),
   'topic-document-tools': Object.freeze(['topic-document-tools']),
+  'topic-document-filing': Object.freeze(['topic-document-filing']),
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
   'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),

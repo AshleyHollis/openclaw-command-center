@@ -317,6 +317,7 @@ test('native Chat diagnostic requires the real authenticated mount and native ro
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['native-topic-chat-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-document-filing').scenarioIds, ['topic-document-filing']);
 });
 
 test('reader MVP selection includes its reader ownership boundaries and excludes deferred filing and maintenance', () => {

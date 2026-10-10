@@ -9,7 +9,6 @@ import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
-import { topicDocumentFileToolFactory } from './documents/tool.mjs';
 import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
@@ -202,7 +201,7 @@ export default definePluginEntry({
       match: 'exact',
       handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, {
         assertAction: assertFirstLiveTopicAction,
-        createConversationRuntime: () => createRequestScopedConversationRuntime()
+        createConversationRuntime: () => createRequestScopedConversationRuntime({ includeAttachmentAdmission: FIRST_LIVE_FEATURES.topicDocuments })
       }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
@@ -227,7 +226,9 @@ export default definePluginEntry({
     registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     if (FIRST_LIVE_FEATURES.search) api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
-    if (FIRST_LIVE_FEATURES.topicDocuments) api.registerTool(topicDocumentFileToolFactory({ file: (input) => service.sourceService.documentsFileAttachment(input) }), { name: 'command_center_file_topic_attachment', optional: true });
+    // Original attachment filing is an explicit Files action. The legacy v1
+    // optional tool lacked final accepted-source authority and stays retired;
+    // its source/recovery tests remain for retained historical attempts.
     if (FIRST_LIVE_FEATURES.noteMaintenance) api.registerTool(topicNoteMaintenanceToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_update_working_note', optional: true });
     api.registerTool(commitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_commitment', optional: true });
     api.registerTool(capacityReviewToolFactory({ getOwner: () => service.capacityReview }), { name: 'command_center_open_capacity_review', optional: true });

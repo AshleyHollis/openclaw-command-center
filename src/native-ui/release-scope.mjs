@@ -2,7 +2,7 @@
 // from the root release policy, so native assets never resolve outside the
 // host's declared UI asset directory.
 export const FIRST_LIVE_FEATURES = Object.freeze({
-  topics: true, noteRead: true, conversations: true,
+  topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false
