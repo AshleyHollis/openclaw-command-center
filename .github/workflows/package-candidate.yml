@@ -90,6 +90,7 @@ jobs:
               cd /workspace
               test "$(node --version)" = v24.21.0
               node --test test/conversation-creation.test.mjs test/topic-page-http.test.mjs test/topic-conversation-assignment.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
+              node --test test/conversation-plans.test.mjs test/conversation-plan-source.test.mjs test/conversation-plan-attention.test.mjs test/conversation-plan-native-contract.test.mjs
               node --test test/native-attachment-selection.test.mjs test/native-attachment-sdk.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs test/topic-document-filing.test.mjs test/topic-document-filing-recovery.test.mjs test/note-process-death.test.mjs test/mutation-reconciliation.test.mjs test/mutation-architecture.test.mjs
               if [ "${COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION:-}" = 1 ]; then
                 node --test test/topic-document-filing-native-admission.test.mjs

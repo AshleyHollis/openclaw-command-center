@@ -28,6 +28,7 @@ jobs:
       - run: node --test test/safety.test.mjs
       - run: node --test test/mutation-architecture.test.mjs test/native-attachment-selection.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs
       - run: node --test --test-name-pattern='attachment review actions' test/topic-page-http.test.mjs
+      - run: node --test test/conversation-plans.test.mjs test/conversation-plan-source.test.mjs test/conversation-plan-attention.test.mjs test/conversation-plan-native-contract.test.mjs test/attention-service.integration.test.mjs
       - run: npm run check
       - run: npx playwright install --with-deps chromium
       - name: Everyday Topic browser regression
