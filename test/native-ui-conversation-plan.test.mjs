@@ -102,3 +102,47 @@ test('fictional rendered plan uses real CC journal owner, preserves draft/focus 
   await page.getByText('Conversation plan authority changed. Reopen to review.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Track this plan' }).count(), 0);
 });
+
+
+test('requested result review opens the exact native card; stale and revoked review links never navigate or dispatch', async t => {
+  const server = createServer(async (req, res) => {
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><title>Fictional result review</title><label>Native draft<textarea id="draft">Unsent fictional draft</textarea></label><main></main>'); return; }
+    if (['/conversation-plan.mjs', '/conversation-plan-workspace.mjs'].includes(req.url)) { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../src/native-ui${req.url}`, import.meta.url))); return; }
+    res.statusCode = 404; res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  t.after(async () => { await browser.close(); await new Promise(resolve => server.close(resolve)); });
+  const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.evaluate(async () => {
+    const { mountConversationPlanWorkspace } = await import('/conversation-plan-workspace.mjs');
+    const human = { id: 'result-review:fictional', kind: 'requested-result-review', createdAtMs: 1000, expiresAtMs: null, requestRevision: 'immutable-native-snapshot', episodeId: 'episode-1', episodeRevision: 1 };
+    const row = { availability: 'available', input: { logicalOperationId: 'fictional-operation', destination: { tenantId: 'fictional', boardId: 'garden' }, snapshot: { outcome: 'Review the planting plan' } }, card: { id: 'card-1', status: 'review', sessionKey: 'session-1', runId: 'run-1' }, progress: { availability: 'available', status: 'succeeded' }, attention: { eligible: true, requests: [human] } };
+    window.requests = []; window.opened = []; window.chat = []; window.mode = 'current'; window.life = new AbortController();
+    window.host = { connection: { connected: true, canRead: true, canWrite: true }, subscribe(callback) { window.accessChanged = callback; return () => {}; }, navigation: { openPage: target => window.opened.push(target) }, sessions: { openChat: target => window.chat.push(target) }, async request(method) {
+      window.requests.push(method);
+      if (method.endsWith('.list')) return { result: { rows: [row], coverage: 'tracked-plans' } };
+      if (!method.endsWith('.reconcile')) throw new Error('No native execution or resolution allowed');
+      if (window.mode === 'delay') return new Promise(resolve => { window.release = () => resolve({ result: row }); });
+      return { result: window.mode === 'stale' ? { ...row, attention: { eligible: false, requests: [] } } : row };
+    } };
+    document.querySelector('#draft').focus();
+    window.workspace = mountConversationPlanWorkspace(document.querySelector('main'), { host: window.host, signal: window.life.signal });
+  });
+  const review = page.getByRole('button', { name: 'Review requested result', exact: true }); await review.waitFor();
+  assert.equal(await page.locator('#draft').evaluate(node => node === document.activeElement), true);
+  await review.click();
+  await page.waitForFunction(() => window.opened.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.opened), [{ pluginId: 'workboard', id: 'workboard', path: ['garden'], params: { cardId: 'card-1', tenant: 'fictional' } }]);
+  assert.deepEqual(await page.evaluate(() => window.chat), []);
+  assert.equal(await page.locator('#draft').inputValue(), 'Unsent fictional draft');
+  await page.evaluate(() => { window.mode = 'stale'; }); await review.click();
+  await page.getByText('This native human request changed. Refresh tracked plans.', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.opened.length), 1);
+  await page.evaluate(() => { window.mode = 'delay'; }); await review.click();
+  await page.waitForFunction(() => typeof window.release === 'function');
+  await page.evaluate(() => { window.host.connection.canRead = false; window.accessChanged(); window.release(); });
+  await page.getByText('Conversation plan authority changed. Reopen to review.', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.opened.length), 1);
+  assert.ok((await page.evaluate(() => window.requests)).every(method => ['command-center.v1.conversation-plans.list', 'command-center.v1.conversation-plans.reconcile'].includes(method)));
+});

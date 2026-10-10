@@ -131,16 +131,16 @@ test('an explicit review-worded native question keeps its question identity and 
   assert.equal((await verifyPlanHumanRequest({ card, request: proof.request, known: true, nativeRequest, assertCurrent() {}, now: () => 100 })).availability, 'unavailable');
 });
 
-test('missing native result-review owner admits no Attention receipt and dispatches no invented RPC', async t => {
+test('older native build refusing result-review get admits no Attention receipt', async t => {
   const f = fixture(t), a = f.attention();
   const calls = [];
   const owner = createPlanRequestEpisodeOwner({ metadata: f.metadata, attention: a, now: () => 100000,
-    verifyRequest: args => verifyPlanHumanRequest({ ...args, nativeRequest: async method => { calls.push(method); assert.fail('No result-review RPC exists'); }, now: () => 100000 }) });
+    verifyRequest: args => verifyPlanHumanRequest({ ...args, nativeRequest: async method => { calls.push(method); throw new Error('Unknown native method on older build'); }, now: () => 100000 }) });
   f.request.kind = 'requested-result-review';
   const result = await f.project(owner);
   assert.equal(result.eligible, false); assert.equal(result.availability, 'partial');
   assert.equal(result.resultReviewAvailability, 'unqualified');
-  assert.deepEqual(calls, []); assert.deepEqual(a.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard), []);
+  assert.deepEqual(calls, ['workboard.resultReviews.get']); assert.deepEqual(a.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard), []);
 });
 
 test('an unrelated terminal run cannot withdraw an original human request across episode-owner restart', async t => {
@@ -165,4 +165,58 @@ test('an unrelated terminal run cannot withdraw an original human request across
   assert.equal(restarted.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard)[0].state, 'Withdrawn');
   f.card.metadata.attempts = [];
   assert.equal((await f.project(owner(f.attention()))).eligible, false);
+});
+
+function fictionalNativeReview(card, overrides = {}) {
+  const result = { summary: 'The fictional planting plan and budget are ready.', proof: [], artifacts: [] };
+  const identity = { id: 'result-review:fictional', tenant: card.metadata.automation.tenant, boardId: card.metadata.automation.boardId, cardId: card.id, sessionKey: card.sessionKey, runId: card.runId, completionIntent: planDigest('fictional immutable completion') };
+  const resultDigest = planDigest(result);
+  return { schemaVersion: 1, ...identity, requestRevision: planDigest({ ...identity, resultDigest }), resultDigest, revision: 1, status: 'pending', createdAt: 1000, expiresAt: null, resolvedAt: null, result, ...overrides };
+}
+
+test('scoped native result review with no deadline publishes once, survives restart and clears only native terminal receipt', async t => {
+  const f = fixture(t), a = f.attention(); let native = fictionalNativeReview(f.card), calls = [];
+  const nativeRequest = async (method, params) => {
+    calls.push(method);
+    if (method.startsWith('workboard.resultReviews.')) {
+      assert.deepEqual({ tenant: params.tenant, boardId: params.boardId, cardId: params.cardId }, { tenant: 'fictional', boardId: 'default', cardId: 'card' });
+      return method.endsWith('.list') ? { requests: [native] } : { request: native };
+    }
+    return method === 'question.list' ? { questions: [] } : [];
+  };
+  const owner = service => createPlanRequestEpisodeOwner({ metadata: f.metadata, attention: service, now: () => 100000,
+    verifyRequest: args => verifyPlanHumanRequest({ ...args, nativeRequest, now: () => 100000 }) });
+  const observation = await readPlanHumanRequests({ card: f.card, nativeRequest, assertCurrent: f.guard });
+  assert.equal(observation.resultReviewAvailability, 'available'); assert.equal(observation.requests[0].expiresAtMs, null);
+  const project = async service => owner(service).project({ input: f.input, card: f.card, principalId: 'operator', observation, assertCurrent: f.guard });
+  const first = await project(a); assert.equal(first.requests.length, 1); assert.equal(first.requests[0].expiresAtMs, null);
+  f.advance(); const restarted = f.attention(); assert.equal((await project(restarted)).requests[0].episodeId, first.requests[0].episodeId);
+  native = { ...native, revision: 2, status: 'reviewed', resolvedAt: 200000 };
+  f.card.status = 'done'; f.card.runId = 'another-run';
+  assert.equal((await project(restarted)).eligible, false);
+  assert.equal(restarted.ownerEpisodes(PLAN_REQUEST_CAPABILITY, f.guard)[0].state, 'Resolved');
+  native = { ...native, revision: 1, status: 'pending', resolvedAt: null }; f.card.status = 'review'; f.card.runId = native.runId;
+  assert.equal((await project(f.attention())).eligible, false);
+  assert.ok(calls.every(method => ['workboard.resultReviews.list', 'workboard.resultReviews.get', 'question.list', 'exec.approval.list'].includes(method)));
+});
+
+test('result-review scope, producing run, snapshot digest and authority must remain exact; ordinary completion creates no review', async () => {
+  const card = { id: 'card', status: 'review', sessionKey: 'session', runId: 'run', metadata: { automation: { tenant: 'fictional', boardId: 'default' }, attempts: [] } };
+  const original = fictionalNativeReview(card);
+  const verify = native => verifyPlanHumanRequest({ card, request: { id: original.id, kind: 'requested-result-review' }, nativeRequest: async () => ({ request: native }), assertCurrent() {}, now: () => 10000 });
+  assert.equal((await verify(original)).state, 'pending');
+  for (const native of [{ ...original, tenant: 'wrong' }, { ...original, boardId: 'wrong' }, { ...original, cardId: 'wrong' }, { ...original, runId: 'unrelated' }, { ...original, result: { ...original.result, summary: 'changed' } }, { ...original, expiresAt: 999999 }, { ...original, resolvedAt: 5000 }, { ...original, revision: 0 }, null]) assert.equal((await verify(native)).availability, 'unavailable');
+  card.status = 'done'; assert.equal((await verify(original)).availability, 'unavailable');
+  card.status = 'review'; let revoked = false;
+  await assert.rejects(verifyPlanHumanRequest({ card, request: { id: original.id, kind: 'requested-result-review' }, nativeRequest: async () => { revoked = true; return { request: original }; }, assertCurrent() { if (revoked) throw new Error('revoked'); } }), /revoked/);
+  const read = await readPlanHumanRequests({ card, nativeRequest: async method => method === 'question.list' ? { questions: [] } : method === 'exec.approval.list' ? [] : { requests: [] }, assertCurrent() {} });
+  assert.equal(read.eligible, false); assert.equal(read.resultReviewAvailability, 'available');
+});
+
+test('unavailable result-review owner preserves an independently verified native question', async () => {
+  const card = { id: 'card', status: 'running', sessionKey: 'session', runId: 'run', metadata: { automation: { tenant: 'fictional', boardId: 'default' } } };
+  const question = { id: 'q', status: 'pending', sessionKey: 'session', runId: 'run', createdAtMs: 1, expiresAtMs: 10000 };
+  const nativeRequest = async method => { if (method.startsWith('workboard.resultReviews.')) throw new Error('Unknown method'); return method === 'question.list' ? { questions: [question] } : []; };
+  const observation = await readPlanHumanRequests({ card, nativeRequest, assertCurrent() {}, now: () => 100 });
+  assert.equal(observation.eligible, true); assert.equal(observation.resultReviewAvailability, 'unavailable'); assert.equal(observation.requests[0].kind, 'question');
 });

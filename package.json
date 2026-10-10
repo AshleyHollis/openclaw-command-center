@@ -93,6 +93,14 @@
         "min": 1,
         "max": 1
       }
+    },
+    "testCandidate": {
+      "kind": "isolated-enabled-feature-test",
+      "features": [
+        "topicDocuments",
+        "conversationPlans"
+      ],
+      "productionAdmission": false
     }
   },
   "openclaw": {

@@ -1,13 +1,14 @@
+// ENABLED TEST CANDIDATE: isolated fictional qualification only; no production admission.
 import { SourceServiceError } from './sources/errors.mjs';
 
 // ADR 0004: a build-owned policy, never a caller/configuration opt-in.
 export const FIRST_LIVE_FEATURES = Object.freeze({
-  topics: true, noteRead: true, conversations: true, topicDocuments: false,
+  topics: true, noteRead: true, conversations: true, topicDocuments: true,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false,
   // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
-  billActions: true, conversationPlans: false
+  billActions: true, conversationPlans: true
 });
 
 // The ownership catalogue deliberately retains deferred tools so their domain
@@ -20,6 +21,8 @@ export const FIRST_LIVE_DEFERRED_NATIVE_TOOLS = Object.freeze({
 
 export const FIRST_LIVE_COMMANDS = Object.freeze({
   bridge: Object.freeze([
+    'command-center.v1.conversation-plans.messages', 'command-center.v1.conversation-plans.track',
+    'command-center.v1.conversation-plans.reconcile', 'command-center.v1.conversation-plans.list',
     'command-center.v1.bill-actions.list', 'command-center.v1.bill-actions.read',
     'command-center.v1.bill-actions.admit', 'command-center.v1.bill-actions.handle',
     'command-center.v1.bill-actions.defer', 'command-center.v1.bill-actions.reconcile',
@@ -56,7 +59,7 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.open-loops.renovation-decision-revise',
     'command-center.v1.briefings.set-read', 'command-center.v1.routines.decide'
   ]),
-  topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
+  topicAction: Object.freeze(['documents.attachments.list', 'documents.attachment.review', 'documents.attachment.prepare', 'documents.attachment.file', 'documents.attachment.check', 'documents.attachment.reopen', 'conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });
 
 export function assertFirstLiveCommand(surface, command) {

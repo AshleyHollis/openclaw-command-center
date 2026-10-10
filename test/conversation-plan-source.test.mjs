@@ -68,12 +68,12 @@ test('native question and nested approval requests require exact linked run; gen
   assert.equal((await read({ ...card, runId: 'different' })).eligible, false);
   assert.equal((await readPlanHumanRequests({ card, nativeRequest: async () => { throw new Error('no scope'); }, assertCurrent() {} })).availability, 'unavailable');
 });
-test('candidate bridge is closed and all plan commands remain disabled', () => {
-  assert.equal(FIRST_LIVE_FEATURES.conversationPlans, false);
+test('enabled TEST candidate keeps the plan bridge closed and admits only its four commands', () => {
+  assert.equal(FIRST_LIVE_FEATURES.conversationPlans, true);
   const method = 'command-center.v1.conversation-plans.messages';
   validateBridgeRequest(method, { schemaVersion: 1, topicId: 'fictional', referenceId: 'fictional-ref' });
   assert.throws(() => validateBridgeRequest(method, { schemaVersion: 1, topicId: 'fictional', referenceId: 'fictional-ref', dispatch: true }), /Unsupported/);
-  for (const name of ['messages', 'list', 'track', 'reconcile']) assert.throws(() => assertFirstLiveCommand('bridge', `command-center.v1.conversation-plans.${name}`));
+  for (const name of ['messages', 'list', 'track', 'reconcile']) assert.doesNotThrow(() => assertFirstLiveCommand('bridge', `command-center.v1.conversation-plans.${name}`));
   const result = sanitizeBridgeResult(method, { messages: [{ source: { topicId: 'fictional', messageId: 'exact', privatePath: 'hidden' }, text: 'Reviewed text', internalIdentity: 'hidden' }] });
   assert.equal(result.messages[0].source.privatePath, undefined); assert.equal(result.messages[0].internalIdentity, undefined);
 });

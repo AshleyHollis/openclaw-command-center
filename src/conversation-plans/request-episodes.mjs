@@ -8,7 +8,7 @@ const fail = message => { throw sourceError('conflict', message); };
 const terminal = state => ['Resolved', 'Withdrawn'].includes(state);
 const publicationContexts = new WeakMap();
 function requestIdentity(request) {
-  if (!request || Object.keys(request).some(key => !['id', 'kind', 'createdAtMs', 'expiresAtMs', 'requestRevision'].includes(key)) || typeof request.id !== 'string' || !request.id.trim() || request.id.length > 500 || !kinds.has(request.kind) || !Number.isSafeInteger(request.createdAtMs) || request.createdAtMs < 0 || !Number.isSafeInteger(request.expiresAtMs) || request.expiresAtMs < request.createdAtMs || typeof request.requestRevision !== 'string' || !request.requestRevision.trim()) fail('Exact native request identity is unavailable.');
+  if (!request || Object.keys(request).some(key => !['id', 'kind', 'createdAtMs', 'expiresAtMs', 'requestRevision'].includes(key)) || typeof request.id !== 'string' || !request.id.trim() || request.id.length > 500 || !kinds.has(request.kind) || !Number.isSafeInteger(request.createdAtMs) || request.createdAtMs < 0 || !(request.kind === 'requested-result-review' && request.expiresAtMs === null) && (!Number.isSafeInteger(request.expiresAtMs) || request.expiresAtMs < request.createdAtMs) || typeof request.requestRevision !== 'string' || !request.requestRevision.trim()) fail('Exact native request identity is unavailable.');
   return structuredClone(request);
 }
 
@@ -79,7 +79,7 @@ export function createPlanRequestEpisodeOwner({ metadata, attention, verifyReque
       if (existing && terminal(existing.state)) continue;
       const result = await proofs.run({ occurrence, facts, guard, state: proof.state }, () => attention.ingest(occurrence, { assertCurrent: guard }));
       guard();
-      if (proof.state === 'pending' && result.episode?.state === 'Active' && exact.expiresAtMs > now()) requests.push({ ...exact, episodeId: result.episode.episodeId, episodeRevision: result.episode.revision, episodeState: result.episode.state });
+      if (proof.state === 'pending' && result.episode?.state === 'Active' && (exact.kind === 'requested-result-review' && exact.expiresAtMs === null || exact.expiresAtMs > now())) requests.push({ ...exact, episodeId: result.episode.episodeId, episodeRevision: result.episode.revision, episodeState: result.episode.state });
     }
     guard();
     return { availability: unavailableCount ? 'partial' : observation?.availability === 'unavailable' ? 'unavailable' : 'available', eligible: requests.length > 0, requests, unavailableCount,
