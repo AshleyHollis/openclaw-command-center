@@ -48,10 +48,10 @@ for (const flags of [[], ['noteProposals'], ['topicNoteRecall'], ['noteProposals
   });
 }
 
-test('TEST Notes source enables only explicit review proposals', async () => {
+test('TEST cumulative Notes source enables explicit review and on-demand recall', async () => {
   const { FIRST_LIVE_FEATURES } = await import('../src/release-scope.mjs');
   assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
-  assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, false);
+  assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, true);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.search, false);
 });

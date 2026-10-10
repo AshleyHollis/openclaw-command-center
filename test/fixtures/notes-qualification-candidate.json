@@ -4,9 +4,9 @@
   "productionSource": "286f82260a33273568bee6855799e94a625c156d",
   "captureSource": "c0ceacd1100843fa5db1c0f2f5cbb12b231341de",
   "nativeCommit": "ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2",
-  "mode": "proposals",
-  "gates": { "noteProposals": true, "topicNoteRecall": false },
-  "order": "Use this full composed source first; its child recall TEST package retains review proposals and enables recall.",
+  "mode": "recall",
+  "gates": { "noteProposals": true, "topicNoteRecall": true },
+  "order": "Second ordered TEST package; retains capture source and enabled review proposals, then enables on-demand recall.",
   "deploymentAllowed": false,
   "releaseQualified": false
 }
