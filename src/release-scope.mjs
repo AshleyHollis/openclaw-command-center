@@ -1,8 +1,9 @@
+// ENABLED TEST CANDIDATE: isolated fictional qualification only; no production admission.
 import { SourceServiceError } from './sources/errors.mjs';
 
 // ADR 0004: a build-owned policy, never a caller/configuration opt-in.
 export const FIRST_LIVE_FEATURES = Object.freeze({
-  topics: true, noteRead: true, conversations: true, topicDocuments: false,
+  topics: true, noteRead: true, conversations: true, topicDocuments: true,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false,
@@ -56,7 +57,7 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.open-loops.renovation-decision-revise',
     'command-center.v1.briefings.set-read', 'command-center.v1.routines.decide'
   ]),
-  topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
+  topicAction: Object.freeze(['documents.attachments.list', 'documents.attachment.review', 'documents.attachment.prepare', 'documents.attachment.file', 'documents.attachment.check', 'documents.attachment.reopen', 'conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });
 
 export function assertFirstLiveCommand(surface, command) {
