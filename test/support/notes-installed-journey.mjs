@@ -89,7 +89,9 @@ export async function runInstalledNoteProposalNegatives({ rpc, readOnlyRpc, refr
   const noText = value => { for (const key of ['snapshot', 'proposedText', 'comparison', 'citations']) assert.equal(value[key], undefined); };
   const readonly = await fresh();
   await assert.rejects(readOnlyRpc('command-center.v1.notes.proposals.prepare', readonly), error =>
-    error.code === 'unauthenticated' || /operator\.write|missing.*scope|insufficient.*scope/iu.test(error.message));
+    error.code !== 'ERR_ASSERTION' && (error.code === 'unauthenticated'
+      || /^Authenticated command-center\.v1\.notes\.proposals\.prepare failed: unauthenticated \(/u.test(error.message)
+      || /^Authenticated command-center\.v1\.notes\.proposals\.prepare failed: (?:INVALID_REQUEST|FORBIDDEN) \(missing scope: operator\.write\)$/u.test(error.message)));
   const statuses = ['read-only-refused'];
   for (const role of ['source', 'target']) {
     const input = await fresh(); const pointer = role === 'source' ? input.sources[0] : input.target;
@@ -112,18 +114,26 @@ export async function runInstalledNoteProposalNegatives({ rpc, readOnlyRpc, refr
   }
   const input = await fresh(); const source = input.sources[0];
   const files = [input.target, ...input.sources]; const before = await Promise.all(files.map(readNoteBytes));
-  assert.equal(unwrap(await rpc('command-center.v1.notes.proposals.prepare', input)).status, 'prepared');
+  const prepared = unwrap(await rpc('command-center.v1.notes.proposals.prepare', input));
+  assert.equal(prepared.status, 'prepared');
   await setFixtureMode(source, 0o000);
   try {
+    await assert.rejects(readNoteBytes(source), { code: 'EACCES' }, 'fixture source is actually unreadable');
+    let blocked, refused = false;
     try {
-      const blocked = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
-      assert.equal(blocked.status, 'blocked'); noText(blocked);
+      blocked = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
     } catch (error) {
-      assert.ok(error.code === 'EACCES' || /failed: EACCES\b/u.test(error.message)); noText(error);
+      // The public bridge deliberately sanitizes filesystem errors to unavailable.
+      // Only catch the RPC itself: a response assertion must retain its real cause.
+      if (error.code === 'ERR_ASSERTION' || !(error.code === 'EACCES' || /^Authenticated command-center\.v1\.notes\.proposals\.inspect failed: unavailable \(The authoritative source request is unavailable\.\)$/u.test(error.message))) throw error;
+      noText(error);
+      refused = true;
     }
+    if (!refused) { assert.ok(blocked); assert.equal(blocked.status, 'blocked'); noText(blocked); }
   } finally { await setFixtureMode(source, 0o600); }
   const recovered = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
   assert.equal(recovered.status, 'prepared');
+  assert.deepEqual(recovered.snapshot, prepared.snapshot);
   assert.equal(unwrap(await rpc('command-center.v1.notes.proposals.discard', access(input))).status, 'discarded');
   assert.deepEqual(await Promise.all(files.map(readNoteBytes)), before);
   statuses.push('permission-unavailable-and-recovered');

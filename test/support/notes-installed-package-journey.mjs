@@ -260,6 +260,9 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           await nativePage.getByRole('button', { name: 'All Topics', exact: true }).click();
           await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
           await link.click(); await nativePage.getByText(/It was not opened as the earlier evidence/).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('button', { name: 'Open current Note', exact: true }).waitFor();
+          assert.equal(await nativePage.getByText('alpha fictional newer revision.', { exact: false }).count(), 0);
+          assert.equal(await nativePage.getByRole('region', { name: 'Note content', exact: true }).textContent(), '');
           assert.equal(await composer.inputValue(), draft);
           assert.deepEqual(await composer.evaluate(element => [element.selectionStart, element.selectionEnd]), [7, 19]);
           cases.push('stale-citation-on-fresh-reader-retains-draft');

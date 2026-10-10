@@ -13,6 +13,7 @@ import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/registe
 import { NOTE_PROPOSAL_METHODS } from '../src/bridge/note-proposal-contracts.mjs';
 import { FIRST_LIVE_FEATURES, assertFirstLiveCommand } from '../src/release-scope.mjs';
 import { runInstalledNoteProposalRpcJourney, runInstalledNoteProposalNegatives } from './support/notes-installed-journey.mjs';
+import { errorResult } from '../src/sources/errors.mjs';
 
 async function fixture(t, real = false) {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'cc-note-proposals-'));
@@ -228,3 +229,72 @@ test('installed negative helper uses the real Note owner for stale, permission a
     setFixtureMode: (pointer, mode) => chmod(path.join(f.root, pointer.path), mode), restart: async () => f.reopen() });
   assert.deepEqual(result, ['read-only-refused', 'stale-source-retired', 'stale-target-retired', 'permission-unavailable-and-recovered']);
 });
+
+function negativeOptions(f, rpc) {
+  return { rpc,
+    readOnlyRpc: (method, input) => f.owner()[method.split('.').at(-1)](input, { proposalAuthority: { ...f.runtime.proposalAuthority, canWrite: false } }),
+    refreshRequest: async () => f.request, readNoteBytes: pointer => readFile(path.join(f.root, pointer.path)),
+    writeFixtureBytes: (pointer, bytes) => writeFile(path.join(f.root, pointer.path), bytes),
+    setFixtureMode: (pointer, mode) => chmod(path.join(f.root, pointer.path), mode), restart: async () => f.reopen() };
+}
+
+test('installed negatives survive the real bridge error sanitizer and restore exact snapshots', { skip: process.platform !== 'linux' && 'Linux Note permissions' }, async t => {
+  const f = await fixture(t, true); let refusals = 0;
+  const before = await Promise.all([f.request.target, ...f.request.sources].map(pointer => readFile(path.join(f.root, pointer.path))));
+  const service = Object.fromEntries(['prepare', 'inspect', 'discard'].map(action =>
+    [`notesProposal${action[0].toUpperCase()}${action.slice(1)}`, (input, runtime) => f.owner()[action](input, runtime)]));
+  const transport = runtime => async (method, input) => {
+    try { return await invokeBridgeMethod(service, method, input, null, null, runtime); }
+    catch (error) {
+      const wire = errorResult(error);
+      assert.deepEqual(Object.keys(wire).sort(), ['code', 'details', 'message']);
+      for (const key of ['snapshot', 'proposedText', 'comparison', 'citations']) assert.equal(wire.details[key], undefined);
+      if (runtime === f.runtime) {
+        assert.equal(error.code, 'EACCES'); assert.equal(wire.code, 'unavailable');
+        assert.equal(wire.message, 'The authoritative source request is unavailable.'); refusals++;
+      } else {
+        assert.equal(wire.code, 'unauthenticated');
+        assert.equal(f.metadata().getTopicOperation(input.logicalOperationId), null);
+        assert.deepEqual(await Promise.all([f.request.target, ...f.request.sources].map(pointer => readFile(path.join(f.root, pointer.path)))), before);
+      }
+      throw new Error(`Authenticated ${method} failed: ${wire.code} (${wire.message})`);
+    }
+  };
+  assert.deepEqual(await runInstalledNoteProposalNegatives({ ...negativeOptions(f, transport(f.runtime)),
+    readOnlyRpc: transport({ proposalAuthority: { ...f.runtime.proposalAuthority, canWrite: false } }) }),
+    ['read-only-refused', 'stale-source-retired', 'stale-target-retired', 'permission-unavailable-and-recovered']);
+  assert.equal(refusals, 1);
+});
+
+for (const [name, outcome, expected] of [
+  ['successful private response', () => ({ status: 'prepared', snapshot: { target: { text: 'fictional cached text' } } }), { code: 'ERR_ASSERTION', actual: 'prepared', expected: 'blocked' }],
+  ['blocked private response', () => ({ status: 'blocked', snapshot: { target: { text: 'fictional cached text' } } }), { code: 'ERR_ASSERTION' }],
+  ['missing response', () => undefined, { code: 'ERR_ASSERTION' }],
+  ['transport timeout', () => { throw new Error('method-response timed out'); }, { message: 'method-response timed out' }],
+  ['wrong method refusal', () => { throw new Error('Authenticated other.method failed: unavailable (The authoritative source request is unavailable.)'); }, { message: 'Authenticated other.method failed: unavailable (The authoritative source request is unavailable.)' }],
+  ['authority refusal', () => { throw Object.assign(new Error('operator authority ended'), { code: 'unauthenticated' }); }, { code: 'unauthenticated' }],
+  ['assertion failure', () => { assert.equal('prepared', 'blocked'); }, { code: 'ERR_ASSERTION' }],
+  ['assertion impersonating refusal', () => { assert.fail('Authenticated command-center.v1.notes.proposals.inspect failed: unavailable (The authoritative source request is unavailable.)'); }, { code: 'ERR_ASSERTION' }]
+]) {
+  test(`permission negative rejects ${name} and still restores fixture access`, { skip: process.platform !== 'linux' && 'Linux Note permissions' }, async t => {
+    const f = await fixture(t, true);
+    const rpc = async (method, input) => {
+      try { return await f.owner()[method.split('.').at(-1)](input, f.runtime); }
+      catch (error) { if (error.code !== 'EACCES') throw error; return outcome(); }
+    };
+    await assert.rejects(runInstalledNoteProposalNegatives(negativeOptions(f, rpc)), expected);
+    assert.ok((await readFile(path.join(f.root, f.request.sources[0].path))).length > 0);
+  });
+}
+
+for (const [name, refusal, expected] of [
+  ['timeout mentioning scope', () => { throw new Error('operator.write method-response timed out'); }, { message: 'operator.write method-response timed out' }],
+  ['assertion impersonating refusal', () => { assert.fail('Authenticated command-center.v1.notes.proposals.prepare failed: unauthenticated (The exact Note proposal is unavailable or changed.)'); }, { code: 'ERR_ASSERTION' }]
+]) {
+  test(`read-only negative rejects ${name} without creating a proposal`, async t => {
+    const f = await fixture(t);
+    await assert.rejects(runInstalledNoteProposalNegatives({ ...negativeOptions(f, () => assert.fail('write RPC must not run')),
+      readOnlyRpc: refusal }), expected);
+    assert.equal(f.metadata().getTopicOperation(f.request.logicalOperationId), null);
+  });
+}
