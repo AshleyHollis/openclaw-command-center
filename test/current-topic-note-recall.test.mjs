@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, rm, chmod, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
