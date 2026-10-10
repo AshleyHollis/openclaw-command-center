@@ -426,10 +426,12 @@ test('default native activation exposes existing Topics and quiet Attention with
   assert.deepEqual(await page.evaluate(() => window.posts), []);
 }));
 
-test('Notes remain authoritative read-only content without any authoring controls', { timeout: 30000 }, () => fixture(async page => {
+test('Notes remain authoritative read-only content without direct authoring controls', { timeout: 30000 }, () => fixture(async page => {
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).focus(); await page.keyboard.press('Enter');
   await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'Authoritative Note' }).waitFor();
-  assert.equal(await page.locator('textarea').count(), 0);
+  // Enabled suggestion review retains a hidden staging field; the reader
+  // must still expose no editable Note control until that explicit workflow.
+  assert.equal(await page.locator('textarea:visible').count(), 0);
   assert.equal(await page.getByRole('button', { name: /Save Note|Check save outcome|Create Note|Discard draft/ }).count(), 0);
   assert.equal(await page.getByRole('textbox', { name: 'New Note path (required)' }).count(), 0);
   await page.getByText('Read-only · Edit Notes in your external Note application.').waitFor();
@@ -524,7 +526,7 @@ test('large Notes page through one cursor-pinned catalog and retain exact revisi
   await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
-  assert.equal(await page.locator('textarea:not([readonly])').count(), 0);
+  assert.equal(await page.locator('textarea:not([readonly]):visible').count(), 0);
 }, { start: 'topic', large: true, paginated: true }));
 
 test('wrong Note identity cannot publish content', { timeout: 30000 }, () => fixture(async page => {

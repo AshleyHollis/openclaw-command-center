@@ -40,7 +40,7 @@ const directoryIdentity = (stat, filesystemIdentity) => createHash('sha256').upd
 // The marker is a logical identity, not an uncopyable credential. Its physical
 // identity and the directory identity are also bound in metadata; Note recovery
 // separately requires the exact locator generation and operation/file proofs.
-async function folderIdentity(root, enroll, bootstrap) {
+async function folderIdentity(root, enroll, bootstrap, retainedRead) {
   let directory; let marker;
   try {
     const canonical = await assertSafeDirectory(root);
@@ -97,6 +97,7 @@ async function folderIdentity(root, enroll, bootstrap) {
     if (bootstrap && bootstrap.expectedIdentity === null && value.id !== bootstrap.markerId) throw sourceError('source-recovery', 'Another operation owns this folder enrollment marker.');
     if (!sameIdentity(held, await lstat(canonical, { bigint: true }))) throw sourceError('source-recovery', 'The Note Folder identity changed during verification.');
     const identity = createNoteFolderIdentityV2({ markerId: value.id, filesystemIdentity, directory: held, marker: last });
+    if (retainedRead && identity !== retainedRead.expectedIdentity) throw sourceError('source-recovery', 'The original verified Note Folder identity changed.');
     if (bootstrap && bootstrap.expectedIdentity !== null && identity !== bootstrap.expectedIdentity) throw sourceError('source-recovery', 'The bound Note Folder identity changed.');
     const assertCurrent = () => {
       bootstrap?.assertCurrent();
@@ -115,6 +116,7 @@ async function folderIdentity(root, enroll, bootstrap) {
     // descriptors, then revalidate the SAME pre-sync snapshot, not newer bytes.
     if (enroll) { await marker.sync(); await directory.sync(); }
     assertCurrent();
+    if (retainedRead) return await retainedRead.run(Object.freeze({ identity, assertCurrent }));
     if (!bootstrap) return identity;
     return await bootstrap.run(Object.freeze({ identity, assertCurrent }));
   } catch (error) {
@@ -124,6 +126,10 @@ async function folderIdentity(root, enroll, bootstrap) {
 }
 
 export function readNoteFolderIdentity(root) { return folderIdentity(root, false); }
+export function withVerifiedNoteFolderIdentity(root, expectedIdentity, run) {
+  if (typeof expectedIdentity !== 'string' || typeof run !== 'function') throw sourceError('invalid-request', 'An exact verified Folder identity and owning callback are required.');
+  return folderIdentity(root, false, undefined, { expectedIdentity, run });
+}
 // Only explicit creation, adoption and authorized Source Recovery call this.
 export function enrollNoteFolderIdentity(root) { return folderIdentity(root, true); }
 
