@@ -40,6 +40,7 @@ import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, ver
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 import { assessJourneyClaim, JOURNEY_CLAIMS } from '../src/qualification-evidence.mjs';
 import { assertCandidatePluginPermissions, assertFastHostAdmission } from './support/isolated-acceptance-preflight.mjs';
+import { exerciseInstalledAcceptedChat } from './support/accepted-chat-installed-slice.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
@@ -1255,7 +1256,21 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
         finally { database.close(); }
       }
-      const nativeFixture = kind === 'accounted-email' || workerVariant ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
+      const nativeFixture = kind === 'accounted-email' || workerVariant || kind === 'accepted-chat' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
+      if (kind === 'accepted-chat') {
+        return await exerciseInstalledAcceptedChat({ world: scenarioWorld, fixture: nativeFixture, signal, restartHost: async () => {
+          const exited = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
+          scenarioHost.child.kill('SIGKILL');
+          assert.deepEqual(await withDeadline('accepted Chat process termination', () => exited, 15_000), { code: null, signal: 'SIGKILL' });
+          scenarioHost = await withDeadline('accepted Chat host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
+          await waitForConsecutiveReadiness(async probeSignal => {
+            try {
+              const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accepted Chat restart readiness', 10_000);
+              return response.ok && routeGrant(await response.json());
+            } catch (error) { if (error?.category === 'transport-timeout' || /fetch failed|ECONNREFUSED|timed out/iu.test(error?.message ?? '')) return false; throw error; }
+          }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+        } });
+      }
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
@@ -2756,6 +2771,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('accepted-chat')) isolatedSlices.set('accepted-chat', startIsolatedSlice('accepted-chat', signal => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accepted-chat', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email-worker')) isolatedSlices.set('accounted-mixed-email-worker', startIsolatedSlice('accounted-mixed-email-worker', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email-worker', width: 1440, signal })));
   for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds?.includes(kind)) isolatedSlices.set(kind, startIsolatedSlice(kind, (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
@@ -2780,6 +2796,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
     if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
+    if (acceptancePlan.isolatedSliceIds.includes('accepted-chat')) testContext.diagnostic(`accepted-chat-evidence=${JSON.stringify(isolatedEvidence.get('accepted-chat'))}`);
     if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) {
       const accounted = isolatedEvidence.get('accounted-mixed-email');
       const sourceCommit = await new Promise((resolve, reject) => execFile('git', ['rev-parse', 'HEAD'],

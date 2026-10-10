@@ -5,7 +5,8 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false, acceptedChatCapture: false,
+  // Isolated enabled TEST candidate only; production PR386 remains disabled.
+  notifications: false, noteMaintenance: false, acceptedChatCapture: true,
   // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
   billActions: true
 });
