@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, open, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { loadIntakeSourceAccount, projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { loadIntakeSourceAccount, normalizeIntakeSourcePlan, projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { createProducerIntakeAdapter } from '../src/open-loops/producer-intake.mjs';
 import { sourceNoteCaptureToolFactory, sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
@@ -113,7 +115,7 @@ async function verifyLineage(f, sourceKind, reopen = true) {
   assert.deepEqual(await readFile(path.join(f.root, 'original.md')), originalBytes);
 }
 
-for (const sourceKind of ['chat', 'email', 'note']) {
+for (const sourceKind of ['email', 'note']) {
   test(`${sourceKind} quiet Note retains upstream lineage through lost response, SQLite reopen and derived Note replay`, async () => {
     const f = await fixture(sourceKind);
     try { await verifyLineage(f, sourceKind); assert.equal(f.createCount(), 1); }
@@ -121,10 +123,12 @@ for (const sourceKind of ['chat', 'email', 'note']) {
   });
 }
 
-test('Chat lineage passes the real Note filesystem and journal owner on Linux', { skip: process.platform !== 'linux' && 'Real Note filesystem qualification requires the supported Linux runtime' }, async () => {
+test('unscoped Chat producer refuses before Note publication on Linux', { skip: process.platform !== 'linux' && 'Real Note filesystem qualification requires the supported Linux runtime' }, async () => {
   const f = await fixture('chat', true);
   try {
-    await verifyLineage(f, 'chat');
+    await assert.rejects(() => f.adapter.process({ runId: 'fictional-unscoped-run', sourceKind: 'chat', records: [f.record], nextExpectedAt: '2026-09-23T00:00:00.000Z' }), { code: 'source-recovery' });
+    assert.equal(f.metadata().listOperations().filter(item => item.operationKind === 'notes.create' || item.operationKind.startsWith('intake-source.') || item.operationKind.startsWith('intake-outcome.')).length, 0);
+    await assert.rejects(() => readFile(path.join(f.root, f.extraction.notePath)), { code: 'ENOENT' });
     const displaced = `${f.root}-displaced`;
     await rename(f.root, displaced);
     await assert.rejects(() => f.tool.execute('fictional-revoked-folder', { topicId, noteFolderReferenceId: folderId, sourceKind: 'chat', sourceExternalId: 'fictional-new-message', sourceVersion: 'v2', path: 'Inbox/new.md', markdown: '# Refused fictional Note\n' }));
@@ -137,7 +141,16 @@ for (const realNoteOwner of [false, true]) {
   test(`legacy partial Chat Note effect remains unchanged and requires explicit reconciliation (${realNoteOwner ? 'Linux Note owner' : 'SQLite accounting'})`, { skip: realNoteOwner && process.platform !== 'linux' && 'Real Note filesystem qualification requires the supported Linux runtime' }, async () => {
     const f = await fixture('chat', realNoteOwner);
     try {
-      recordIntakeSourcePlan(f.metadata(), { schemaVersion: 1, sourceKind: 'chat', sourceExternalId: f.record.sourceExternalId, sourceVersion: f.record.sourceVersion, checkpoint: f.record.checkpoint, observedAt: '2026-09-22T00:00:00.000Z', processorVersion: 'fictional-knowledge-v1', acceptedExtraction: f.extraction, outcomes: [{ outcomeId: 'fictional-information', kind: 'information' }] });
+      // Seed persisted pre-accepted-plan state directly; current owners correctly
+      // refuse to create this legacy Chat plan without authenticated acceptance.
+      const plan = normalizeIntakeSourcePlan({ schemaVersion: 1, sourceKind: 'chat', sourceExternalId: f.record.sourceExternalId, sourceVersion: f.record.sourceVersion, checkpoint: f.record.checkpoint, observedAt: '2026-09-22T00:00:00.000Z', processorVersion: 'fictional-knowledge-v1', acceptedExtraction: f.extraction, outcomes: [{ outcomeId: 'fictional-information', kind: 'information' }] });
+      const hex = createHash('sha256').update(`command-center:intake-source:chat:${plan.sourceExternalId}:${plan.sourceVersion}`).digest('hex').slice(0, 32).split('');
+      hex[12] = '4'; hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
+      const id = `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
+      const database = new DatabaseSync(f.metadata().databasePath);
+      try {
+        database.prepare('INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, id, 'sha256:fictional-legacy-plan', 'intake-source.chat.v1', 'applied', 'planned', JSON.stringify(plan), plan.sourceVersion, plan.observedAt, plan.observedAt);
+      } finally { database.close(); }
       const oldParams = { topicId, noteFolderReferenceId: folderId, sourceKind: 'note', sourceExternalId: f.record.sourceExternalId, sourceVersion: f.record.sourceVersion, path: f.extraction.notePath, markdown: f.extraction.knowledgeMarkdown };
       const oldResult = await f.tool.execute('fictional-legacy-call', oldParams);
       const oldBytes = await readFile(path.join(f.root, f.extraction.notePath));
@@ -155,8 +168,8 @@ for (const realNoteOwner of [false, true]) {
   });
 }
 
-test('Chat upstream identity is declared while a returned Chat resource is refused as Note evidence', async () => {
+test('Chat upstream identity is declared but an unscoped Note tool cannot acquire authority', async () => {
   const tool = sourceNoteCaptureToolFactory({ getOwners: () => ({ sourceService: { notesCreate: async () => ({ note: { sourceReference: { topicId, sourceKind: 'chat', referenceId: 'fictional-wrong-kind' } } }) } }) })();
   assert.deepEqual(tool.parameters.properties.sourceKind.enum, ['email', 'chat', 'note']);
-  await assert.rejects(() => tool.execute('fictional-call', { topicId, noteFolderReferenceId: folderId, sourceKind: 'chat', sourceExternalId: 'fictional-message', sourceVersion: 'v1', path: 'fictional.md', markdown: '# Fictional\n' }), /exact Topic-owned Source Reference/u);
+  await assert.rejects(() => tool.execute('fictional-call', { topicId, noteFolderReferenceId: folderId, sourceKind: 'chat', sourceExternalId: 'fictional-message', sourceVersion: 'v1', path: 'fictional.md', markdown: '# Fictional\n' }), { code: 'source-recovery' });
 });

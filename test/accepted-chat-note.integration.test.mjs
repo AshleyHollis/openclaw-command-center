@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createAcceptedChatNoteFixture, mixedChatPlan } from './support/accepted-chat-note-fixture.mjs';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
+import { createProducerIntakeAdapter } from '../src/open-loops/producer-intake.mjs';
+import { loadIntakeSourceAccount, recordIntakeSourcePlan, recordIntakeOutcome } from '../src/open-loops/intake-accounting.mjs';
+import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 
 const linux = { skip: process.platform !== 'linux' && 'Real Note filesystem and process-death qualification requires supported Linux' };
 test('accepted Chat mixed outcomes recover real Note publication after lost response and SQLite reopen', linux, async () => {
@@ -24,7 +27,38 @@ test('accepted Chat mixed outcomes recover real Note publication after lost resp
     assert.deepEqual(replay.account.outcomes.map(item => item.status), ['pending-decision', 'applied', 'quiet', 'no-action']);
     assert.equal(f.metadata().listOpenLoops().length, 2);
     assert.equal(f.metadata().listOperations().filter(item => item.operationKind === 'notes.create').length, 1);
+    const knowledge = replay.account.outcomes.find(item => item.kind === 'information');
+    assert.equal(replay.account.sourceKind, 'chat');
+    assert.equal(f.metadata().getSourceReference(knowledge.sourceReferenceId).sourceKind, 'note');
+    const upstreamId = sourceNoteOperationId({ ...mixedChatPlan(), topicId: 'topic-fictional' });
+    assert.equal(f.metadata().getOperation(upstreamId).operationKind, 'notes.create');
+    assert.equal(f.metadata().getOperation(sourceNoteOperationId({ ...mixedChatPlan(), topicId: 'topic-fictional', sourceKind: 'note' })), null);
     await f.owner().replay(request, f.runtime);
+    assert.deepEqual(await readFile(path.join(f.root, 'Inbox/derived.md')), bytes);
+    // Reprocessing the derived resource must not create another Note or duplicate
+    // the upstream Chat account. Its producer has a separate Note identity.
+    const adapter = createProducerIntakeAdapter({
+      processorVersion: 'fictional-derived-note-v1',
+      extract: async () => { throw new Error('retained extraction required'); },
+      loadIntakeSourceAccount: input => loadIntakeSourceAccount(f.metadata(), input),
+      resolveTopic: async () => ({ topicId: 'topic-fictional' }),
+      saveSourceNote: async () => { throw new Error('derived evidence must be reused'); },
+      captureSourceCommitment: async () => { throw new Error('derived knowledge is quiet'); },
+      captureChatCommitment: async () => { throw new Error('derived knowledge is quiet'); },
+      recordIntakeSourcePlan: input => recordIntakeSourcePlan(f.metadata(), { schemaVersion: 1, ...input }),
+      recordIntakeOutcome: input => recordIntakeOutcome(f.metadata(), { schemaVersion: 1, ...input }),
+      recordIntakeReceipt: input => recordIntakeReceipt(f.metadata(), { schemaVersion: 1, ...input })
+    });
+    const { noAction: _noAction, ...extraction } = mixedChatPlan().acceptedExtraction;
+    const derived = { schemaVersion: 1, sourceKind: 'note', sourceExternalId: knowledge.sourceReferenceId, sourceVersion: knowledge.sourceReferenceVersion, checkpoint: 'fictional-derived-note', acceptedExtraction: { ...extraction, obligations: [] }, existingEvidence: { topicId: 'topic-fictional', sourceReferenceId: knowledge.sourceReferenceId, sourcePath: knowledge.sourcePath, sourceReferenceVersion: knowledge.sourceReferenceVersion } };
+    for (const runId of ['fictional-derived-first', 'fictional-derived-replay']) {
+      const result = await adapter.process({ runId, sourceKind: 'note', records: [derived], nextExpectedAt: '2026-10-02T01:00:00.000Z' });
+      assert.equal(result.status, 'healthy-processed');
+      assert.equal(result.noteCount, 0);
+    }
+    assert.equal(loadIntakeSourceAccount(f.metadata(), derived).account.accounted, true);
+    assert.equal(f.metadata().listOperations().filter(item => item.operationKind === 'intake-outcome.chat.v1').length, 4);
+    assert.equal(f.metadata().listOperations().filter(item => item.operationKind === 'notes.create').length, 1);
     assert.deepEqual(await readFile(path.join(f.root, 'Inbox/derived.md')), bytes);
     const logicalOperationId = sourceNoteOperationId({ ...mixedChatPlan(), topicId: 'topic-fictional' });
     await assert.rejects(() => f.sources().notesCreate({ schemaVersion: 1, topicId: 'topic-fictional', referenceId: 'folder:fictional', sourceKind: 'note', path: 'Inbox/derived.md', text: mixedChatPlan().acceptedExtraction.knowledgeMarkdown, logicalOperationId, requestId: logicalOperationId }), { code: 'source-recovery' });
