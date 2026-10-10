@@ -12,6 +12,7 @@ import { BRIDGE_CONTRACTS, sanitizeBridgeResult } from '../src/bridge/contracts.
 import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
 import { NOTE_PROPOSAL_METHODS } from '../src/bridge/note-proposal-contracts.mjs';
 import { FIRST_LIVE_FEATURES, assertFirstLiveCommand } from '../src/release-scope.mjs';
+import { runInstalledNoteProposalRpcJourney } from './support/notes-installed-journey.mjs';
 
 async function fixture(t, real = false) {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'cc-note-proposals-'));
@@ -54,6 +55,15 @@ async function fixture(t, real = false) {
     revoke: () => { current = false; }, restore: () => { current = true; }, unavailable: value => { unavailable = value; }, afterRead: callback => { afterRead = callback; },
     reopen() { source.close?.(); metadata.close(); metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } }); source = factory(); } };
 }
+
+test('installed scenario helper exercises the source owner lifecycle without claiming installed transport', async t => {
+  const f = await fixture(t, process.platform === 'linux');
+  const result = await runInstalledNoteProposalRpcJourney({ request: f.request, proposedText: '# Fictional staged review\nKeep my edited sentence.\n',
+    rpc: async (method, params) => f.owner()[method.split('.').at(-1)](params, f.runtime),
+    restart: async () => f.reopen(), readNoteBytes: descriptor => readFile(path.join(f.root, descriptor.path)) });
+  assert.deepEqual(result.statuses, ['prepared', 'review-required', 'discarded']);
+  assert.equal(result.preservedNoteBytes, true);
+});
 
 test('prepare freezes revision and snapshots before operator staging; reopen replays exact publication and preserves Note bytes', async t => {
   const f = await fixture(t); const before = await readFile(path.join(f.root, 'target.md'));
