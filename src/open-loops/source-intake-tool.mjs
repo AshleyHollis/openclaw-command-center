@@ -5,6 +5,7 @@ import { loadIntakeSourceAccount, recordIntakeOutcome, recordIntakeSourcePlan } 
 import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
 import { requireAcceptedChatScope } from './accepted-chat-scope.mjs';
+import { invokeAcceptedChatCommand } from '../bridge/chat-capture-contracts.mjs';
 
 const paymentIdentitySchema = Object.freeze({ type: 'object', additionalProperties: false, properties: { schemaVersion: { type: 'integer', const: 1 }, amountMinorUnits: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, invoiceId: { type: 'string', minLength: 1, maxLength: 300 }, accountId: { type: 'string', minLength: 1, maxLength: 300 }, payeeId: { type: 'string', minLength: 1, maxLength: 300 }, purpose: { type: 'string', minLength: 1, maxLength: 300 }, predecessor: { type: 'object', additionalProperties: false, properties: { loopId: { type: 'string', minLength: 1, maxLength: 300 }, observationId: { type: 'string', minLength: 1, maxLength: 300 }, explanation: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['loopId', 'observationId', 'explanation'] } }, required: ['schemaVersion'], dependentRequired: { amountMinorUnits: ['currency'], currency: ['amountMinorUnits'] } });
 
@@ -20,6 +21,8 @@ const acceptedExtractionSchema = Object.freeze({ type: 'object', additionalPrope
   knowledgeOutcomeId: { type: 'string', minLength: 1 }, knowledgeSummary: { type: 'string', minLength: 1, maxLength: 300 }, obligations: { type: 'array', maxItems: 100, items: acceptedObligationSchema },
   noAction: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, summary: { type: 'string', minLength: 1, maxLength: 300 } }, required: ['outcomeId', 'summary'] }
 }, required: ['schemaVersion', 'notePath', 'knowledgeMarkdown', 'obligations'] });
+
+const chatActions = Object.freeze({ accept: 'Accept', load: 'Load', replay: 'Replay' });
 
 function sourceCaptureOperationId(params) {
   const hex = createHash('sha256').update(['command-center.source-capture.v1', params.sourceKind, params.sourceExternalId, params.sourceVersion, params.obligationId].join('\0')).digest('hex');
@@ -161,18 +164,55 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
   });
 }
 
-export function intakeSourcePlanToolFactory({ getOwners } = {}) {
+export function intakeSourcePlanToolFactory({ getOwners, acceptedChatCommands, getAcceptedChatRuntime } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Intake source accounting requires authoritative owners.');
-  return () => ({
+  return (context = {}) => ({
     name: 'command_center_plan_intake_source',
-    description: 'Record the exact source revision and complete planned outcome identities before applying maintained intake effects. This makes partial work and safe replay visible without copying source content.',
+    description: 'Record email/Note plans as before. For Chat, accept a frozen extraction, then load or replay its returned planId through the closed owner. Recovery covers successfully submitted plans only; failure before acceptance leaves coverage unknown. Never apply separate Chat Note/accounting writes.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      chatCommand: { type: 'string', enum: ['accept', 'load', 'replay'] }, planId: { type: 'string', minLength: 1 },
       sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, observedAt: { type: 'string' }, processorVersion: { type: 'string', minLength: 1, maxLength: 300 }, retainedNoteRevision: { type: 'string', minLength: 1, maxLength: 100 },
       acceptedExtraction: acceptedExtractionSchema,
       outcomes: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] } }, required: ['outcomeId', 'kind'] } },
       enumeration: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['complete', 'bounded', 'partial'] }, scannedCount: { type: 'integer', minimum: 0 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' }, scopeId: { type: 'string', minLength: 1 }, resumeCursor: { type: 'string', minLength: 1 } }, required: ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
-    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'] }),
+    }, required: ['sourceKind'], oneOf: [
+      { properties: { sourceKind: { enum: ['email', 'note'] } }, required: ['sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'], not: { anyOf: [{ required: ['chatCommand'] }, { required: ['planId'] }] } },
+      { properties: { sourceKind: { const: 'chat' }, chatCommand: { const: 'accept' } }, required: ['chatCommand', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'], not: { required: ['planId'] } },
+      { properties: { sourceKind: { const: 'chat' }, chatCommand: { enum: ['load', 'replay'] }, planId: { type: 'string', minLength: 1 } }, required: ['chatCommand', 'planId'], additionalProperties: false }
+    ] }),
     async execute(_toolCallId, params) {
+      if (!params || typeof params !== 'object' || Array.isArray(params)) throw sourceError('invalid-request', 'Intake source input must be an object.');
+      if (params?.sourceKind === 'chat') {
+        const action = Object.hasOwn(chatActions, params.chatCommand) ? chatActions[params.chatCommand] : undefined;
+        if (!action || params.chatCommand === 'accept' && Object.hasOwn(params, 'planId') || params.chatCommand !== 'accept' && Object.keys(params).some(key => !['sourceKind', 'chatCommand', 'planId'].includes(key)))
+          throw sourceError('invalid-request', 'Chat requires a closed accept/load/replay command; replay cannot replace extraction or authority.');
+        if (typeof context.assertInvocationCurrent !== 'function') throw sourceError('unauthenticated', 'Chat submission requires Native V2 invocation authority. Coverage remains unknown before acceptance.');
+        if (context.assertInvocationCurrent()?.then) throw sourceError('unauthenticated', 'Chat invocation authority must remain synchronous.');
+        // A tool lifetime is not an operator profile. Only an existing trusted
+        // caller adapter may supply the canonical binding; never derive it
+        // from a device, generic sender, model argument or owner boolean.
+        const original = getAcceptedChatRuntime?.(context);
+        if (typeof original?.principalId !== 'string' || !original.principalId.trim() || typeof original.assertCurrent !== 'function')
+          throw sourceError('unauthenticated', 'The canonical operator profile is unavailable before Chat submission. Coverage remains unknown.');
+        const runtime = Object.freeze({ principalId: original.principalId, assertCurrent() {
+          if (context.assertInvocationCurrent()?.then || original.assertCurrent()?.then) throw sourceError('unauthenticated', 'Chat authority must remain synchronous.');
+        } });
+        runtime.assertCurrent();
+        if (!acceptedChatCommands) throw sourceError('capability-unavailable', 'Accepted Chat owner is unavailable.');
+        let input;
+        if (action === 'Accept') {
+          if (typeof context.sessionKey !== 'string' || !context.sessionKey || typeof context.sessionId !== 'string' || !context.sessionId)
+            throw sourceError('source-recovery', 'Chat submission requires the exact trusted native Conversation.');
+          const { chatCommand, ...plan } = params;
+          if (Object.keys(plan).some(key => !['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'retainedNoteRevision', 'acceptedExtraction', 'outcomes', 'enumeration'].includes(key)))
+            throw sourceError('invalid-request', 'Chat plan cannot supply Conversation or authority fields.');
+          input = { schemaVersion: 1, ...plan, sessionKey: context.sessionKey, sessionId: context.sessionId };
+        } else input = { schemaVersion: 1, planId: params.planId };
+        const result = await invokeAcceptedChatCommand(acceptedChatCommands, action, input, runtime);
+        runtime.assertCurrent();
+        return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
+      }
+      if (Object.hasOwn(params, 'chatCommand') || Object.hasOwn(params, 'planId')) throw sourceError('invalid-request', 'Chat commands cannot be used for email or Note intake.');
       const { metadata } = getOwners() ?? {};
       if (!metadata) throw sourceError('capability-unavailable', 'Intake source accounting is not ready.');
       const result = recordIntakeSourcePlan(metadata, { schemaVersion: 1, ...params });

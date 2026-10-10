@@ -237,7 +237,7 @@ export default definePluginEntry({
     api.registerTool(sourceTopicResolverToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_resolve_source_topic', optional: true });
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
-    api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
+    api.registerTool({ contextVersion: 2, create: intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners(), acceptedChatCommands: service }) }, { name: 'command_center_plan_intake_source', optional: true });
     api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
     api.registerTool(pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_pending_clarification', optional: true });
     api.registerTool(interpretClarificationToolFactory({ interpret: (input, authority) => service.openLoopsInterpretClarification(input, { ...authority, deferFollowUp: true }) }), { name: 'command_center_interpret_clarification', optional: true });
