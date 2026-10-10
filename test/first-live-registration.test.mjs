@@ -59,6 +59,9 @@ test('first-live registration needs no notification authority and preserves core
 test('registered commands outside the build-owned admission set are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
   const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
+  if (FIRST_LIVE_FEATURES.acceptedChatCapture) {
+    for (const action of ['accept', 'load', 'replay']) retained.add(`command-center.v1.chat-capture.${action}`);
+  }
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
