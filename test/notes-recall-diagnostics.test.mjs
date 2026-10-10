@@ -1,6 +1,58 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { configureNotesRecallModel, collectRecallDiagnostics, recordRecallNativeEvent, waitForRecallObservation, summarizeRecallFailure } from './support/notes-recall-diagnostics.mjs';
+import { createRecallTurnObserver, recallTurnSettled, recallProviderFinal } from './support/notes-recall-browser-lifecycle.mjs';
+
+test('Recall turn settlement rejects historical, foreign-session and foreign-socket completion', () => {
+  const observer = createRecallTurnObserver('fictional-session'); const socket = {}, foreign = {};
+  const receive = (owner, frame) => observer.record(owner, 'received', JSON.stringify(frame));
+  const event = (name, runId, sessionKey = 'fictional-session', settled = true) => ({ type: 'event', event: name,
+    payload: { runId, sessionKey, state: 'final', stream: 'lifecycle', data: { phase: 'end', executionSettled: settled } } });
+  receive(socket, event('chat', 'current')); receive(socket, event('agent', 'current'));
+  const mark = observer.mark();
+  observer.record(socket, 'sent', JSON.stringify({ type: 'req', id: 'request', method: 'chat.send', params: { sessionKey: 'fictional-session', idempotencyKey: 'fallback' } }));
+  assert.equal(observer.current(mark), null);
+  receive(foreign, { type: 'res', id: 'request', ok: true, payload: { runId: 'current' } }); assert.equal(observer.current(mark), null);
+  receive(socket, { type: 'res', id: 'request', ok: true, payload: { runId: 'current' } });
+  receive(socket, event('chat', 'old')); receive(socket, event('agent', 'old'));
+  receive(foreign, event('chat', 'current')); receive(foreign, event('agent', 'current'));
+  receive(socket, event('chat', 'current', 'other-session')); receive(socket, event('agent', 'current', 'other-session'));
+  assert.deepEqual(observer.current(mark), { runId: 'current', sessionKey: 'fictional-session', final: false, executionSettled: false });
+  receive(socket, event('chat', 'current')); receive(socket, event('agent', 'current', 'fictional-session', false));
+  const pane = { ownerCurrent: true, working: false, completionMatches: true };
+  assert.equal(recallTurnSettled(observer.current(mark), pane), false);
+  receive(socket, event('agent', 'current'));
+  assert.equal(recallTurnSettled(observer.current(mark), pane), true);
+  for (const state of [{ ...pane, ownerCurrent: false }, { ...pane, working: true }, { ...pane, completionMatches: false }])
+    assert.equal(recallTurnSettled(observer.current(mark), state), false);
+  assert.equal(recallTurnSettled(observer.current(mark), pane, false), false);
+  observer.dispose();
+});
+
+test('Recall observes accepted native fallback IDs and refuses duplicate current sends', () => {
+  const observer = createRecallTurnObserver('fictional-session'), socket = {};
+  const request = id => observer.record(socket, 'sent', JSON.stringify({ type: 'req', id, method: 'chat.send', params: { sessionKey: 'fictional-session', idempotencyKey: id } }));
+  const mark = observer.mark(); request('one');
+  observer.record(socket, 'received', JSON.stringify({ type: 'res', id: 'one', ok: false })); assert.equal(observer.current(mark), null);
+  observer.record(socket, 'received', JSON.stringify({ type: 'res', id: 'one', ok: true, payload: {} })); assert.equal(observer.current(mark).runId, 'one');
+  request('two'); assert.throws(() => observer.current(mark), /one new native Chat request/); observer.dispose();
+});
+
+test('Recall provider completion must belong to this current catalog dispatch', () => {
+  const final = id => ({ action: 'final', completedCurrentTool: true, currentToolResultId: id, recallCatalogResultVerified: true });
+  const rows = [final('old'), { action: 'recall-call', issuedToolCallId: 'current' }, final('old')];
+  assert.equal(recallProviderFinal(rows, 1), false); rows.push(final('current')); assert.equal(recallProviderFinal(rows, 1), true);
+  assert.equal(recallProviderFinal(rows, 3), false);
+});
+
+test('turn settlement timeout has a bounded distinct failure category', async () => {
+  const error = Object.assign(new Error('fictional private diagnostic'), { category: 'readiness-timeout', readiness: { attempts: 4 } });
+  await assert.rejects(waitForRecallObservation(async () => { throw error; }, async () => false, new Promise(() => {}),
+    { phase: 'restart-turn-settled', deadlineMs: 5 }), failure => {
+      assert.equal(summarizeRecallFailure(failure).category, 'recall-turn-settlement-timeout');
+      assert.equal(summarizeRecallFailure(failure).phase, 'restart-turn-settled'); return true;
+    });
+});
 
 test('Recall fictional model declares the actual completions API and main-agent tool policy', () => {
   const config = { models: { providers: { fixture: { models: [{ id: 'fixture-model', compat: { other: true } }] } } },
