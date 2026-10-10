@@ -26,11 +26,10 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test test/safety.test.mjs
-      - run: npx playwright install --with-deps chromium
-      - run: node --test test/native-note-proposals.test.mjs
       - run: node --test test/current-topic-note-recall.test.mjs test/topic-search-service.test.mjs test/topic-context-policy.test.mjs
       - run: npm run check
       - run: npx playwright install --with-deps chromium
+      - run: node --test test/native-note-proposals.test.mjs
       - name: Everyday Topic browser regression
         env:
           COMMAND_CENTER_VISUAL_OUTPUT: ${{ runner.temp }}/everyday-topic-sidebar.png

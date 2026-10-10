@@ -12,6 +12,7 @@ import { currentTopicNoteRecallToolFactory } from '../src/search/tool.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
+import { verifyInstalledRecallEvidence } from './support/notes-installed-journey.mjs';
 
 const release = installHostFileAccessFixture();
 test.after(release);
@@ -58,6 +59,20 @@ test('public recall tool returns fresh root/shared and nested Notes from only th
     assert.equal(response.details.status, 'available');
     assert.equal(response.details.groups.notes.length, 2);
     assert.equal(response.details.groups.conversations.length, 0);
+    const evidenceBasis = { topicId: 'topic-one', noteTextByReference: new Map(notes.filter(note => note.topicId === 'topic-one').map(note => [note.sourceReference.referenceId, { text: note.text, revision: note.revision, path: note.path }])) };
+    verifyInstalledRecallEvidence(response.details, evidenceBasis);
+    for (const mutate of [
+      value => { value.currentTopic.topicId = 'topic-two'; },
+      value => { value.retrievedTopic.topicId = 'topic-two'; },
+      value => { value.groups.notes[0].sourceReference.topicId = 'topic-two'; },
+      value => { value.groups.notes[0].navigation.topicId = 'topic-two'; },
+      value => { value.groups.notes[0].citation.start = -1; },
+      value => { value.groups.notes[0].citation.start = 0.5; },
+      value => { value.groups.notes[0].citation.end = Number.MAX_SAFE_INTEGER; }
+    ]) {
+      const tampered = structuredClone(response.details); mutate(tampered);
+      assert.throws(() => verifyInstalledRecallEvidence(tampered, evidenceBasis), { name: 'AssertionError' });
+    }
     for (const item of response.details.groups.notes) {
       assert.equal(item.originatingTopic.topicId, 'topic-one');
       const note = notes.find(note => note.sourceReference.referenceId === item.sourceReference.referenceId);
