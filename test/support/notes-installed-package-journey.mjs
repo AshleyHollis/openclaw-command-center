@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { readFile, writeFile, mkdir, lstat, realpath, mkdtemp, rm, cp, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, realpath, mkdtemp, rm, cp, chmod, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { readBuiltReceipt, distRoot } from '../../src/build.mjs';
 import { verifyPluginArtifact } from '../../src/plugin-artifact.mjs';
@@ -64,7 +64,10 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
     // Reuse the audited dist; never rebuild or replace an existing checkout tree.
     try {
       await mkdir(distRoot); stagedDist = await lstat(distRoot);
-      await cp(path.join(candidateRoot, 'dist'), distRoot, { recursive: true, force: false, errorOnExist: true });
+      const candidateDist = path.join(candidateRoot, 'dist');
+      for (const name of await readdir(candidateDist)) {
+        await cp(path.join(candidateDist, name), path.join(distRoot, name), { recursive: true, force: false, errorOnExist: true });
+      }
     } catch (error) { if (error.code !== 'EEXIST' || stagedDist) throw error; }
     const buildReceipt = await readBuiltReceipt(); assert.equal(buildReceipt.digest, expected.buildDigest);
     const { FIRST_LIVE_FEATURES } = await import(pathToFileURL(path.join(candidateRoot, 'dist/release-scope.mjs')).href);
