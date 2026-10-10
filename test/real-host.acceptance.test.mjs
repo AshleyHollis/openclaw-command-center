@@ -1259,10 +1259,12 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const nativeFixture = kind === 'accounted-email' || workerVariant || kind === 'accepted-chat' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
       if (kind === 'accepted-chat') {
         return await exerciseInstalledAcceptedChat({ world: scenarioWorld, fixture: nativeFixture, signal, restartHost: async () => {
+          signal?.throwIfAborted();
           const exited = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
           scenarioHost.child.kill('SIGKILL');
-          assert.deepEqual(await withDeadline('accepted Chat process termination', () => exited, 15_000), { code: null, signal: 'SIGKILL' });
-          scenarioHost = await withDeadline('accepted Chat host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
+          assert.deepEqual(await withDeadline('accepted Chat process termination', () => exited, 15_000, signal), { code: null, signal: 'SIGKILL' });
+          signal?.throwIfAborted();
+          scenarioHost = await withDeadline('accepted Chat host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000, signal);
           await waitForConsecutiveReadiness(async probeSignal => {
             try {
               const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accepted Chat restart readiness', 10_000);
