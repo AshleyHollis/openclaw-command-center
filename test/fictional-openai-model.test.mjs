@@ -131,3 +131,26 @@ test('fictional targeted clarification calls exact read and interpretation tools
     assert.equal(model.requests.at(-1).action, 'final');
   } finally { await model.close(); }
 });
+
+test('fictional recall provider routes the exact current result after native normalization', async () => {
+  const model = await startFictionalOpenAiModel({ noteRecall: true });
+  try {
+    const tool = { type: 'function', function: { name: 'command_center_recall_topic_notes' } };
+    await completion(model, [{ role: 'user', content: '[fixture:notes-recall] Recall alpha.' }], [tool]);
+    const id = model.requests.at(-1).issuedToolCallId;
+    assert.equal(model.requests.at(-1).action, 'recall');
+    const result = { groups: { notes: [{ excerpt: 'alpha actual tool evidence', navigation: {
+      topicId: 'fictional-topic', referenceId: 'fictional-source', path: 'nested/source.md', observedRevision: 'v1'
+    } }] } };
+    const answer = await completion(model, [
+      { role: 'user', content: '[fixture:notes-recall] Recall alpha.' },
+      { role: 'assistant', tool_calls: [{ id }] },
+      { role: 'tool', tool_call_id: id, content: JSON.stringify(result) },
+      { role: 'user', content: 'Normalized current user record.' }
+    ], [tool]);
+    assert.match(answer, /alpha actual tool evidence/);
+    assert.match(answer, /p.sourcePath=nested%2Fsource.md/);
+    assert.deepEqual(model.recallResults, [result]);
+    assert.equal(model.requests.at(-1).action, 'final');
+  } finally { await model.close(); }
+});

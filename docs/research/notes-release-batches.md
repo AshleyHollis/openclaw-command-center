@@ -1,5 +1,7 @@
 # Separate Notes release lanes
 
+Historical pre-capture preparation: PR383/384 archives are alternatives, not sequential deployables. Current cumulative input is capture PR386 c0ceacd, Notes 04ea76a, then Recall 286f822. See ../notes-installed-qualification.md for the current ordered TEST package plan.
+
 These are Class 3 source preparations, not qualified releases. Review-only
 proposals originate at PR #365 (`71425a7422a209f4d34fca3ab612a3ad7419859f`);
 current-Topic Note recall originates at PR #376

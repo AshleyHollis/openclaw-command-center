@@ -1,0 +1,183 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile, mkdir, lstat, realpath, mkdtemp, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { readBuiltReceipt } from '../../src/build.mjs';
+import { verifyPluginArtifact } from '../../src/plugin-artifact.mjs';
+import { parseHostDescriptor, verifyHost, launchPinnedHost, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness, assertRecordedChildTraffic } from '../../src/host-harness.mjs';
+import { withIsolatedWorld } from '../../src/fixtures.mjs';
+import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
+import { prepareTopicSearchSnapshot, publishTopicSearchSnapshot } from '../../src/search/rebuild.mjs';
+import { FIRST_LIVE_FEATURES } from '../../src/release-scope.mjs';
+import { readNativeNote } from '../../src/native-ui/note-read.mjs';
+import { loadTopicCatalog } from '../../src/native-ui/topic-catalog.mjs';
+import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
+import { runtimeCapability } from '../../src/runtime-capability.mjs';
+import { TrafficGuard } from '../../src/isolation.mjs';
+import { assertFastHostAdmission, assertCandidatePluginPermissions } from './isolated-acceptance-preflight.mjs';
+import { seedNativeExistingTopic, seedNativeResourceTopic } from './first-live-native-journey.mjs';
+import { readAttentionStartupReadiness, readAttentionControlUiBuildId } from './attention-startup-readiness.mjs';
+import { createGatewayDeviceIdentity, requestAuthenticatedGateway, launchManagedBrowser, closeManagedBrowser, configureEvidencePage } from './real-host-runtime.mjs';
+import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence } from './notes-installed-journey.mjs';
+import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
+
+// Explicit disposable-host qualification only. No top-level launch or live lookup.
+export async function runNotesInstalledPackageJourney({ signal } = {}) {
+  const mode = process.env.COMMAND_CENTER_NOTES_INSTALLED_MODE;
+  assert.ok(['proposals', 'recall'].includes(mode));
+  assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
+  assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, mode === 'recall');
+  assert.equal(FIRST_LIVE_FEATURES.acceptedChatCapture, false);
+  const descriptor = parseHostDescriptor();
+  await assertFastHostAdmission(descriptor); await verifyHost(descriptor);
+  const buildReceipt = await readBuiltReceipt();
+  const archivePath = process.env.COMMAND_CENTER_NOTES_TEST_ARCHIVE;
+  const receiptPath = process.env.COMMAND_CENTER_NOTES_TEST_RECEIPT;
+  const admissionRoot = process.env.COMMAND_CENTER_NOTES_ADMISSION_ROOT;
+  for (const value of [archivePath, receiptPath, admissionRoot]) assert.ok(value && path.isAbsolute(value));
+  assert.equal(await realpath(admissionRoot), path.resolve(admissionRoot));
+  const stat = await lstat(admissionRoot);
+  assert.ok(stat.isDirectory() && !stat.isSymbolicLink()); assert.equal(stat.uid, process.getuid()); assert.equal(stat.mode & 0o777, 0o700);
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.buildDigest, buildReceipt.digest);
+  const manifest = JSON.parse(await readFile(new URL('../fixtures/notes-qualification-candidate.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.mode, mode); assert.equal(manifest.nativeCommit, descriptor.commit);
+  const admission = await mkdtemp(path.join(admissionRoot, 'notes-test-admission-'));
+  try {
+    const candidateRoot = await verifyPluginArtifact({ archivePath, expectedReceipt: receipt, destinationDirectory: path.join(admission, 'candidate') });
+    await assertCandidatePluginPermissions(candidateRoot);
+    await withIsolatedWorld(async world => {
+      const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true }) : null;
+      let host, managed, transport, controlUiBuildId;
+      const guard = new TrafficGuard(); const evidence = { requests: [], responses: [], console: [], errors: [] };
+      const deviceIdentity = createGatewayDeviceIdentity();
+      const ready = async () => {
+        await waitForConsecutiveReadiness(() => readAttentionStartupReadiness({ world, signal }), host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+        controlUiBuildId = await readAttentionControlUiBuildId({ world, signal });
+      };
+      const rpc = async (method, params) => {
+        signal.throwIfAborted();
+        return requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params,
+          scopes: ['operator.read', 'operator.write'], deviceIdentity, controlUiBuildId, signal, responseTimeoutMs: 30_000 });
+      };
+      try {
+      if (provider) {
+        const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
+        config.models.providers.fixture.baseUrl = provider.baseUrl;
+        config.models.providers.fixture.request = { allowPrivateNetwork: true };
+        config.tools = { ...(config.tools ?? {}), alsoAllow: ['command_center_recall_topic_notes'] };
+        await writeFile(world.manifest.configPath, JSON.stringify(config));
+      }
+        host = await launchPinnedHost({ descriptor, world, buildReceipt, signal }); await ready();
+        const topic = await seedNativeExistingTopic({ world, host, signal });
+        const foreign = await seedNativeResourceTopic({ world, signal });
+        await mkdir(path.join(topic.folder, 'nested'), { recursive: true });
+        await writeFile(path.join(topic.folder, 'shared.md'), '# Shared\nalpha fictional shared observation.\n', { flag: 'wx' });
+        await writeFile(path.join(topic.folder, 'nested/source.md'), '# Nested\nalpha fictional nested observation.\n', { flag: 'wx' });
+        await mkdir(path.join(foreign.folder, 'nested'), { recursive: true });
+        await writeFile(path.join(foreign.folder, 'foreign.md'), '# Foreign\nalpha matching foreign root evidence.\n', { flag: 'wx' });
+        await writeFile(path.join(foreign.folder, 'nested/foreign.md'), '# Foreign nested\nalpha matching foreign nested evidence.\n', { flag: 'wx' });
+        const catalog = await loadTopicCatalog({ request: rpc, topicId: topic.topicId, current: () => !signal.aborted, validate() {}, maxEntries: 300 });
+        const pointers = catalog.notes.map(row => ({ referenceId: row.sourceReference.referenceId, path: row.path, revision: row.revision }));
+        const target = pointers.find(row => row.path === topic.notePath);
+        const sources = pointers.filter(row => ['shared.md', 'nested/source.md'].includes(row.path));
+        assert.ok(target); assert.equal(sources.length, 2);
+        const reply = await rpc('command-center.v1.topics.get', { schemaVersion: 1, topicId: topic.topicId });
+        await runInstalledNoteProposalRpcJourney({ rpc, request: { topicId: topic.topicId, expectedTopicRevision: (reply.result ?? reply).topic.revision, target, sources,
+          panel: { sessionKey: topic.sessionKey, sessionId: topic.sessionId, referenceId: topic.sessionReferenceId } },
+          proposedText: `${topic.noteText}\nFictional operator-staged comparison only.\n`,
+          readNoteBytes: pointer => readFile(path.join(topic.folder, pointer.path)),
+          restart: async () => { host = await restartPinnedHost(host, { signal }); await ready(); } });
+        managed = await launchManagedBrowser({ headless: true });
+        const page = await managed.browser.newPage(); transport = await configureEvidencePage(page, guard, evidence);
+        const href = new URL(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topic',
+          fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
+        href.searchParams.set('p.topicId', topic.topicId); href.searchParams.set('p.sourceReferenceId', target.referenceId);
+        href.searchParams.set('p.sourcePath', target.path); href.searchParams.set('p.evidenceSourceVersion', target.revision);
+        await page.goto(href.href);
+        await page.getByRole('button', { name: 'Prepare suggestion', exact: true }).waitFor({ timeout: 30_000 });
+        assert.equal(await page.getByRole('button', { name: /Apply|Write Note/, exact: true }).count(), 0);
+        const selected = [target, ...sources];
+        const before = await Promise.all(selected.map(pointer => readFile(path.join(topic.folder, pointer.path))));
+        const unchanged = async () => assert.deepEqual(await Promise.all(selected.map(pointer => readFile(path.join(topic.folder, pointer.path)))), before);
+        await page.getByRole('checkbox', { name: `shared.md (${sources.find(row => row.path === 'shared.md').revision})`, exact: true }).check();
+        await page.getByRole('button', { name: 'Prepare suggestion', exact: true }).click();
+        await page.getByLabel('Suggestion Markdown', { exact: true }).waitFor();
+        await unchanged();
+        await page.getByLabel('Suggestion Markdown', { exact: true }).fill(`${topic.noteText}\nFictional browser-staged comparison only.\n`);
+        await page.getByRole('button', { name: 'Review suggestion', exact: true }).click();
+        await page.getByRole('heading', { name: 'Proposed', exact: true }).waitFor();
+        await unchanged();
+        const savedId = await page.getByLabel('Saved suggestion ID', { exact: true }).inputValue(); assert.ok(savedId);
+        await page.reload();
+        await page.getByLabel('Saved suggestion ID', { exact: true }).fill(savedId);
+        await page.getByRole('button', { name: 'Recover suggestion by ID', exact: true }).click();
+        await page.getByRole('heading', { name: 'Proposed', exact: true }).waitFor();
+        assert.match(await page.getByRole('region', { name: 'Suggestion comparison', exact: true }).textContent(), /Fictional browser-staged comparison only/);
+        assert.equal(await page.getByLabel('Saved suggestion ID', { exact: true }).inputValue(), savedId);
+        await unchanged();
+        await page.getByRole('button', { name: 'Discard', exact: true }).click();
+        await page.getByRole('status').filter({ hasText: 'Suggestion: discarded.' }).waitFor();
+        await unchanged();
+        if (provider) {
+          const texts = new Map(); const indexed = [];
+          const foreignCatalog = await loadTopicCatalog({ request: rpc, topicId: foreign.topicId, current: () => !signal.aborted, validate() {}, maxEntries: 300 });
+          const foreignPointers = foreignCatalog.notes.filter(row => ['foreign.md', 'nested/foreign.md'].includes(row.path))
+            .map(row => ({ referenceId: row.sourceReference.referenceId, path: row.path, revision: row.revision }));
+          assert.equal(foreignPointers.length, 2);
+          for (const pointer of [...sources, ...foreignPointers]) {
+            const ownerTopic = sources.includes(pointer) ? topic : foreign;
+            const value = await readNativeNote({ signal, request: rpc }, { ...pointer, topicId: ownerTopic.topicId, observedRevision: pointer.revision });
+            texts.set(pointer.referenceId, { text: value.text, revision: pointer.revision, path: pointer.path });
+            indexed.push({ kind: 'note', topicId: ownerTopic.topicId, sourceReference: value.sourceReference, path: pointer.path,
+              folderReferenceId: sources.includes(pointer) ? 'fictional-native-journey-folder' : 'fictional-resource-folder', heading: value.text.split('\n')[0].replace(/^# /u, ''), text: value.text.trim(), revision: pointer.revision, provenance: 'native' });
+          }
+          // Snapshot only these fictional files while the host is stopped; no competing metadata owner.
+          await stopPinnedHost(host.child); await host.outputDrained;
+          const metadata = openCommandCenterMetadataService({ stateDir: path.join(world.root, '.openclaw'), capabilities: { notes: true, sessions: true, search: true } });
+          try {
+            const prepared = await prepareTopicSearchSnapshot({ stateDir: path.join(world.root, '.openclaw'), metadata, authoritativeSources: {
+              readTopicSnapshot: async ({ topicId }) => ({ note: { sourceRevision: 'fictional-installed-fixture' }, conversation: { sourceRevision: 'empty' },
+                notes: indexed.filter(row => row.topicId === topicId), conversations: [] }) } });
+            await publishTopicSearchSnapshot({ stateDir: path.join(world.root, '.openclaw'), metadata, prepared });
+          } finally { metadata.close(); }
+          host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
+          await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
+          const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]'); await chatPane.waitFor({ timeout: 30_000 });
+          await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, topic.sessionKey);
+          const composer = chatPane.locator('.agent-chat__composer-combobox textarea');
+          await composer.fill('[fixture:notes-recall] Recall alpha from my Topic Notes.');
+          await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
+          await waitForConsecutiveReadiness(async () => provider.recallResults.length > 0, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+          assert.ok(provider.requests.some(row => row.action === 'recall' && row.issuedToolCallId));
+          const recalled = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
+          assert.ok(recalled.every(row => row.originatingTopic.topicId !== foreign.topicId));
+          const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }); await link.waitFor({ timeout: 30_000 });
+          const draft = 'Fictional unsent draft: retain punctuation and newline.\nSecond line.';
+          await composer.fill(draft); await composer.evaluate(element => element.setSelectionRange(7, 19));
+          await link.click();
+          const nativePage = page.locator('openclaw-plugin-page');
+          await nativePage.getByRole('region', { name: 'Note content', exact: true }).getByText('alpha fictional shared observation.', { exact: false }).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('navigation', { name: 'File path', exact: true }).getByText('shared.md', { exact: true }).waitFor();
+          const actualLink = new URL(await link.getAttribute('href'), page.url());
+          const source = sources.find(row => row.path === 'shared.md');
+          for (const [key, value] of Object.entries({ 'p.topicId': topic.topicId, 'p.sourceReferenceId': source.referenceId,
+            'p.sourcePath': source.path, 'p.evidenceSourceVersion': source.revision })) assert.equal(actualLink.searchParams.get(key), value);
+          assert.equal(await chatPane.evaluate(element => element.sessionKey), topic.sessionKey);
+          assert.equal(await composer.inputValue(), draft);
+          assert.deepEqual(await composer.evaluate(element => [element.selectionStart, element.selectionEnd]), [7, 19]);
+          await writeFile(path.join(topic.folder, 'shared.md'), '# Shared\nalpha fictional newer revision.\n');
+          await link.click(); await nativePage.getByText(/It was not opened as the earlier evidence/).waitFor({ timeout: 30_000 });
+          assert.equal(await composer.inputValue(), draft);
+        }
+        await transport.drain(); transport.assertClean(); guard.assertClean(); await assertRecordedChildTraffic(world);
+      } finally {
+        try {
+          if (managed) await closeManagedBrowser(managed, signal);
+        } finally {
+          try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
+          finally { if (provider) await provider.close(); }
+        }
+      }
+    }, { candidateRoot });
+  } finally { await rm(admission, { recursive: true, force: true }); }
+}

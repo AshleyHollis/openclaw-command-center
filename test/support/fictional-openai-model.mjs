@@ -125,8 +125,9 @@ function textCompletion({ id, model, text }) {
 }
 
 /** A loopback-only OpenAI-compatible model for fictional host acceptance. */
-export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {}) {
+export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRecall = false } = {}) {
   const requests = [];
+  const recallResults = [];
   const ingress = [];
   const pendingToolCalls = new Set();
   const pendingToolActions = new Map();
@@ -171,6 +172,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const accountedPhaseTwo = serializedMessages.includes('[fixture:accounted-mixed-email-phase-2]');
     const targetedMatch = serializedMessages.match(/\[fixture:targeted-clarification:([A-Za-z0-9_-]+)\]/u);
     const targeted = targetedMatch ? JSON.parse(Buffer.from(targetedMatch[1], 'base64url').toString('utf8')) : null;
+    const recallFixtureTurn = noteRecall && JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:notes-recall]');
     if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo || targeted)) {
       const result = latestToolResult(messages);
       if (completedToolAction === 'command_center_get_intake_source_account') accounted.loaded = result;
@@ -183,7 +185,24 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
     let frames;
     let action = 'final';
-    if (isolatedClarificationProposal) {
+    if (recallFixtureTurn || (noteRecall && completedCurrentTool && completedToolAction === 'command_center_recall_topic_notes')) {
+      if (completedCurrentTool && completedToolAction === 'command_center_recall_topic_notes') {
+        const result = latestToolResult(messages); recallResults.push(result);
+        const items = result?.groups?.notes ?? [];
+        // The controlled provider formats an ordinary supported root-path link
+        // from the ACTUAL tool result. This is fixture routing evidence, not a
+        // production model or arbitrary-base-path formatting guarantee.
+        const text = items.map(item => {
+          const target = item.navigation;
+          const params = new URLSearchParams({ plugin: 'command-center', id: 'topic', 'p.topicId': target.topicId,
+            'p.sourceReferenceId': target.referenceId, 'p.sourcePath': target.path, 'p.evidenceSourceVersion': target.observedRevision });
+          return `${item.excerpt}\n[Source: ${target.path}](/plugin?${params})`;
+        }).join('\n\n') || 'Fictional recall unavailable.';
+        frames = textCompletion({ id, model, text });
+      } else if (tools.has('command_center_recall_topic_notes')) {
+        action = 'recall'; frames = toolCall({ id, model, name: 'command_center_recall_topic_notes', arguments: { query: 'alpha' } });
+      } else frames = textCompletion({ id, model, text: 'Fictional recall tool not registered.' });
+    } else if (isolatedClarificationProposal) {
       const content = latestUserMessage(messages)?.content;
       const words = JSON.parse(typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : 'null')?.userWords;
       if (typeof words !== 'string') throw new Error('Fictional isolated clarification lacks the saved words.');
@@ -259,5 +278,5 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen({ host: '127.0.0.1', port: 0 }, resolve); });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Fictional model did not bind a loopback endpoint.');
-  return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, requests, ingress, close: () => new Promise(resolve => server.close(resolve)) });
+  return Object.freeze({ baseUrl: `http://127.0.0.1:${address.port}/v1`, requests, ingress, recallResults, close: () => new Promise(resolve => server.close(resolve)) });
 }
