@@ -4,7 +4,7 @@ import { createRequestScopedConversationRuntime } from './bridge/gateway-method-
 import { pluginConfigSchema } from './plugin-config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
-import { topicContextToolFactory } from './search/tool.mjs';
+import { topicContextToolFactory, currentTopicNoteRecallToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
@@ -228,6 +228,7 @@ export default definePluginEntry({
     });
     registerBridgeMethods(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
+    if (FIRST_LIVE_FEATURES.topicNoteRecall) api.registerTool(currentTopicNoteRecallToolFactory({ retrieve: input => service.topicNoteRecallRetrieve(input) }), { name: 'command_center_recall_topic_notes', optional: true });
     if (FIRST_LIVE_FEATURES.search) api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     if (FIRST_LIVE_FEATURES.topicDocuments) api.registerTool(topicDocumentFileToolFactory({ file: (input) => service.sourceService.documentsFileAttachment(input) }), { name: 'command_center_file_topic_attachment', optional: true });
