@@ -70,6 +70,7 @@ jobs:
           docker run --rm --init --network none --read-only \
             --env COMMAND_CENTER_SOURCE_COMMIT \
             --env COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION \
+            --env COMMAND_CENTER_NATIVE_PLAN_SDK=/native-sdk/package/dist/plugin-sdk/session-transcript-runtime.js \
             --env COMMAND_CENTER_TEST_SQLITE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/sqlite-runtime.js \
             --env COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/file-access-runtime.js \
             --env COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/session-store-runtime.js \
