@@ -64,6 +64,7 @@ jobs:
               node --test test/capture-tool-replay.test.mjs test/commitment-capture.test.mjs \
                 test/source-intake-tool.test.mjs test/producer-intake-accounted.integration.test.mjs
               node --test test/accepted-chat-replay.test.mjs test/accepted-chat-note.integration.test.mjs test/accepted-chat-bridge.test.mjs \
+                test/accepted-chat-native-tool.test.mjs test/conversation-capture-hook.test.mjs \
                 test/accepted-chat-enabled-transport.test.mjs test/test-selection.test.mjs \
                 test/commitment-capture.test.mjs test/source-intake-tool.test.mjs \
                 test/producer-intake.test.mjs test/producer-intake-accounted.integration.test.mjs \
