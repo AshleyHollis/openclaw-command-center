@@ -13,7 +13,7 @@ test('Recall fictional model declares the actual completions API and main-agent 
   assert.equal(provider.request.allowPrivateNetwork, true);
   assert.deepEqual(config.agents.entries.main, { workspace: 'fictional', model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } });
   assert.deepEqual(config.agents.entries.other, { enabled: false });
-  assert.deepEqual(config.tools, { deny: ['fictional-denied'], alsoAllow: ['command_center_recall_topic_notes'] });
+  assert.deepEqual(config.tools, { deny: ['fictional-denied'], toolSearch: false, alsoAllow: ['command_center_recall_topic_notes'] });
   for (const url of ['https://127.0.0.1/v1', 'http://example.invalid/v1', 'http://127.0.0.1/v1?sentinel=x', 'http://user:sentinel@127.0.0.1/v1'])
     assert.throws(() => configureNotesRecallModel(config, url));
 });

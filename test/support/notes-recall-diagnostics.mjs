@@ -16,7 +16,10 @@ export function configureNotesRecallModel(config, baseUrl) {
   provider.request = { ...provider.request, allowPrivateNetwork: true };
   config.agents.entries = { ...config.agents.entries, main: { ...config.agents.entries?.main,
     model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
-  config.tools = { ...config.tools, alsoAllow: ['command_center_recall_topic_notes'] };
+  // This fictional provider exercises direct native tool execution. Native Tool
+  // Search defaults on and catalogs plugin schemas; its discovery journey needs
+  // a separate provider protocol. Keep the exact optional grant and deny policy.
+  config.tools = { ...config.tools, toolSearch: false, alsoAllow: ['command_center_recall_topic_notes'] };
 }
 
 const select = (value, allowed) => allowed.includes(value) ? value : value == null ? null : 'other';
