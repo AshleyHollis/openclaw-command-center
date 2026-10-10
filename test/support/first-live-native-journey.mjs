@@ -545,7 +545,7 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
         await workspace.getByRole('button', { name: 'File Chat attachment', exact: true }).click();
         const review = workspace.getByRole('region', { name: 'Review Chat attachment filing', exact: true });
         await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
-          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).waitFor({ timeout: 30_000 });
+          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).waitFor({ state: 'attached', timeout: 30_000 });
         const options = await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
           .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).evaluateAll(items => items.map(item => item.value));
         assert.equal(options.length, 1, 'Select exactly the uploaded fictional original.');
