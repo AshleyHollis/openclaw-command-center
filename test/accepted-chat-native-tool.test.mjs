@@ -12,10 +12,12 @@ function submittedPlan() {
   return { ...plan, chatCommand: 'accept', enumeration: { scope: 'bounded', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false, scopeId: 'fictional-submitted-turn', resumeCursor: 'fictional-submission-boundary' } };
 }
 const request = (chatCommand, planId) => ({ sourceKind: 'chat', chatCommand, planId });
-function nativeTool(f, { current = () => {}, runtime = () => f.runtime } = {}) {
+function nativeTool(f, { current = () => {}, runtime = () => f.runtime, scopes = ['operator.write'] } = {}) {
   const commands = Object.fromEntries(['Accept', 'Load', 'Replay'].map(action => [`acceptedChatCapture${action}`, (input, authority) => f.owner()[action.toLowerCase()](input, authority)]));
-  return intakeSourcePlanToolFactory({ getOwners: () => ({ metadata: f.metadata() }), acceptedChatCommands: commands, getAcceptedChatRuntime: runtime })({
-    sessionKey: 'agent:main:fictional-chat', sessionId: 'fictional-session-v1', assertInvocationCurrent: current
+  const original = runtime();
+  return intakeSourcePlanToolFactory({ getOwners: () => ({ metadata: f.metadata() }), acceptedChatCommands: commands })({
+    authenticatedOperator: Object.freeze({ profileId: original.principalId, scopes: Object.freeze([...scopes]) }),
+    sessionKey: 'agent:main:fictional-chat', sessionId: 'fictional-session-v1', assertInvocationCurrent() { current(); original.assertCurrent(); }
   });
 }
 async function fixture(action, options = {}) {
@@ -63,16 +65,36 @@ test('unavailable canonical profile refuses before submission despite generic ow
   assert.equal(writes, 0);
 });
 
+test('projected read-only operator cannot submit or recover Chat work', linux, async () => {
+  await fixture(async f => {
+    const accepted = await nativeTool(f).execute('fictional', submittedPlan());
+    const readonly = nativeTool(f, { scopes: ['operator.read'] });
+    for (const input of [submittedPlan(), request('load', accepted.details.planId), request('replay', accepted.details.planId)])
+      await assert.rejects(() => readonly.execute('fictional', input), error => error.code === 'unauthenticated' && /capture write authority/u.test(error.message));
+    assert.equal(f.metadata().listOpenLoops().length, 0);
+  });
+});
+
+test('projected operator revocation during source resolution refuses before acceptance', linux, async () => {
+  await fixture(async f => {
+    const sources = f.sources(); const resolve = sources.sessionTopicContext;
+    sources.sessionTopicContext = async input => { const value = await resolve.call(sources, input); f.revoke(); return value; };
+    await assert.rejects(() => nativeTool(f).execute('fictional', submittedPlan()), { code: 'unauthenticated' });
+    assert.equal(f.metadata().listOperations().length, 0);
+    assert.equal(f.metadata().listOpenLoops().length, 0);
+  });
+});
+
 test('missing Native V2 guard refuses before resolving operator authority', async () => {
   let resolved = 0;
-  const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}), getAcceptedChatRuntime() { resolved++; } })({});
+  const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}) })({ get authenticatedOperator() { resolved++; } });
   await assert.rejects(() => tool.execute('fictional', submittedPlan()), { code: 'unauthenticated' });
   assert.equal(resolved, 0);
 });
 
 test('asynchronous invocation guards cannot admit native Chat work', async () => {
   let resolved = 0;
-  const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}), getAcceptedChatRuntime() { resolved++; } })({ async assertInvocationCurrent() {} });
+  const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}) })({ get authenticatedOperator() { resolved++; }, async assertInvocationCurrent() {} });
   await assert.rejects(() => tool.execute('fictional', submittedPlan()), { code: 'unauthenticated' });
   assert.equal(resolved, 0);
 });
@@ -85,9 +107,9 @@ test('queued retirement after closed command completion refuses native result de
       f.runtime.assertCurrent();
       if (armed && !queued) { queued = true; queueMicrotask(() => { active = false; }); }
     } };
-    const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}), getAcceptedChatRuntime: () => original,
+    const tool = intakeSourcePlanToolFactory({ getOwners: () => ({}),
       acceptedChatCommands: { acceptedChatCaptureLoad(input, authority) { const result = f.owner().load(input, authority); armed = true; return result; } }
-    })({ assertInvocationCurrent() { if (!active) throw Object.assign(new Error('fictional retired before delivery'), { code: 'unauthenticated' }); } });
+    })({ authenticatedOperator: Object.freeze({ profileId: original.principalId, scopes: Object.freeze(['operator.write']) }), assertInvocationCurrent() { if (!active) throw Object.assign(new Error('fictional retired before delivery'), { code: 'unauthenticated' }); original.assertCurrent(); } });
     await assert.rejects(() => tool.execute('fictional', request('load', accepted.planId)), { code: 'unauthenticated' });
     assert.equal(queued, true);
     assert.equal(f.metadata().listOpenLoops().length, 0);

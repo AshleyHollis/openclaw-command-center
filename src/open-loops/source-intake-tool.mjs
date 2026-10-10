@@ -164,7 +164,7 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
   });
 }
 
-export function intakeSourcePlanToolFactory({ getOwners, acceptedChatCommands, getAcceptedChatRuntime } = {}) {
+export function intakeSourcePlanToolFactory({ getOwners, acceptedChatCommands } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Intake source accounting requires authoritative owners.');
   return (context = {}) => ({
     name: 'command_center_plan_intake_source',
@@ -188,14 +188,15 @@ export function intakeSourcePlanToolFactory({ getOwners, acceptedChatCommands, g
           throw sourceError('invalid-request', 'Chat requires a closed accept/load/replay command; replay cannot replace extraction or authority.');
         if (typeof context.assertInvocationCurrent !== 'function') throw sourceError('unauthenticated', 'Chat submission requires Native V2 invocation authority. Coverage remains unknown before acceptance.');
         if (context.assertInvocationCurrent()?.then) throw sourceError('unauthenticated', 'Chat invocation authority must remain synchronous.');
-        // A tool lifetime is not an operator profile. Only an existing trusted
-        // caller adapter may supply the canonical binding; never derive it
-        // from a device, generic sender, model argument or owner boolean.
-        const original = getAcceptedChatRuntime?.(context);
-        if (typeof original?.principalId !== 'string' || !original.principalId.trim() || typeof original.assertCurrent !== 'function')
+        // Native V2 projects its existing admitted operator; sender/device and
+        // Conversation facts never establish that identity or its scope ceiling.
+        const operator = context.authenticatedOperator;
+        if (typeof operator?.profileId !== 'string' || !operator.profileId.trim() || !Array.isArray(operator.scopes))
           throw sourceError('unauthenticated', 'The canonical operator profile is unavailable before Chat submission. Coverage remains unknown.');
-        const runtime = Object.freeze({ principalId: original.principalId, assertCurrent() {
-          if (context.assertInvocationCurrent()?.then || original.assertCurrent()?.then) throw sourceError('unauthenticated', 'Chat authority must remain synchronous.');
+        if (!operator.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)))
+          throw sourceError('unauthenticated', 'Current capture write authority is required before Chat submission. Coverage remains unknown.');
+        const runtime = Object.freeze({ principalId: operator.profileId, assertCurrent() {
+          if (context.assertInvocationCurrent()?.then) throw sourceError('unauthenticated', 'Chat authority must remain synchronous.');
         } });
         runtime.assertCurrent();
         if (!acceptedChatCommands) throw sourceError('capability-unavailable', 'Accepted Chat owner is unavailable.');
