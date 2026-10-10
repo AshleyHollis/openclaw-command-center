@@ -191,9 +191,9 @@ test('generic journal insertion, changed-kind replacement and completion APIs ca
   assert.equal(f.metadata().getTopicOperation(f.request.logicalOperationId).currentStep, 'prepared');
 });
 
-test('all five bridge methods are closed write scope, gated false and fenced after awaited owner results', async t => {
-  const f = await fixture(t); assert.equal(FIRST_LIVE_FEATURES.noteProposals, false);
-  for (const method of NOTE_PROPOSAL_METHODS) { assert.equal(BRIDGE_CONTRACTS[method].scope, 'operator.write'); assert.equal(BRIDGE_CONTRACTS[method].closed, true); assert.throws(() => assertFirstLiveCommand('bridge', method), { code: 'feature-unavailable' }); }
+test('TEST review bridge admits only closed operator proposal methods and fences awaited owner results', async t => {
+  const f = await fixture(t); assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
+  for (const method of NOTE_PROPOSAL_METHODS) { assert.equal(BRIDGE_CONTRACTS[method].scope, 'operator.write'); assert.equal(BRIDGE_CONTRACTS[method].closed, true); assert.doesNotThrow(() => assertFirstLiveCommand('bridge', method)); }
   const source = { notesProposalPrepare: (input, runtime) => f.owner().prepare(input, runtime) };
   const result = await invokeBridgeMethod(source, NOTE_PROPOSAL_METHODS[0], f.request, 'fictional-request', 'fictional-operator', f.runtime);
   assert.equal(result.status, 'prepared');
@@ -203,6 +203,7 @@ test('all five bridge methods are closed write scope, gated false and fenced aft
   const registered = new Map(); registerBridgeMethods({ registerGatewayMethod(method, handler) { registered.set(method, handler); } }, source);
   let response; await registered.get(NOTE_PROPOSAL_METHODS[0])({ params: f.request, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], false); assert.equal(response[1], null);
+  assert.equal(response[2].code, 'unauthenticated', 'enabling review does not grant caller authority');
 });
 
 test('real Linux Note owner verifies enrolled Folder and preserves actual Markdown bytes through review and reopen', { skip: process.platform !== 'linux' && 'Descriptor-anchored Note owner requires Linux' }, async t => {

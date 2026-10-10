@@ -288,7 +288,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
 // from the first Topic so the acceptance journey can prove that changing an
 // exact Conversation changes the visible Files root, rather than carrying
 // over a browser state from the prior Topic.
-async function seedNativeResourceTopic({ world, signal }) {
+export async function seedNativeResourceTopic({ world, signal }) {
   const stateDir = path.join(world.root, '.openclaw');
   const topicId = '55555555-5555-4555-8555-555555555555';
   const name = 'Fictional Resource Workspace';

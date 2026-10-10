@@ -1,4 +1,4 @@
-const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
+const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs', 'notes-installed-package.test.mjs']);
 const browserHeavyTests = new Set([
   'test/native-note-proposals.test.mjs',
   'test/iframe-responsive-remount.test.mjs',

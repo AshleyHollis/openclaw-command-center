@@ -5,7 +5,7 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, topicNoteRecall: false, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false, acceptedChatCapture: false, noteProposals: false,
+  notifications: false, noteMaintenance: false, acceptedChatCapture: false, noteProposals: true,
   // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
   billActions: true
 });
