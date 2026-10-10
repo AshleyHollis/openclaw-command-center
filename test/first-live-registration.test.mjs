@@ -59,6 +59,7 @@ test('first-live registration needs no notification authority and preserves core
 test('registered commands outside the build-owned admission set are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
   const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
+  if (FIRST_LIVE_FEATURES.noteProposals) for (const action of ['prepare', 'context', 'publish', 'inspect', 'discard']) retained.add(`command-center.v1.notes.proposals.${action}`);
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },

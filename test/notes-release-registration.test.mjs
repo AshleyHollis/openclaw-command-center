@@ -16,6 +16,7 @@ async function fixture(t, flags) {
   await symlink(path.join(sourceRoot, 'node_modules'), path.join(root, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   const policyPath = path.join(root, 'src/release-scope.mjs');
   let policy = await readFile(policyPath, 'utf8');
+  for (const flag of ['noteProposals', 'topicNoteRecall']) policy = policy.replace(new RegExp(`${flag}: (?:true|false)`), `${flag}: false`);
   for (const flag of flags) {
     assert.ok(policy.includes(`${flag}: false`));
     policy = policy.replace(`${flag}: false`, `${flag}: true`);
@@ -47,9 +48,9 @@ for (const flags of [[], ['noteProposals'], ['topicNoteRecall'], ['noteProposals
   });
 }
 
-test('release source keeps both protected feature policies disabled', async () => {
+test('TEST Notes source enables only explicit review proposals', async () => {
   const { FIRST_LIVE_FEATURES } = await import('../src/release-scope.mjs');
-  assert.equal(FIRST_LIVE_FEATURES.noteProposals, false);
+  assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
   assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, false);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.search, false);
