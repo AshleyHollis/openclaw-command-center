@@ -165,6 +165,48 @@ function issuedInput(response) {
 }
 const returned = (id, value) => ({ role: 'tool', tool_call_id: id, content: JSON.stringify(value) });
 
+test('fictional recall selects the current request before a complete native runtime carrier', async () => {
+  const text = '<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nFictional runtime context.\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>';
+  for (const content of [text, [{ type: 'text', text }]]) {
+    const model = await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true });
+    try {
+      const response = await completion(model, [{ role: 'system', content: 'Fictional system.' }, discoveryPrompt, { role: 'user', content }], discoveryTools);
+      assert.equal(issuedInput(response)?.name, 'tool_search');
+    } finally { await model.close(); }
+  }
+});
+
+test('fictional recall cannot borrow a marker from history, carrier or non-text metadata', async () => {
+  const text = '<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n[fixture:notes-recall]\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>';
+  const carrier = { role: 'user', content: [{ type: 'text', text }] };
+  const unmarked = { role: 'user', content: 'A new fictional request.' };
+  const transcripts = [
+    [discoveryPrompt, { role: 'assistant', content: 'Previous answer.' }, unmarked, carrier],
+    [discoveryPrompt, unmarked, carrier],
+    [unmarked, carrier],
+    [discoveryPrompt, { role: 'assistant', content: 'Previous answer.' }, carrier],
+    [discoveryPrompt, { role: 'tool', content: '{}' }, carrier],
+    [{ role: 'system', content: '[fixture:notes-recall]' }, unmarked, carrier],
+    [discoveryPrompt, { role: 'user', content: '<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nPartial carrier.' }],
+    [discoveryPrompt, { role: 'user', content: [{ type: 'text', text: text.replace('[fixture:notes-recall]', 'Context.') }, { type: 'image_url', image_url: { url: 'fictional-image' } }] }],
+    [discoveryPrompt, { role: 'user', content: [{ type: 'image_url', image_url: { url: '[fixture:notes-recall]' } }] }],
+    [discoveryPrompt, { role: 'user', content: '' }, carrier],
+  ];
+  for (const messages of transcripts) {
+    const model = await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true });
+    try { assert.equal(issuedInput(await completion(model, messages, discoveryTools)), null); }
+    finally { await model.close(); }
+  }
+});
+
+test('fictional recall accepts the current substantive user text block', async () => {
+  const model = await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true });
+  try {
+    const response = await completion(model, [{ role: 'user', content: [{ type: 'text', text: discoveryPrompt.content }] }], discoveryTools);
+    assert.equal(issuedInput(response)?.name, 'tool_search');
+  } finally { await model.close(); }
+});
+
 test('fictional default discovery uses only the returned native catalog ID and exact current wrapped Recall result', async () => {
   const model = await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true });
   try {

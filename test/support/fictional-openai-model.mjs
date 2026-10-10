@@ -27,6 +27,25 @@ function latestUserMessage(messages) {
   return [...messages].reverse().find((message) => message?.role === 'user') ?? null;
 }
 
+function currentRecallUserText(messages) {
+  // Native serializes its hidden runtime context as an additional user record.
+  // Skip only that complete carrier, never an arbitrary newer user or old turn.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === 'system') continue;
+    if (message?.role !== 'user') return '';
+    const content = message.content;
+    const singleText = typeof content === 'string' ? content
+      : Array.isArray(content) && content.length === 1 && content[0]?.type === 'text'
+        && typeof content[0].text === 'string' ? content[0].text : null;
+    if (singleText?.startsWith('<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n')
+      && singleText.endsWith('\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>')) continue;
+    return typeof content === 'string' ? content
+      : Array.isArray(content) ? content.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n') : '';
+  }
+  return '';
+}
+
 function currentTurnToolResultId(messages, pendingToolCalls) {
   // The host may append its normalized current-user record after the provider
   // tool result. Match an exact outstanding ID across the transcript first:
@@ -176,7 +195,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
     const accountedPhaseTwo = serializedMessages.includes('[fixture:accounted-mixed-email-phase-2]');
     const targetedMatch = serializedMessages.match(/\[fixture:targeted-clarification:([A-Za-z0-9_-]+)\]/u);
     const targeted = targetedMatch ? JSON.parse(Buffer.from(targetedMatch[1], 'base64url').toString('utf8')) : null;
-    const recallFixtureTurn = noteRecall && JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:notes-recall]');
+    const recallFixtureTurn = noteRecall && currentRecallUserText(messages).includes('[fixture:notes-recall]');
     if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo || targeted)) {
       const result = latestToolResult(messages);
       if (completedToolAction === 'command_center_get_intake_source_account') accounted.loaded = result;
