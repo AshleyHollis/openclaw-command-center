@@ -36,7 +36,7 @@ function currentTurnToolResultId(messages, pendingToolCalls) {
     const message = messages[index];
     const id = typeof message?.tool_call_id === 'string' ? message.tool_call_id
       : typeof message?.toolCallId === 'string' ? message.toolCallId : null;
-    if (id && pendingToolCalls.has(id)) return id;
+    if (message?.role === 'tool' && id && pendingToolCalls.has(id)) return id;
   }
   let latestUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -51,7 +51,7 @@ function currentTurnToolResultId(messages, pendingToolCalls) {
     // only when that result is after the current user turn and exactly one
     // fixture call remains pending; a historic result or two pending calls
     // never satisfies this fallback.
-    if (message?.role === 'tool' && pendingToolCalls.size === 1) return pendingToolCalls.values().next().value;
+    if (message?.role === 'tool' && !id && pendingToolCalls.size === 1) return pendingToolCalls.values().next().value;
   }
   return null;
 }
@@ -75,8 +75,10 @@ function newestUnusedMediaReference(messages, usedMediaReferences) {
   return null;
 }
 
-function latestToolResult(messages) {
-  const message = [...messages].reverse().find(item => item?.role === 'tool');
+function latestToolResult(messages, callId) {
+  const rows = [...messages].reverse();
+  const message = callId ? rows.find(item => item?.role === 'tool' && (item.tool_call_id ?? item.toolCallId) === callId)
+    ?? rows.find(item => item?.role === 'tool' && !item.tool_call_id && !item.toolCallId) : rows.find(item => item?.role === 'tool');
   if (!message) return null;
   const content = typeof message.content === 'string' ? message.content : Array.isArray(message.content) ? message.content.map(part => part?.text ?? part?.content ?? '').join('') : '';
   try { return JSON.parse(content); } catch { return null; }
@@ -125,12 +127,13 @@ function textCompletion({ id, model, text }) {
 }
 
 /** A loopback-only OpenAI-compatible model for fictional host acceptance. */
-export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRecall = false } = {}) {
+export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRecall = false, noteRecallDiscovery = false } = {}) {
   const requests = [];
   const recallResults = [];
   const ingress = [];
   const pendingToolCalls = new Set();
   const pendingToolActions = new Map();
+  const pendingRecallTargets = new Map();
   const usedMediaReferences = new Set();
   const accounted = { phaseOneStep: 0, phaseTwoStep: 0, resolved: null, saved: null, captured: null, clarification: null };
   let sequence = 0;
@@ -153,8 +156,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
     const currentMessage = messages.at(-1) ?? null;
     const currentToolResultId = currentTurnToolResultId(messages, pendingToolCalls);
     const completedToolAction = currentToolResultId === null ? null : pendingToolActions.get(currentToolResultId) ?? null;
+    const completedRecallTarget = pendingRecallTargets.get(currentToolResultId);
     const completedCurrentTool = currentToolResultId !== null && pendingToolCalls.delete(currentToolResultId);
-    if (completedCurrentTool) pendingToolActions.delete(currentToolResultId);
+    if (completedCurrentTool) { pendingToolActions.delete(currentToolResultId); pendingRecallTargets.delete(currentToolResultId); }
     // Native Chat appends a normalized current-user record after the original
     // attachment-bearing record. Select the newest unconsumed managed reference
     // rather than assuming that the last user record carries every attachment.
@@ -185,9 +189,31 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
     const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
     let frames;
     let action = 'final';
-    if (recallFixtureTurn || (noteRecall && completedCurrentTool && completedToolAction === 'command_center_recall_topic_notes')) {
-      if (completedCurrentTool && completedToolAction === 'command_center_recall_topic_notes') {
-        const result = latestToolResult(messages); recallResults.push(result);
+    let recallCatalogTarget;
+    let recallCatalogMatched = false;
+    let recallCatalogResultVerified = false;
+    let recallCatalogCandidateCount = null;
+    let recallCatalogOtherCommandCenterCount = null;
+    const recallContinuation = completedCurrentTool && (completedToolAction === 'command_center_recall_topic_notes'
+      || (noteRecallDiscovery && ['tool_search', 'tool_call'].includes(completedToolAction)));
+    if (recallFixtureTurn || (noteRecall && recallContinuation)) {
+      let result;
+      if (completedCurrentTool && completedToolAction === 'command_center_recall_topic_notes') result = latestToolResult(messages, currentToolResultId);
+      if (completedCurrentTool && completedToolAction === 'tool_call' && completedRecallTarget) {
+        const envelope = latestToolResult(messages, currentToolResultId);
+        if (envelope?.tool?.id === completedRecallTarget.id && envelope.tool.name === 'command_center_recall_topic_notes'
+          && envelope.tool.source === 'openclaw' && envelope.result?.isError !== true) {
+          const content = envelope.result?.content;
+          const text = Array.isArray(content) ? content.map(part => part?.type === 'text' ? part.text : '').join('') : null;
+          try { result = JSON.parse(text); recallCatalogResultVerified = result?.schemaVersion === 1 && result.selectionBasis === 'current-topic-notes'
+            && ['available', 'partial', 'no-matches', 'unavailable'].includes(result.status)
+            && Array.isArray(result.groups?.notes) && Array.isArray(result.groups?.conversations) && result.groups.conversations.length === 0; }
+          catch { /* A failed or malformed native dispatch is not Note evidence. */ }
+          if (!recallCatalogResultVerified) result = undefined;
+        }
+      }
+      if (result) {
+        recallResults.push(result);
         const items = result?.groups?.notes ?? [];
         // The controlled provider formats an ordinary supported root-path link
         // from the ACTUAL tool result. This is fixture routing evidence, not a
@@ -199,6 +225,22 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
           return `${item.excerpt}\n[Source: ${target.path}](/plugin?${params})`;
         }).join('\n\n') || 'Fictional recall unavailable.';
         frames = textCompletion({ id, model, text });
+      } else if (noteRecallDiscovery) {
+        if (completedCurrentTool && completedToolAction === 'tool_search') {
+          const candidates = latestToolResult(messages, currentToolResultId);
+          recallCatalogCandidateCount = Array.isArray(candidates) ? candidates.length : null;
+          const matches = Array.isArray(candidates) ? candidates.filter(candidate => candidate?.name === 'command_center_recall_topic_notes'
+            && candidate.source === 'openclaw' && candidate.sourceName === 'command-center' && typeof candidate.id === 'string' && candidate.id.trim()) : [];
+          recallCatalogOtherCommandCenterCount = Array.isArray(candidates) ? candidates.filter(candidate => candidate?.sourceName === 'command-center'
+            && candidate.name !== 'command_center_recall_topic_notes').length : null;
+          if (matches.length === 1 && tools.has('tool_call')) {
+            recallCatalogTarget = matches[0]; recallCatalogMatched = true; action = 'recall-call';
+            frames = toolCall({ id, model, name: 'tool_call', arguments: { id: recallCatalogTarget.id, args: { query: 'alpha' } } });
+          } else frames = textCompletion({ id, model, text: 'Fictional authorized Recall catalog entry unavailable.' });
+        } else if (completedCurrentTool) frames = textCompletion({ id, model, text: 'Fictional Recall catalog dispatch unavailable.' });
+        else if (tools.has('tool_search') && tools.has('tool_call') && !tools.has('command_center_recall_topic_notes')) {
+          action = 'recall-search'; frames = toolCall({ id, model, name: 'tool_search', arguments: { query: 'command_center_recall_topic_notes', limit: 8 } });
+        } else frames = textCompletion({ id, model, text: 'Fictional default Recall discovery controls unavailable.' });
       } else if (tools.has('command_center_recall_topic_notes')) {
         action = 'recall'; frames = toolCall({ id, model, name: 'command_center_recall_topic_notes', arguments: { query: 'alpha' } });
       } else frames = textCompletion({ id, model, text: 'Fictional recall tool not registered.' });
@@ -269,8 +311,10 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false, noteRe
     }
     const issuedToolCallId = action === 'final' ? null : stableToolCallId(id);
     if (issuedToolCallId) { pendingToolCalls.add(issuedToolCallId); pendingToolActions.set(issuedToolCallId, frames[0].choices[0].delta.tool_calls[0].function.name); }
+    if (issuedToolCallId && recallCatalogTarget) pendingRecallTargets.set(issuedToolCallId, { id: recallCatalogTarget.id });
     if (action === 'file' && mediaRef) usedMediaReferences.add(mediaRef);
-    requests.push(Object.freeze({ id, action, isolatedClarificationProposal, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
+    requests.push(Object.freeze({ id, action, recallCatalogMatched, recallCatalogResultVerified, recallCatalogCandidateCount, recallCatalogOtherCommandCenterCount,
+      isolatedClarificationProposal, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
     response.end('data: [DONE]\n\n');

@@ -21,7 +21,7 @@ export function configureNotesRecallModel(config, baseUrl) {
 
 const select = (value, allowed) => allowed.includes(value) ? value : value == null ? null : 'other';
 const roles = ['user', 'assistant', 'tool', 'system', 'developer'];
-const statuses = ['ok', 'ready', 'partial', 'unavailable', 'stale', 'empty', 'error', 'cancelled'];
+const statuses = ['available', 'no-matches', 'ok', 'ready', 'partial', 'unavailable', 'stale', 'empty', 'error', 'cancelled'];
 const phases = ['initial-tool-result', 'restart-tool-result', 'permission-loss-tool-result', 'permission-recovery-tool-result', 'citation-link'];
 export function summarizeRecallFailure(error) {
   const counters = error.observations;
@@ -51,9 +51,12 @@ export function collectRecallDiagnostics(provider, nativeEvents) {
       route: select(row.path, ['/v1/models', '/v1/chat/completions', '/v1/responses']),
     })),
     completions: provider.requests.slice(-8).map(row => ({
-      action: select(row.action, ['recall', 'final']), currentRole: select(row.currentRole, roles),
+      action: select(row.action, ['recall', 'recall-search', 'recall-call', 'final']), currentRole: select(row.currentRole, roles),
       completedCurrentTool: row.completedCurrentTool === true, issuedToolCall: Boolean(row.issuedToolCallId),
       recallToolRegistered: row.tools.includes('command_center_recall_topic_notes'),
+      nativeDiscoveryControlsExposed: row.tools.includes('tool_search') && row.tools.includes('tool_call'),
+      recallCatalogMatched: row.recallCatalogMatched === true,
+      recallCatalogResultVerified: row.recallCatalogResultVerified === true,
       currentToolStatus: select(row.currentToolStatus, statuses),
       transcript: row.transcriptShape.slice(-12).map(item => ({ role: select(item.role, roles),
         hasToolCallId: Boolean(item.toolCallId), assistantToolCallCount: item.assistantToolCallIds.length })),
