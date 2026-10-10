@@ -5,8 +5,10 @@ proposals originate at PR #365 (`71425a7422a209f4d34fca3ab612a3ad7419859f`);
 current-Topic Note recall originates at PR #376
 (`d3b0ea3df9a187ce6dd6047256bf2bd74ac21d93`). They preserve separate scopes.
 
-The stack uses reviewed compatibility PR #381, initially
-`c2fb192665670948fe55ca9ab62c1b237ada39d7`, preserving deployed CC
+The stack uses compatibility PR #381 at
+`d3f3295ffa736b3010b46986126034c0b8a6a812` (the initially reviewed
+`c2fb192665670948fe55ca9ab62c1b237ada39d7` plus the stale harness-identity
+assertion correction), preserving deployed CC
 `018f4aa10a52c1122f0f045063034dbef05e9d05`, first proposals, then recall.
 Recall does not inherently require proposals: this ordering tests their shared
 source-service integration and permits serial rollout without mixing their
