@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, rm, chmod, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
@@ -12,7 +12,7 @@ import { currentTopicNoteRecallToolFactory } from '../src/search/tool.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
-import { verifyInstalledRecallEvidence } from './support/notes-installed-journey.mjs';
+import { verifyInstalledRecallEvidence, assertNotesQualificationReceipt } from './support/notes-installed-journey.mjs';
 
 const release = installHostFileAccessFixture();
 test.after(release);
@@ -182,4 +182,17 @@ test('unavailable committed projection returns an honest empty unavailable state
     assert.equal(response.details.status, 'unavailable');
     assert.deepEqual(response.details.groups.notes, []);
   });
+});
+
+
+test('qualification receipt pins both existing immutable artifacts and rejects substitution', async () => {
+  const identities = JSON.parse(await readFile(new URL('fixtures/notes-qualification-artifacts.json', import.meta.url), 'utf8'));
+  for (const expected of Object.values(identities.candidates)) {
+    const receipt = { sourceCommit: expected.sourceCommit, buildDigest: expected.buildDigest, archive: { sha256: expected.archiveSha256 } };
+    assert.doesNotThrow(() => assertNotesQualificationReceipt(receipt, expected));
+    for (const field of ['sourceCommit', 'buildDigest']) assert.throws(() => assertNotesQualificationReceipt({ ...receipt, [field]: 'substituted' }, expected));
+    assert.throws(() => assertNotesQualificationReceipt({ ...receipt, archive: { sha256: 'substituted' } }, expected));
+    const other = Object.values(identities.candidates).find(value => value !== expected);
+    assert.throws(() => assertNotesQualificationReceipt(receipt, other));
+  }
 });

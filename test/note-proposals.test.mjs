@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, open, rename } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile, readFile, rm, open, rename } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
@@ -12,7 +12,7 @@ import { BRIDGE_CONTRACTS, sanitizeBridgeResult } from '../src/bridge/contracts.
 import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
 import { NOTE_PROPOSAL_METHODS } from '../src/bridge/note-proposal-contracts.mjs';
 import { FIRST_LIVE_FEATURES, assertFirstLiveCommand } from '../src/release-scope.mjs';
-import { runInstalledNoteProposalRpcJourney } from './support/notes-installed-journey.mjs';
+import { runInstalledNoteProposalRpcJourney, runInstalledNoteProposalNegatives } from './support/notes-installed-journey.mjs';
 
 async function fixture(t, real = false) {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'cc-note-proposals-'));
@@ -215,4 +215,16 @@ test('real Linux Note owner verifies enrolled Folder and preserves actual Markdo
   f.request.logicalOperationId = randomUUID(); await f.owner().prepare(f.request, f.runtime);
   await rename(f.root, `${f.root}-displaced`); await mkdir(f.root); await writeFile(path.join(f.root, 'target.md'), before);
   const blocked = await f.owner().inspect(f.access(), f.runtime); assert.equal(blocked.status, 'blocked'); assert.equal(blocked.snapshot, undefined);
+});
+
+
+test('installed negative helper uses the real Note owner for stale, permission and restart cases', { skip: process.platform !== 'linux' && 'Linux Note permissions' }, async t => {
+  const f = await fixture(t, true);
+  const rpc = (method, input) => f.owner()[method.split('.').at(-1)](input, f.runtime);
+  const result = await runInstalledNoteProposalNegatives({ rpc,
+    readOnlyRpc: (method, input) => f.owner()[method.split('.').at(-1)](input, { proposalAuthority: { ...f.runtime.proposalAuthority, canWrite: false } }),
+    refreshRequest: async () => f.request, readNoteBytes: pointer => readFile(path.join(f.root, pointer.path)),
+    writeFixtureBytes: (pointer, bytes) => writeFile(path.join(f.root, pointer.path), bytes),
+    setFixtureMode: (pointer, mode) => chmod(path.join(f.root, pointer.path), mode), restart: async () => f.reopen() });
+  assert.deepEqual(result, ['read-only-refused', 'stale-source-retired', 'stale-target-retired', 'permission-unavailable-and-recovered']);
 });

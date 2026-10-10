@@ -74,3 +74,58 @@ export function verifyInstalledRecallEvidence(result, { topicId, noteTextByRefer
   }
   return notes;
 }
+
+
+// Closed fixture receipt identity: input paths/JSON cannot select another build.
+export function assertNotesQualificationReceipt(receipt, expected) {
+  assert.equal(receipt.sourceCommit, expected.sourceCommit);
+  assert.equal(receipt.buildDigest, expected.buildDigest);
+  assert.equal(receipt.archive?.sha256, expected.archiveSha256);
+}
+
+export async function runInstalledNoteProposalNegatives({ rpc, readOnlyRpc, refreshRequest, readNoteBytes, writeFixtureBytes, setFixtureMode, restart }) {
+  const fresh = async () => ({ ...await refreshRequest(), schemaVersion: 1, generation: 1, logicalOperationId: randomUUID() });
+  const access = input => Object.fromEntries(['schemaVersion', 'logicalOperationId', 'topicId', 'generation'].map(key => [key, input[key]]));
+  const noText = value => { for (const key of ['snapshot', 'proposedText', 'comparison', 'citations']) assert.equal(value[key], undefined); };
+  const readonly = await fresh();
+  await assert.rejects(readOnlyRpc('command-center.v1.notes.proposals.prepare', readonly), error =>
+    error.code === 'unauthenticated' || /operator\.write|missing.*scope|insufficient.*scope/iu.test(error.message));
+  const statuses = ['read-only-refused'];
+  for (const role of ['source', 'target']) {
+    const input = await fresh(); const pointer = role === 'source' ? input.sources[0] : input.target;
+    const files = [input.target, ...input.sources]; const before = await Promise.all(files.map(readNoteBytes));
+    const original = await readNoteBytes(pointer);
+    const prepared = unwrap(await rpc('command-center.v1.notes.proposals.prepare', input)); assert.equal(prepared.status, 'prepared');
+    try {
+      await writeFixtureBytes(pointer, Buffer.concat([original, Buffer.from('\nFictional later edit.\n')]));
+      const stale = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+      assert.equal(stale.status, 'stale'); noText(stale);
+      if (role === 'target') {
+        await restart(); const retired = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+        assert.equal(retired.status, 'stale'); noText(retired);
+      }
+    } finally { await writeFixtureBytes(pointer, original); }
+    const restored = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+    assert.equal(restored.status, 'stale'); noText(restored);
+    assert.deepEqual(await Promise.all(files.map(readNoteBytes)), before);
+    statuses.push(`stale-${role}-retired`);
+  }
+  const input = await fresh(); const source = input.sources[0];
+  const files = [input.target, ...input.sources]; const before = await Promise.all(files.map(readNoteBytes));
+  assert.equal(unwrap(await rpc('command-center.v1.notes.proposals.prepare', input)).status, 'prepared');
+  await setFixtureMode(source, 0o000);
+  try {
+    try {
+      const blocked = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+      assert.equal(blocked.status, 'blocked'); noText(blocked);
+    } catch (error) {
+      assert.ok(error.code === 'EACCES' || /failed: EACCES\b/u.test(error.message)); noText(error);
+    }
+  } finally { await setFixtureMode(source, 0o600); }
+  const recovered = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+  assert.equal(recovered.status, 'prepared');
+  assert.equal(unwrap(await rpc('command-center.v1.notes.proposals.discard', access(input))).status, 'discarded');
+  assert.deepEqual(await Promise.all(files.map(readNoteBytes)), before);
+  statuses.push('permission-unavailable-and-recovered');
+  return statuses;
+}
