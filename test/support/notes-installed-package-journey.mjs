@@ -20,6 +20,7 @@ import { readAttentionStartupReadiness, readAttentionControlUiBuildId } from './
 import { createGatewayDeviceIdentity, requestAuthenticatedGateway, launchManagedBrowser, closeManagedBrowser, configureEvidencePage } from './real-host-runtime.mjs';
 import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence, assertNotesQualificationReceipt, runInstalledNoteProposalNegatives } from './notes-installed-journey.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
+import { configureNotesRecallModel, collectRecallDiagnostics, recordRecallNativeEvent, waitForRecallObservation, summarizeRecallFailure } from './notes-recall-diagnostics.mjs';
 
 // Explicit disposable-host qualification only. No top-level launch or live lookup.
 export async function runNotesInstalledPackageJourney({ signal } = {}) {
@@ -46,7 +47,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
   assert.match(declaredFixtureRevision ?? '', /^[a-f0-9]{40}$/u);
   const fixtureInputs = {};
   for (const name of ['test/support/notes-installed-package-journey.mjs', 'test/support/notes-installed-journey.mjs',
-    'test/support/fictional-openai-model.mjs', 'test/support/first-live-native-journey.mjs', 'test/support/real-host-runtime.mjs',
+    'test/support/fictional-openai-model.mjs', 'test/support/notes-recall-diagnostics.mjs', 'test/support/first-live-native-journey.mjs', 'test/support/real-host-runtime.mjs',
     'test/support/attention-startup-readiness.mjs', 'test/support/isolated-acceptance-preflight.mjs',
     'test/fixtures/notes-qualification-artifacts.json', 'src/host-harness.mjs', 'src/fixtures.mjs', 'src/build.mjs',
     'src/plugin-artifact.mjs', 'package-lock.json']) {
@@ -80,12 +81,22 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
 
     await withIsolatedWorld(async world => {
       const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true }) : null;
+      const nativeEvents = [];
+      const progress = { phase: 'gateway-ui-readiness', successfulReadinessChecks: 0 };
       let host, managed, transport, controlUiBuildId;
       const guard = new TrafficGuard(); const evidence = { requests: [], responses: [], console: [], errors: [] };
       const deviceIdentity = createGatewayDeviceIdentity();
       const ready = async () => {
+        progress.phase = 'gateway-ui-readiness';
         await waitForConsecutiveReadiness(() => readAttentionStartupReadiness({ world, signal }), host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
         controlUiBuildId = await readAttentionControlUiBuildId({ world, signal });
+        progress.successfulReadinessChecks += 1;
+      };
+      const recallWait = async (phase, observe, deadlineMs = 120_000) => {
+        progress.phase = phase;
+        await waitForRecallObservation(waitForConsecutiveReadiness, observe, host.earlyExit,
+          { phase, deadlineMs, delayMs: 100, signal });
+        progress.phase = `${phase}-observed`;
       };
       const request = async (method, params, scopes) => {
         signal.throwIfAborted();
@@ -97,9 +108,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
       try {
       if (provider) {
         const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
-        config.models.providers.fixture.baseUrl = provider.baseUrl;
-        config.models.providers.fixture.request = { allowPrivateNetwork: true };
-        config.tools = { ...(config.tools ?? {}), alsoAllow: ['command_center_recall_topic_notes'] };
+        configureNotesRecallModel(config, provider.baseUrl);
         await writeFile(world.manifest.configPath, JSON.stringify(config));
       }
         host = await launchPinnedHost({ descriptor, world, buildReceipt, signal }); await ready();
@@ -136,6 +145,8 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           restart: async () => { host = await restartPinnedHost(host, { signal }); await ready(); } }));
         managed = await launchManagedBrowser({ headless: true });
         const page = await managed.browser.newPage(); transport = await configureEvidencePage(page, guard, evidence);
+        // Passive observation preserves the existing guarded WebSocket route.
+        if (provider) page.on('websocket', socket => socket.on('framereceived', frame => recordRecallNativeEvent(nativeEvents, frame.payload)));
         const href = new URL(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topic',
           fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
         href.searchParams.set('p.topicId', topic.topicId); href.searchParams.set('p.sourceReferenceId', target.referenceId);
@@ -189,13 +200,14 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
             await publishTopicSearchSnapshot({ stateDir: path.join(world.root, '.openclaw'), metadata, prepared });
           } finally { metadata.close(); }
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
+          progress.phase = 'native-chat-submit';
           await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
           const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]'); await chatPane.waitFor({ timeout: 30_000 });
           await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, topic.sessionKey);
           const composer = chatPane.locator('.agent-chat__composer-combobox textarea');
           await composer.fill('[fixture:notes-recall] Recall alpha from my Topic Notes.');
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await waitForConsecutiveReadiness(async () => provider.recallResults.length > 0, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+          await recallWait('initial-tool-result', async () => provider.recallResults.length > 0);
           assert.ok(provider.requests.some(row => row.action === 'recall' && row.issuedToolCallId));
           const recalled = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.ok(recalled.every(row => row.originatingTopic.topicId !== foreign.topicId));
@@ -207,11 +219,12 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           cases.push('native-model-registration-and-exact-two-note-recall');
           // Repeat through the actual native tool after an owned host restart.
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
+          progress.phase = 'native-chat-submit';
           await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
           const count = provider.recallResults.length;
           await composer.fill('[fixture:notes-recall] Recall alpha after restart.');
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await waitForConsecutiveReadiness(async () => provider.recallResults.length > count, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+          await recallWait('restart-tool-result', async () => provider.recallResults.length > count);
           const restarted = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restarted.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
           assert.equal(new Set(provider.requests.filter(row => row.action === 'recall').map(row => row.issuedToolCallId)).size, 2);
@@ -222,7 +235,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           try {
             await composer.fill('[fixture:notes-recall] Recall alpha with one denied Note.');
             await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-            await waitForConsecutiveReadiness(async () => provider.recallResults.length > deniedCount, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+            await recallWait('permission-loss-tool-result', async () => provider.recallResults.length > deniedCount);
             const denied = provider.recallResults.at(-1);
             assert.equal(denied.status, 'partial');
             const remaining = verifyInstalledRecallEvidence(denied, { topicId: topic.topicId, noteTextByReference: texts });
@@ -233,11 +246,10 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           const priorLinks = await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count();
           await composer.fill('[fixture:notes-recall] Recall alpha after Note permission recovery.');
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await waitForConsecutiveReadiness(async () => provider.recallResults.length > restoredCount, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
+          await recallWait('permission-recovery-tool-result', async () => provider.recallResults.length > restoredCount);
           const restored = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.deepEqual(restored.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
-          await waitForConsecutiveReadiness(async () => await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count() > priorLinks,
-            host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+          await recallWait('citation-link', async () => await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count() > priorLinks, 30_000);
           cases.push('native-recall-permission-recovery');
 
           const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).last(); await link.waitFor({ timeout: 30_000 });
@@ -268,9 +280,13 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           cases.push('stale-citation-on-fresh-reader-retains-draft');
         }
         await transport.drain(); transport.assertClean(); guard.assertClean(); await assertRecordedChildTraffic(world);
+      } catch (error) {
+        if (provider) report.recallFailure = summarizeRecallFailure(error);
+        throw error;
       } finally {
         try {
-          if (managed) await closeManagedBrowser(managed, signal);
+          try { if (provider) report.recallDiagnostics = { ...progress, ...collectRecallDiagnostics(provider, nativeEvents) }; }
+          finally { if (managed) await closeManagedBrowser(managed, signal); }
         } finally {
           try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
           finally { if (provider) await provider.close(); }
