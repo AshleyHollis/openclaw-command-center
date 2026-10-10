@@ -20,18 +20,19 @@ health receipt requires every expected outcome to be durably recorded.
 
 ## Canonical profile boundary
 
-The source adapter has an internal `getAcceptedChatRuntime` dependency for an
-existing authenticated caller adapter to supply the canonical operator and live
-guard. Tests supply the existing real owner's fictional runtime. Production
-registration deliberately supplies no resolver: the audited Native public tool
-context has not established the canonical profile handoff. Native lifetime,
-generic sender ID, device ID and owner boolean cannot create that identity.
+The source adapter consumes Native V2's `authenticatedOperator` projection:
+canonical `profileId` and the original admitted operator's frozen `scopes`.
+Native's existing invocation guard retains source/profile/role and plugin
+lifetime checks. Every closed command requires the existing write/admin scope;
+the projected identity alone grants nothing. Generic sender IDs, device IDs,
+Conversation facts and owner booleans cannot replace this binding.
 
-Consequently the registered Chat tool refuses before acceptance with explicit
-unknown-coverage behavior. This candidate is preparation, not a deployable
-useful Capture feature until the supported existing-context handoff is resolved
-and installed tool admission is qualified. No interpretation-only authority is
-repurposed and no new grant or broader Native admission work is implemented.
+Older hosts, V1 contexts, unprofiled and read-only callers refuse before
+acceptance with explicit unknown-coverage behavior. This source-only successor
+depends on the separately reviewed Native SDK projection and remains TEST only.
+Affected installed Chat admission and supported-package qualification are still
+required. No interpretation-only authority is repurposed and no new grant,
+runtime permission, credential access or broader Native admission is introduced.
 
 ## Evidence and release boundary
 
