@@ -3,6 +3,7 @@ import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } fro
 import { assertFirstLiveCommand, FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { captureHistoryReadAuthority } from './read-authority.mjs';
 import { createRequestScopedConversationRuntime } from './gateway-method-dispatch.mjs';
+import { NOTE_PROPOSAL_METHODS } from './note-proposal-contracts.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -150,6 +151,11 @@ function captureAuthenticatedConversationAuthority({ client, context, signal, se
 }
 
 const handlerMap = Object.freeze({
+  ...Object.fromEntries(NOTE_PROPOSAL_METHODS.map(method => [method, (service, params, runtime) => {
+    const { requestId, authenticatedOperatorId, ...input } = params;
+    const action = method.slice(method.lastIndexOf('.') + 1);
+    return service[`notesProposal${action[0].toUpperCase()}${action.slice(1)}`](input, runtime);
+  }])),
   'command-center.v1.bill-actions.list': (service, params, runtime) => service.billActionsList(params, runtime),
   'command-center.v1.bill-actions.read': (service, params, runtime) => service.billActionsRead(params, runtime),
   'command-center.v1.bill-actions.admit': (service, params, runtime) => service.billActionsAdmit(params, runtime),
@@ -267,7 +273,9 @@ export async function invokeBridgeMethod(service, method, params, requestId = nu
   validateBridgeRequest(method, params, { mutation: WRITE_METHODS.includes(method) });
   const handler = handlerMap[method];
   if (!handler) throw new SourceServiceError('invalid-request', 'Unsupported Command Center method.');
-  return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
+  const result = sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
+  if (NOTE_PROPOSAL_METHODS.includes(method)) runtime.proposalAuthority.assertCurrent();
+  return result;
 }
 
 export function registerBridgeMethods(api, service, { mutationsAllowed = true } = {}) {
@@ -297,6 +305,13 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
         const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};
+        if (NOTE_PROPOSAL_METHODS.includes(method)) {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          runtime = { proposalAuthority: { principalId: authority.principalId, role: 'operator',
+            canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
+            assertCurrent: () => { authority.assertCurrent(); sessionMutationCommitGuard?.();
+              if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'Note proposal authority is no longer current.'); } } };
+        }
         if (method.startsWith('command-center.v1.bill-actions.') || method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions) {
           const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
           const assertCurrent = () => {
@@ -396,6 +411,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') runtime.creationAuthority.assertCurrent();
         if (method.startsWith('command-center.v1.bill-actions.') || (method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions)) runtime.assertCurrent();
+        if (NOTE_PROPOSAL_METHODS.includes(method)) runtime.proposalAuthority.assertCurrent();
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));

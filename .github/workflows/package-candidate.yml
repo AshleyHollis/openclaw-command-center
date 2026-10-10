@@ -61,6 +61,7 @@ jobs:
               cd /workspace
               test "$(node --version)" = v24.21.0
               node --test test/conversation-creation.test.mjs test/topic-page-http.test.mjs test/topic-conversation-assignment.test.mjs test/native-ui-navigation.test.mjs test/mutation-architecture.test.mjs
+              node --test test/note-proposals.test.mjs test/bridge-contract.test.mjs test/first-live-registration.test.mjs test/mutation-architecture.test.mjs
               node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
