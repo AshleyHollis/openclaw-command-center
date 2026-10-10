@@ -25,7 +25,7 @@ jobs:
           node-version: 24.21.0
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --test test/safety.test.mjs
+      - run: node --test test/safety.test.mjs test/enabled-feature-candidate.test.mjs
       - run: node --test test/mutation-architecture.test.mjs test/native-attachment-selection.test.mjs test/topic-document-filing-review.test.mjs test/topic-document-filing-intent.test.mjs
       - run: node --test --test-name-pattern='attachment review actions' test/topic-page-http.test.mjs
       - run: npm run check
