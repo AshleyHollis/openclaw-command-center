@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { createCommitmentCaptureService } from './commitment-capture.mjs';
+import { createCommitmentCaptureService, retainCommitmentCaptureTimestamps } from './commitment-capture.mjs';
 import { findIntakeContinuation, recordIntakeReceipt } from './intake-receipt.mjs';
 import { loadIntakeSourceAccount, recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
+import { requireAcceptedChatScope } from './accepted-chat-scope.mjs';
 
 const paymentIdentitySchema = Object.freeze({ type: 'object', additionalProperties: false, properties: { schemaVersion: { type: 'integer', const: 1 }, amountMinorUnits: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, invoiceId: { type: 'string', minLength: 1, maxLength: 300 }, accountId: { type: 'string', minLength: 1, maxLength: 300 }, payeeId: { type: 'string', minLength: 1, maxLength: 300 }, purpose: { type: 'string', minLength: 1, maxLength: 300 }, predecessor: { type: 'object', additionalProperties: false, properties: { loopId: { type: 'string', minLength: 1, maxLength: 300 }, observationId: { type: 'string', minLength: 1, maxLength: 300 }, explanation: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['loopId', 'observationId', 'explanation'] } }, required: ['schemaVersion'], dependentRequired: { amountMinorUnits: ['currency'], currency: ['amountMinorUnits'] } });
 
@@ -100,12 +101,13 @@ export function sourceNoteCaptureToolFactory({ getOwners } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Source Note capture requires authoritative owners.');
   return () => ({
     name: 'command_center_save_source_note',
-    description: 'Save one new quiet Topic Note from a maintained email or Note producer and return its exact Source Reference. This does not create an obligation or edit an existing Note.',
+    description: 'Save one new quiet Topic Note from a maintained email, Chat or Note producer and return its exact Note Source Reference. sourceKind identifies the upstream source, while the created reference remains a Note. This does not create an obligation or edit an existing Note.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      topicId: { type: 'string', minLength: 1 }, noteFolderReferenceId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 }, markdown: { type: 'string', minLength: 1 }
+      topicId: { type: 'string', minLength: 1 }, noteFolderReferenceId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 }, markdown: { type: 'string', minLength: 1 }
     }, required: ['topicId', 'noteFolderReferenceId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'path', 'markdown'] }),
     async execute(_toolCallId, params) {
       const { sourceService } = getOwners() ?? {};
+      if (params.sourceKind === 'chat') requireAcceptedChatScope(getOwners()?.metadata);
       if (!sourceService) throw sourceError('capability-unavailable', 'Source Note ownership is not ready.');
       const logicalOperationId = sourceNoteOperationId(params);
       const result = await sourceService.notesCreate({ schemaVersion: 1, topicId: params.topicId, referenceId: params.noteFolderReferenceId, path: params.path, text: params.markdown, sourceKind: 'note', logicalOperationId, requestId: logicalOperationId });
@@ -132,7 +134,7 @@ export function sourceCommitmentCaptureToolFactory({ getOwners } = {}) {
       if (!sourceService || !metadata) throw sourceError('capability-unavailable', 'Source capture ownership is not ready.');
       const capture = createCommitmentCaptureService({ metadata, sourceService });
       const observedAt = new Date().toISOString();
-      const result = await capture.capture({ schemaVersion: 1, logicalOperationId: sourceCaptureOperationId(params), ...params, occurredAt: observedAt, observedAt, historicalBaseline: false });
+      const result = await capture.capture(retainCommitmentCaptureTimestamps(metadata, { schemaVersion: 1, logicalOperationId: sourceCaptureOperationId(params), ...params, occurredAt: observedAt, observedAt, historicalBaseline: false }));
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, loopId: result.loop?.loopId, state: result.loop?.state }) }], details: result });
     }
   });
