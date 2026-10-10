@@ -5,19 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      native_run:
-        description: 'PR67 packaged SDK run (all three native inputs required together)'
-        required: false
-        type: string
-      native_artifact:
-        description: 'Exact PR67 artifact name'
-        required: false
-        type: string
-      native_sha256:
-        description: 'Exact PR67 openclaw-current.tgz SHA-256'
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -48,34 +35,22 @@ jobs:
       - name: Reuse exact pinned native SDK artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_RUN: ${{ inputs.native_run }}
-          NATIVE_ARTIFACT: ${{ inputs.native_artifact }}
-          NATIVE_SHA256: ${{ inputs.native_sha256 }}
         run: |
           set -euo pipefail
           sdk="$RUNNER_TEMP/pinned-native-sdk"
           mkdir -p "$sdk/download" "$sdk/runtime"
-          if [[ -n "$NATIVE_RUN$NATIVE_ARTIFACT$NATIVE_SHA256" ]]; then
-            [[ "$NATIVE_RUN" =~ ^[0-9]+$ ]]
-            [[ "$NATIVE_ARTIFACT" =~ ^[a-zA-Z0-9._-]+$ ]]
-            [[ "$NATIVE_SHA256" =~ ^[a-f0-9]{64}$ ]]
-            expected_native=9241376d656e372ac1ce0c4a48fc432cf48a4c9b
-            echo 'COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION=1' >> "$GITHUB_ENV"
-          else
-            NATIVE_RUN=37398915447
-            NATIVE_ARTIFACT=nas-runtime-package-26a9c0faa4124e53ae2eab34291d68a7245f630c-37398915447-1
-            NATIVE_SHA256=e6203c9ba1d01d928f51cb71d7b4ecc77515fa6742f8168d9b5d8175610d6b36
-            expected_native=26a9c0faa4124e53ae2eab34291d68a7245f630c
-          fi
+          NATIVE_RUN=37873292633
+          NATIVE_ARTIFACT=nas-runtime-package-ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2-37873292633-1
+          NATIVE_SHA256=acf8cd1cedd1b64f6b855c7177fd3340a03208cd9cbf30aeaf5a511d2e2ef470
+          expected_native=ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2
+          echo 'COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION=1' >> "$GITHUB_ENV"
           gh run download "$NATIVE_RUN" --repo AshleyHollis/openclaw \
             --name "$NATIVE_ARTIFACT" \
             --dir "$sdk/download"
           printf '%s  %s\n' "$NATIVE_SHA256" \
             "$sdk/download/openclaw-current.tgz" | sha256sum --check --strict
-          if [[ -n "${COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION:-}" || "$expected_native" != 26a9c0faa4124e53ae2eab34291d68a7245f630c ]]; then
-            python3 -c 'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["packageSourceSha"] == sys.argv[2]; assert receipt["sha256"] == sys.argv[3]' \
-              "$sdk/download/package-candidate.json" "$expected_native" "$NATIVE_SHA256"
-          fi
+          python3 -c 'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["packageSourceSha"] == sys.argv[2]; assert receipt["sha256"] == sys.argv[3]' \
+            "$sdk/download/package-candidate.json" "$expected_native" "$NATIVE_SHA256"
           tar -xzf "$sdk/download/openclaw-current.tgz" -C "$sdk/runtime"
           mkdir -p "$sdk/runtime/node_modules"
       # Fixed packaging toolchain only; this is not the deployed host identity.
