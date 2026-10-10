@@ -4,13 +4,19 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { loadIntakeSourceAccount } from '../../src/open-loops/intake-accounting.mjs';
-import { requestAuthenticatedGateway } from './real-host-runtime.mjs';
+import { createGatewayDeviceIdentity, requestAuthenticatedGateway } from './real-host-runtime.mjs';
+import { readAttentionControlUiBuildId } from './attention-startup-readiness.mjs';
 
 // One slice in the existing isolated acceptance runner, not another host launcher.
 export async function exerciseInstalledAcceptedChat({ world, fixture, restartHost, signal }) {
+  // CLI connections are intentionally unprofiled. Reuse the normal signed
+  // Control UI admission path so Native, rather than this fixture, owns identity.
+  const deviceIdentity = createGatewayDeviceIdentity();
   const call = async (action, params, scopes = ['operator.read', 'operator.write']) => {
+    const controlUiBuildId = await readAttentionControlUiBuildId({ world, signal });
     const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-      method: `command-center.v1.chat-capture.${action}`, params, scopes, signal, responseTimeoutMs: 15_000 });
+      method: `command-center.v1.chat-capture.${action}`, params, scopes, deviceIdentity, controlUiBuildId,
+      signal, responseTimeoutMs: 15_000 });
     return response.result ?? response;
   };
   const plan = { schemaVersion: 1, sessionKey: fixture.sessionKey, sessionId: fixture.sessionId,
