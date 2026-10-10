@@ -80,6 +80,35 @@ test('revocation at real Note publication refuses the effect and preserved sourc
   } finally { f.close(); await rm(parent, { recursive: true, force: true }); }
 });
 
+test('accepted Note publication does not yield between its final authority fence and conditional effect', linux, async t => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-accepted-chat-publication-'));
+  const ordering = [];
+  let armed = false;
+  let queued = false;
+  let fenceTime;
+  let publicationTime;
+  let f;
+  f = await createAcceptedChatNoteFixture(parent, {
+    beforeAtomicCommit() { armed = true; },
+    assertCurrent() {
+      if (!armed || queued) return;
+      queued = true;
+      fenceTime = performance.now();
+      queueMicrotask(() => { ordering.push('retired'); f.revoke(); });
+    },
+    afterAtomicPublish() { publicationTime = performance.now(); ordering.push('published'); }
+  });
+  try {
+    const accepted = await f.owner().accept(mixedChatPlan(), f.runtime);
+    await assert.rejects(() => f.owner().replay({ schemaVersion: 1, planId: accepted.planId }, f.runtime), { code: 'unauthenticated' });
+    assert.deepEqual(ordering, ['published', 'retired']);
+    assert.equal(await readFile(path.join(f.root, 'Inbox/derived.md'), 'utf8'), mixedChatPlan().acceptedExtraction.knowledgeMarkdown);
+    assert.equal(f.metadata().listOperations().filter(item => item.operationKind === 'intake-outcome.chat.v1').length, 0);
+    assert.equal(f.metadata().listOpenLoops().length, 0);
+    t.diagnostic(`Final authority fence through conditional Note publication: ${(publicationTime - fenceTime).toFixed(3)} ms (isolated Linux filesystem only).`);
+  } finally { f.close(); await rm(parent, { recursive: true, force: true }); }
+});
+
 test('edited accounted Note refuses a missing Chat obligation after the awaited authoritative read', linux, async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-accepted-chat-note-edit-'));
   let interrupt = true;

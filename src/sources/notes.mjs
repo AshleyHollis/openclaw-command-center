@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, linkSync, openSync } from 'node:fs';
 import { assertAcceptedChatNote } from '../open-loops/accepted-chat-scope.mjs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -555,8 +555,13 @@ export class NoteAdapter {
       // cannot distinguish an unstarted create from a published-then-deleted one.
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
-        assertAcceptedChatNote(this.metadata, input);
-        await link(temporary, parent.target);
+        // Accepted Chat authority and binding retirement run in this JS realm.
+        // Do not yield between their last synchronous fence and this conditional
+        // publication, just as SQLite effects commit without yielding. All
+        // preparation and verification remain asynchronous; ordinary Note calls
+        // retain the existing asynchronous publication owner.
+        if (assertAcceptedChatNote(this.metadata, input)) linkSync(temporary, parent.target);
+        else await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {
         if (error?.code === 'EEXIST') throw await this.pathConflict(parent.target, notePath, 'The destination Note appeared before commit.');

@@ -76,13 +76,14 @@ export function assertAcceptedChatNote(metadata, input) {
         return plan.acceptedChat && input.logicalOperationId === operationId(['command-center.source-note.v1', plan.acceptedChat.topicId, 'chat', plan.sourceExternalId, plan.sourceVersion]);
       } catch { return false; }
     })) refuse();
-    return; // Ordinary email/Note writes retain their existing owners.
+    return false; // Ordinary email/Note writes retain their existing owners.
   }
   if (frame.metadata !== metadata || frame.accepting || frame.assertCurrent()?.then) refuse();
   assertStoredPlan(frame);
   const { plan } = frame;
   if (input.topicId !== undefined && input.topicId !== plan.acceptedChat.topicId || input.referenceId !== undefined && input.referenceId !== plan.acceptedChat.noteFolderReferenceId || input.path !== plan.acceptedExtraction.notePath || input.text !== plan.acceptedExtraction.knowledgeMarkdown || input.sourceKind !== 'note' || !input.text?.trim()) refuse();
   if (input.logicalOperationId !== operationId(['command-center.source-note.v1', plan.acceptedChat.topicId, 'chat', plan.sourceExternalId, plan.sourceVersion]) || input.requestId !== undefined && input.requestId !== input.logicalOperationId) refuse();
+  return true;
 }
 
 export function requireAcceptedChatScope(metadata) {
