@@ -10,7 +10,7 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '28166e3a4ee238626349a2064417c897c37eb100';
+const controllerIntegrationCommit = '2c70f83c9a77f364ee2ceb28b4c144f50ca07c0d';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
 const controllerPackageVersion = '2026.10.1';
 const publishedSdkVersion = controllerPackageVersion;
