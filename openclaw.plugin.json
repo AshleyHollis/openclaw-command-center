@@ -182,6 +182,10 @@
     "workspaceSessionTurnScheduling": []
   },
   "controlUi": {
-    "entry": "dist/native-ui/entry.mjs"
+    "entry": "dist/native-ui/entry.mjs",
+    "httpRoutes": [
+      "/plugins/command-center/api/topics/actions",
+      "/plugins/command-center/api/topic/actions"
+    ]
   }
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { auditMutationArchitecture, checkMutationArchitecture } from '../scripts/mutation-architecture.mjs';
+import { readFile } from 'node:fs/promises';
+import { auditMutationArchitecture, checkMutationArchitecture, nativeWriteRoutesFromManifest } from '../scripts/mutation-architecture.mjs';
 
 const owner = { id: 'notes', module: 'src/sources/notes.mjs', commands: ['notes.edit'], tests: ['test/note-adapter.test.mjs'], gaps: ['I03'] };
 const fixture = (source, overrides = {}) => ({
@@ -70,8 +71,20 @@ test('native HTTP actions require one catalogue owner, including reconcile-only 
 
 test('architecture checks the current native manifest and actual closed HTTP action vocabularies', async () => {
   const result = await checkMutationArchitecture(new URL('../', import.meta.url));
-  assert.equal(result.httpRoutes, 0);
-  assert.equal(result.httpActions, 0);
+  assert.equal(result.httpRoutes, 2);
+  assert.ok(result.httpActions > 0);
+});
+
+test('manifest reader preserves unknown paths for audit and rejects legacy route objects', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
+  const route = '/plugins/command-center/api/fictional-write';
+  const nativeWriteRoutes = nativeWriteRoutesFromManifest({ controlUi: { httpRoutes: [...manifest.controlUi.httpRoutes, route] } });
+  assert.ok(auditMutationArchitecture(fixture('', { nativeWriteRoutes })).includes(`uninventoried HTTP write route: ${route}`));
+  for (const routes of [
+    [{ path: manifest.controlUi.httpRoutes[0], method: 'GET' }],
+    [...manifest.controlUi.httpRoutes, manifest.controlUi.httpRoutes[0]],
+    'invalid', [''], [null]
+  ]) assert.throws(() => nativeWriteRoutesFromManifest({ controlUi: { httpRoutes: routes } }), /Invalid native HTTP path declarations/u);
 });
 
 test('new native routes and invalid HTTP ownership cannot evade the catalogue', () => {
