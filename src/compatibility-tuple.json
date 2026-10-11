@@ -40,7 +40,7 @@
   },
   "host": {
     "range": "=2026.10.1",
-    "commit": "041be7a66bf02c6a843163050736bed3ec3313e0"
+    "commit": "28166e3a4ee238626349a2064417c897c37eb100"
   },
   "pluginApi": {
     "package": "openclaw",
