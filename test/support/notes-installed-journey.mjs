@@ -74,3 +74,68 @@ export function verifyInstalledRecallEvidence(result, { topicId, noteTextByRefer
   }
   return notes;
 }
+
+
+// Closed fixture receipt identity: input paths/JSON cannot select another build.
+export function assertNotesQualificationReceipt(receipt, expected) {
+  assert.equal(receipt.sourceCommit, expected.sourceCommit);
+  assert.equal(receipt.buildDigest, expected.buildDigest);
+  assert.equal(receipt.archive?.sha256, expected.archiveSha256);
+}
+
+export async function runInstalledNoteProposalNegatives({ rpc, readOnlyRpc, refreshRequest, readNoteBytes, writeFixtureBytes, setFixtureMode, restart }) {
+  const fresh = async () => ({ ...await refreshRequest(), schemaVersion: 1, generation: 1, logicalOperationId: randomUUID() });
+  const access = input => Object.fromEntries(['schemaVersion', 'logicalOperationId', 'topicId', 'generation'].map(key => [key, input[key]]));
+  const noText = value => { for (const key of ['snapshot', 'proposedText', 'comparison', 'citations']) assert.equal(value[key], undefined); };
+  const readonly = await fresh();
+  await assert.rejects(readOnlyRpc('command-center.v1.notes.proposals.prepare', readonly), error =>
+    error.code !== 'ERR_ASSERTION' && (error.code === 'unauthenticated'
+      || /^Authenticated command-center\.v1\.notes\.proposals\.prepare failed: unauthenticated \(/u.test(error.message)
+      || /^Authenticated command-center\.v1\.notes\.proposals\.prepare failed: (?:INVALID_REQUEST|FORBIDDEN) \(missing scope: operator\.write\)$/u.test(error.message)));
+  const statuses = ['read-only-refused'];
+  for (const role of ['source', 'target']) {
+    const input = await fresh(); const pointer = role === 'source' ? input.sources[0] : input.target;
+    const files = [input.target, ...input.sources]; const before = await Promise.all(files.map(readNoteBytes));
+    const original = await readNoteBytes(pointer);
+    const prepared = unwrap(await rpc('command-center.v1.notes.proposals.prepare', input)); assert.equal(prepared.status, 'prepared');
+    try {
+      await writeFixtureBytes(pointer, Buffer.concat([original, Buffer.from('\nFictional later edit.\n')]));
+      const stale = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+      assert.equal(stale.status, 'stale'); noText(stale);
+      if (role === 'target') {
+        await restart(); const retired = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+        assert.equal(retired.status, 'stale'); noText(retired);
+      }
+    } finally { await writeFixtureBytes(pointer, original); }
+    const restored = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+    assert.equal(restored.status, 'stale'); noText(restored);
+    assert.deepEqual(await Promise.all(files.map(readNoteBytes)), before);
+    statuses.push(`stale-${role}-retired`);
+  }
+  const input = await fresh(); const source = input.sources[0];
+  const files = [input.target, ...input.sources]; const before = await Promise.all(files.map(readNoteBytes));
+  const prepared = unwrap(await rpc('command-center.v1.notes.proposals.prepare', input));
+  assert.equal(prepared.status, 'prepared');
+  await setFixtureMode(source, 0o000);
+  try {
+    await assert.rejects(readNoteBytes(source), { code: 'EACCES' }, 'fixture source is actually unreadable');
+    let blocked, refused = false;
+    try {
+      blocked = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+    } catch (error) {
+      // The public bridge deliberately sanitizes filesystem errors to unavailable.
+      // Only catch the RPC itself: a response assertion must retain its real cause.
+      if (error.code === 'ERR_ASSERTION' || !(error.code === 'EACCES' || /^Authenticated command-center\.v1\.notes\.proposals\.inspect failed: unavailable \(The authoritative source request is unavailable\.\)$/u.test(error.message))) throw error;
+      noText(error);
+      refused = true;
+    }
+    if (!refused) { assert.ok(blocked); assert.equal(blocked.status, 'blocked'); noText(blocked); }
+  } finally { await setFixtureMode(source, 0o600); }
+  const recovered = unwrap(await rpc('command-center.v1.notes.proposals.inspect', access(input)));
+  assert.equal(recovered.status, 'prepared');
+  assert.deepEqual(recovered.snapshot, prepared.snapshot);
+  assert.equal(unwrap(await rpc('command-center.v1.notes.proposals.discard', access(input))).status, 'discarded');
+  assert.deepEqual(await Promise.all(files.map(readNoteBytes)), before);
+  statuses.push('permission-unavailable-and-recovered');
+  return statuses;
+}
