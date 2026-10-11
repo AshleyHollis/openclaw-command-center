@@ -22,6 +22,7 @@ import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence, asse
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
 import { configureNotesRecallModel, collectRecallDiagnostics, recordRecallNativeEvent, waitForRecallObservation, summarizeRecallFailure } from './notes-recall-diagnostics.mjs';
 import { createRecallTurnObserver, recallProviderFinal, recallTurnSettled, pinRecallChat, readRecallPaneState, assertRetainedRecallDraft, recallBrowserState } from './notes-recall-browser-lifecycle.mjs';
+import { validatePackageBinding, validatePackageReceipt } from '../../scripts/rehearsal-package-binding.mjs';
 
 // Explicit disposable-host qualification only. No top-level launch or live lookup.
 export async function runNotesInstalledPackageJourney({ signal } = {}) {
@@ -36,18 +37,26 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
   assert.equal(await realpath(admissionRoot), path.resolve(admissionRoot));
   const stat = await lstat(admissionRoot);
   assert.ok(stat.isDirectory() && !stat.isSymbolicLink()); assert.equal(stat.uid, process.getuid()); assert.equal(stat.mode & 0o777, 0o700);
-  const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+  const receiptBytes = await readFile(receiptPath);
+  const receipt = JSON.parse(receiptBytes);
   const identities = JSON.parse(await readFile(new URL('../fixtures/notes-qualification-artifacts.json', import.meta.url), 'utf8'));
-  const expected = identities.candidates[mode]; assertNotesQualificationReceipt(receipt, expected);
-  assert.equal(identities.nativeCommit, descriptor.commit);
+  const combinedBinding = process.env.CC_PACKAGE_BINDING ? validatePackageBinding(
+    JSON.parse(process.env.CC_PACKAGE_BINDING), process.env.COMMAND_CENTER_SOURCE_COMMIT ?? process.env.GITHUB_SHA) : null;
+  const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+  const expected = combinedBinding ?? identities.candidates[mode];
+  if (combinedBinding) validatePackageReceipt(combinedBinding, receiptBytes);
+  assertNotesQualificationReceipt(receipt, expected);
+  assert.equal(combinedBinding ? manifest.commandCenter.compatibilityTuple.host.commit : identities.nativeCommit, descriptor.commit);
   const evidencePath = process.env.COMMAND_CENTER_NOTES_EVIDENCE_PATH;
   assert.ok(evidencePath && path.isAbsolute(evidencePath));
   assert.equal(path.dirname(evidencePath), admissionRoot);
   assert.equal(await lstat(evidencePath).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }), false);
   const declaredFixtureRevision = process.env.COMMAND_CENTER_NOTES_FIXTURE_REVISION;
   assert.match(declaredFixtureRevision ?? '', /^[a-f0-9]{40}$/u);
+  if (combinedBinding) assert.equal(declaredFixtureRevision, combinedBinding.sourceCommit);
   const fixtureInputs = {};
   for (const name of ['test/support/notes-installed-package-journey.mjs', 'test/support/notes-installed-journey.mjs',
+    ...(combinedBinding ? ['scripts/rehearsal-package-binding.mjs', 'package.json', 'src/compatibility-tuple.json'] : []),
     ...(mode === 'recall' ? ['test/support/notes-recall-browser-lifecycle.mjs'] : []),
     'test/support/fictional-openai-model.mjs', 'test/support/notes-recall-diagnostics.mjs', 'test/support/first-live-native-journey.mjs', 'test/support/real-host-runtime.mjs',
     'test/support/attention-startup-readiness.mjs', 'test/support/isolated-acceptance-preflight.mjs',
@@ -75,10 +84,11 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
     const buildReceipt = await readBuiltReceipt(); assert.equal(buildReceipt.digest, expected.buildDigest);
     const { FIRST_LIVE_FEATURES } = await import(pathToFileURL(path.join(candidateRoot, 'dist/release-scope.mjs')).href);
     assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
-    assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, mode === 'recall');
-    for (const flag of ['acceptedChatCapture', 'search', 'noteWrite', 'noteMaintenance']) assert.equal(FIRST_LIVE_FEATURES[flag], false);
+    assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, combinedBinding ? true : mode === 'recall');
+    assert.equal(FIRST_LIVE_FEATURES.acceptedChatCapture, Boolean(combinedBinding));
+    for (const flag of ['search', 'noteWrite', 'noteMaintenance']) assert.equal(FIRST_LIVE_FEATURES[flag], false);
     const packagedManifest = JSON.parse(await readFile(path.join(candidateRoot, 'dist/plugin-manifest.json'), 'utf8'));
-    assert.equal(packagedManifest.contracts.tools.includes('command_center_recall_topic_notes'), mode === 'recall');
+    assert.equal(packagedManifest.contracts.tools.includes('command_center_recall_topic_notes'), combinedBinding ? true : mode === 'recall');
     cases.push('immutable-archive-and-build-verified');
 
     await withIsolatedWorld(async world => {

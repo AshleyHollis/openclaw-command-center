@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -14,11 +15,16 @@ if (diagnosticHostProfile && (diagnosticHostProfile !== 'conditional-cron-id-pr5
   || process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO !== 'diagnostic-clarification-worker')) {
   throw new Error('The conditional Cron ID host profile is limited to the clarification-worker diagnostic.');
 }
+const selectedHost = JSON.parse(readFileSync(new URL('./compatibility-tuple.json', import.meta.url), 'utf8')).host;
+const selectedArchive = process.env.COMMAND_CENTER_NATIVE_PACKAGE_SHA256;
+if (selectedArchive && !/^[a-f0-9]{64}$/u.test(selectedArchive)) throw new Error('Selected native archive digest is invalid.');
 export const pinnedHost = Object.freeze({
   // The normal profile binds the reviewed candidate; the diagnostic retains its historical tuple.
-  packageVersion: diagnosticHostProfile ? '2026.9.5' : '2026.9.9',
-  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : 'ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2',
-  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:acf8cd1cedd1b64f6b855c7177fd3340a03208cd9cbf30aeaf5a511d2e2ef470',
+  packageVersion: diagnosticHostProfile ? '2026.9.5' : selectedHost.range.slice(1),
+  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : selectedHost.commit,
+  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb'
+    : selectedArchive ? `sha256:${selectedArchive}` : selectedHost.commit === 'ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2'
+      ? 'sha256:acf8cd1cedd1b64f6b855c7177fd3340a03208cd9cbf30aeaf5a511d2e2ef470' : null,
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });

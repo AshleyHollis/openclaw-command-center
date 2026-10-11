@@ -1,10 +1,14 @@
 name: Package rehearsal candidate
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Packaging is serialized by the collector after native artifact selection.
+  # Pull requests retain their separate source-safety workflow.
   workflow_dispatch:
+    inputs:
+      native_package_binding:
+        description: Collector-selected native SDK JSON (runId, artifactName, archiveSha256) for the exact candidate host
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,22 +39,24 @@ jobs:
       - name: Reuse exact pinned native SDK artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          NATIVE_PACKAGE_BINDING: ${{ inputs.native_package_binding }}
         run: |
           set -euo pipefail
           sdk="$RUNNER_TEMP/pinned-native-sdk"
           mkdir -p "$sdk/download" "$sdk/runtime"
-          NATIVE_RUN=37873292633
-          NATIVE_ARTIFACT=nas-runtime-package-ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2-37873292633-1
-          NATIVE_SHA256=acf8cd1cedd1b64f6b855c7177fd3340a03208cd9cbf30aeaf5a511d2e2ef470
-          expected_native=ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2
+          node scripts/release-rehearsal-selection.mjs native-sdk > "$sdk/binding.txt"
+          mapfile -t native_binding < "$sdk/binding.txt"
+          NATIVE_RUN="${native_binding[0]}"
+          NATIVE_ARTIFACT="${native_binding[1]}"
+          NATIVE_SHA256="${native_binding[2]}"
+          echo "COMMAND_CENTER_NATIVE_PACKAGE_SHA256=$NATIVE_SHA256" >> "$GITHUB_ENV"
           echo 'COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION=1' >> "$GITHUB_ENV"
           gh run download "$NATIVE_RUN" --repo AshleyHollis/openclaw \
             --name "$NATIVE_ARTIFACT" \
             --dir "$sdk/download"
           printf '%s  %s\n' "$NATIVE_SHA256" \
             "$sdk/download/openclaw-current.tgz" | sha256sum --check --strict
-          python3 -c 'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["packageSourceSha"] == sys.argv[2]; assert receipt["sha256"] == sys.argv[3]' \
-            "$sdk/download/package-candidate.json" "$expected_native" "$NATIVE_SHA256"
+          node scripts/release-rehearsal-selection.mjs native-sdk "$sdk/download/package-candidate.json"
           tar -xzf "$sdk/download/openclaw-current.tgz" -C "$sdk/runtime"
           mkdir -p "$sdk/runtime/node_modules"
       # Fixed packaging toolchain only; this is not the deployed host identity.
@@ -69,6 +75,7 @@ jobs:
           # confined to this networkless test container, not an import profile.
           docker run --rm --init --network none --read-only \
             --env COMMAND_CENTER_SOURCE_COMMIT \
+            --env COMMAND_CENTER_NATIVE_PACKAGE_SHA256 \
             --env COMMAND_CENTER_TEST_NATIVE_ATTACHMENT_ADMISSION \
             --env COMMAND_CENTER_NATIVE_PLAN_SDK=/native-sdk/package/dist/plugin-sdk/session-transcript-runtime.js \
             --env COMMAND_CENTER_TEST_SQLITE_RUNTIME=file:///native-sdk/package/dist/plugin-sdk/sqlite-runtime.js \
