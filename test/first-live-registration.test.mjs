@@ -22,14 +22,14 @@ async function http(h, routePath, body) {
 }
 
 function host({ flatAgentEvents = false, nativeWorkflow = false } = {}) {
-  const routes = []; const methods = new Map(); const services = []; const tools = []; const agentEventSubscriptions = [];
+  const routes = []; const methods = new Map(); const services = []; const tools = []; const toolFactories = new Map(); const agentEventSubscriptions = [];
   const api = {
     pluginConfig: {},
     get notifications() { throw new Error('Optional notifications must not be acquired.'); },
     registerHttpRoute: value => routes.push(value),
     registerGatewayMethod: (name, handler) => methods.set(name, handler),
     registerService: value => services.push(value),
-    registerTool: (_factory, declaration) => tools.push(declaration.name),
+    registerTool: (factory, declaration) => { tools.push(declaration.name); toolFactories.set(declaration.name, factory); },
     ...(nativeWorkflow ? {
       session: {
         workflow: {
@@ -42,8 +42,16 @@ function host({ flatAgentEvents = false, nativeWorkflow = false } = {}) {
       ? { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) }
       : { agent: { events: { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) } } })
   };
-  return { api, routes, methods, services, tools, agentEventSubscriptions };
+  return { api, routes, methods, services, tools, toolFactories, agentEventSubscriptions };
 }
+
+test('native plan registration uses V2 but cannot mint a canonical operator binding', async () => {
+  const h = host(); plugin.register(h.api);
+  const factory = h.toolFactories.get('command_center_plan_intake_source');
+  assert.equal(factory.contextVersion, 2);
+  const tool = factory.create({ sessionKey: 'fictional', sessionId: 'fictional', senderIsOwner: true, requesterSenderId: 'fictional-client', assertInvocationCurrent() {} });
+  await assert.rejects(() => tool.execute('fictional', { sourceKind: 'chat', chatCommand: 'load', planId: 'fictional-plan' }), error => error.code === 'unauthenticated' && /canonical operator profile/u.test(error.message));
+});
 
 test('first-live registration needs no notification authority and preserves core native entry points', () => {
   const h = host();
@@ -60,6 +68,9 @@ test('registered commands outside the build-owned admission set are refused befo
   const h = host(); plugin.register(h.api);
   const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
   if (FIRST_LIVE_FEATURES.noteProposals) for (const action of ['prepare', 'context', 'publish', 'inspect', 'discard']) retained.add(`command-center.v1.notes.proposals.${action}`);
+  if (FIRST_LIVE_FEATURES.acceptedChatCapture) {
+    for (const action of ['accept', 'load', 'replay']) retained.add(`command-center.v1.chat-capture.${action}`);
+  }
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },

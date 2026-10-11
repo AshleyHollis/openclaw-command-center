@@ -36,14 +36,13 @@ test('closed replay accepts no new extraction or serialized authority and all co
   assert.throws(() => validateBridgeRequest(method('load'), { schemaVersion: 1, planId, principalId: 'forged' }), /Unsupported/);
 });
 
-test('disabled candidate transport refuses before acquiring authority or owners', async () => {
-  assert.equal(FIRST_LIVE_FEATURES.acceptedChatCapture, false);
+test('build policy keeps capture behind feature admission and trusted authority', async () => {
   const handlers = new Map();
   registerBridgeMethods({ registerGatewayMethod(name, handler) { handlers.set(name, handler); } }, new Proxy({}, { get() { throw new Error('must not acquire owner'); } }));
   for (const action of ['accept', 'load', 'replay']) {
     let response;
     await handlers.get(method(action))({ req: { id: 'fictional-transport' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond(...args) { response = args; } });
     assert.equal(response[0], false);
-    assert.equal(response[2].code, 'feature-unavailable');
+    assert.equal(response[2].code, FIRST_LIVE_FEATURES.acceptedChatCapture ? 'unauthenticated' : 'feature-unavailable');
   }
 });

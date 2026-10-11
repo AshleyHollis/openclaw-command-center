@@ -15,6 +15,12 @@ test('conversation capture remains absent until explicitly configured', () => {
   assert.deepEqual(registrations, []);
 });
 
+test('conversation capture respects the disabled build policy even when configured', () => {
+  const { api, registrations } = harness();
+  assert.equal(registerConversationCaptureHook(api, { captureEnabled: false }), false);
+  assert.deepEqual(registrations, []);
+});
+
 test('conversation capture contributes only with exact turn tool authority', () => {
   const { api, registrations } = harness();
   assert.equal(registerConversationCaptureHook(api), true);
@@ -29,6 +35,20 @@ test('conversation capture contributes only with exact turn tool authority', () 
   assert.match(allowed.appendContext, /one stable obligationId/u);
   assert.match(allowed.appendContext, /checkpoint "run-1"/u);
   assert.equal(allowed.appendContext.includes('nextExpectedAt'), true);
+  assert.match(allowed.appendContext, /chatCommand "accept"/u);
+  assert.match(allowed.appendContext, /chatCommand "replay"/u);
+  assert.match(allowed.appendContext, /coverage before successful plan submission is unknown/u);
+  assert.match(allowed.appendContext, /No success receipt on submission\/replay failure/u);
+  assert.match(allowed.appendContext, /the overall plan can remain pending/u);
+  assert.match(allowed.appendContext, /Clarified records retain later user decisions/u);
+  assert.equal(allowed.appendContext.includes('command_center_capture_commitment'), false);
+});
+
+test('legacy commitment authority cannot authorize the closed plan hook', () => {
+  const { api, registrations } = harness();
+  registerConversationCaptureHook(api);
+  const handler = registrations[0].handler;
+  assert.equal(handler({}, { runId: 'fictional-run', toolAuthority: { allows: name => name !== 'command_center_plan_intake_source', assertActive() { throw new Error('unreachable'); } } }), undefined);
 });
 
 test('conversation capture ignores internal system turns and missing run identity', () => {
