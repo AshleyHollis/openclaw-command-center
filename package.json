@@ -97,6 +97,7 @@
     "testCandidate": {
       "kind": "isolated-enabled-feature-test",
       "features": [
+        "acceptedChatCapture",
         "noteProposals",
         "topicNoteRecall",
         "topicDocuments",
