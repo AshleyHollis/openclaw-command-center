@@ -18,11 +18,11 @@ test('repository boundary accepts only the exact packaged native path declaratio
 test('Next-2 host binding agrees across canonical tuple and committed package metadata', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
-  assert.equal(compatibilityTuple.host.commit, '6cdebd0aba6e610455f775dced1c9df42d161fab');
+  assert.equal(compatibilityTuple.host.commit, '7aaa0289cc95f683decddfca1cc506e550d24b48');
   assertDeclarativeMirror(packageJson.commandCenter.compatibilityTuple);
   assertDeclarativeMirror(lock.packages[''].commandCenter.compatibilityTuple);
   const previous = structuredClone(compatibilityTuple);
-  previous.host.commit = 'b1e1fc52560226565fa86195a992bd068f0e13fc';
+  previous.host.commit = '6cdebd0aba6e610455f775dced1c9df42d161fab';
   assert.equal(validateCompatibility(previous).ok, false);
 });
 
