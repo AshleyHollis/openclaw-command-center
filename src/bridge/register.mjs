@@ -160,6 +160,10 @@ const handlerMap = Object.freeze({
     const action = method.slice(method.lastIndexOf('.') + 1);
     return service[`notesProposal${action[0].toUpperCase()}${action.slice(1)}`](input, runtime);
   }])),
+  'command-center.v1.conversation-plans.messages': (service, params, runtime) => service.conversationPlansMessages(params, runtime),
+  'command-center.v1.conversation-plans.track': (service, params, runtime) => service.conversationPlansTrack(params, runtime),
+  'command-center.v1.conversation-plans.reconcile': (service, params, runtime) => service.conversationPlansReconcile(params, runtime),
+  'command-center.v1.conversation-plans.list': (service, params, runtime) => service.conversationPlansList(params, runtime),
   'command-center.v1.bill-actions.list': (service, params, runtime) => service.billActionsList(params, runtime),
   'command-center.v1.bill-actions.read': (service, params, runtime) => service.billActionsRead(params, runtime),
   'command-center.v1.bill-actions.admit': (service, params, runtime) => service.billActionsAdmit(params, runtime),
@@ -327,19 +331,21 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
             assertCurrent: () => { authority.assertCurrent(); sessionMutationCommitGuard?.();
               if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'Note proposal authority is no longer current.'); } } };
         }
-        if (method.startsWith('command-center.v1.bill-actions.') || method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions) {
+        if (method.startsWith('command-center.v1.bill-actions.') || method.startsWith('command-center.v1.conversation-plans.') || method === 'command-center.v1.dashboard.get' && FIRST_LIVE_FEATURES.billActions) {
           const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
           const assertCurrent = () => {
             authority.assertCurrent();
             sessionMutationCommitGuard?.();
             if (hasCurrentClientAuthority?.() === false) throw new SourceServiceError('unauthenticated', 'The authenticated bill-action request is no longer current.');
           };
-          const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update']);
-          runtime = { assertCurrent, principalId: authority.principalId, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
+          const nativeMethods = new Set(['workboard.cards.list', 'workboard.cards.create', 'workboard.cards.update', ...(method.startsWith('command-center.v1.conversation-plans.') ? ['question.list', 'question.get', 'exec.approval.list', 'workboard.resultReviews.list', 'workboard.resultReviews.get'] : [])]);
+          runtime = { assertCurrent, principalId: authority.principalId, sourceBoundGateway: method.startsWith('command-center.v1.conversation-plans.') ? api.runtime?.gateway : undefined, canWrite: client.connect.scopes.some(scope => ['operator.write', 'operator.admin'].includes(scope)),
             nativeRequest: (nativeMethod, nativeParams, options = {}) => {
               if (!nativeMethods.has(nativeMethod)) throw new SourceServiceError('invalid-request', 'Unsupported native bill-action method.');
+              const requestScope = ['question.list', 'question.get'].includes(nativeMethod) ? 'operator.questions' : nativeMethod === 'exec.approval.list' ? 'operator.approvals' : null;
+              if (requestScope && !client.connect.scopes.some(scope => scope === requestScope || scope === 'operator.admin')) throw new SourceServiceError('read-only', 'Native human-request scope is required.');
               if (Object.keys(options).some(key => key !== 'assertCurrent') || options.assertCurrent !== undefined && typeof options.assertCurrent !== 'function') throw new SourceServiceError('invalid-request', 'Bill-action dispatch options are closed.');
-              if (nativeMethod !== 'workboard.cards.list' && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');
+              if (['workboard.cards.create', 'workboard.cards.update'].includes(nativeMethod) && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');
               const guard = () => { assertCurrent(); options.assertCurrent?.(); };
               guard();
               const gateway = createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal,

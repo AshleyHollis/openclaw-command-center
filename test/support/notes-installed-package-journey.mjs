@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, lstat, realpath, mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { readFile, writeFile, mkdir, lstat, realpath, mkdtemp, rm, cp, chmod, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { readBuiltReceipt } from '../../src/build.mjs';
+import { readBuiltReceipt, distRoot } from '../../src/build.mjs';
 import { verifyPluginArtifact } from '../../src/plugin-artifact.mjs';
 import { parseHostDescriptor, verifyHost, launchPinnedHost, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness, assertRecordedChildTraffic } from '../../src/host-harness.mjs';
 import { withIsolatedWorld } from '../../src/fixtures.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { prepareTopicSearchSnapshot, publishTopicSearchSnapshot } from '../../src/search/rebuild.mjs';
-import { FIRST_LIVE_FEATURES } from '../../src/release-scope.mjs';
 import { readNativeNote } from '../../src/native-ui/note-read.mjs';
 import { loadTopicCatalog } from '../../src/native-ui/topic-catalog.mjs';
 import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
@@ -17,19 +18,18 @@ import { assertFastHostAdmission, assertCandidatePluginPermissions } from './iso
 import { seedNativeExistingTopic, seedNativeResourceTopic } from './first-live-native-journey.mjs';
 import { readAttentionStartupReadiness, readAttentionControlUiBuildId } from './attention-startup-readiness.mjs';
 import { createGatewayDeviceIdentity, requestAuthenticatedGateway, launchManagedBrowser, closeManagedBrowser, configureEvidencePage } from './real-host-runtime.mjs';
-import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence } from './notes-installed-journey.mjs';
+import { runInstalledNoteProposalRpcJourney, verifyInstalledRecallEvidence, assertNotesQualificationReceipt, runInstalledNoteProposalNegatives } from './notes-installed-journey.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
+import { configureNotesRecallModel, collectRecallDiagnostics, recordRecallNativeEvent, waitForRecallObservation, summarizeRecallFailure } from './notes-recall-diagnostics.mjs';
+import { createRecallTurnObserver, recallProviderFinal, recallTurnSettled, pinRecallChat, readRecallPaneState, assertRetainedRecallDraft, recallBrowserState } from './notes-recall-browser-lifecycle.mjs';
+import { validatePackageBinding, validatePackageReceipt } from '../../scripts/rehearsal-package-binding.mjs';
 
 // Explicit disposable-host qualification only. No top-level launch or live lookup.
 export async function runNotesInstalledPackageJourney({ signal } = {}) {
   const mode = process.env.COMMAND_CENTER_NOTES_INSTALLED_MODE;
   assert.ok(['proposals', 'recall'].includes(mode));
-  assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
-  assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, mode === 'recall');
-  assert.equal(FIRST_LIVE_FEATURES.acceptedChatCapture, false);
   const descriptor = parseHostDescriptor();
   await assertFastHostAdmission(descriptor); await verifyHost(descriptor);
-  const buildReceipt = await readBuiltReceipt();
   const archivePath = process.env.COMMAND_CENTER_NOTES_TEST_ARCHIVE;
   const receiptPath = process.env.COMMAND_CENTER_NOTES_TEST_RECEIPT;
   const admissionRoot = process.env.COMMAND_CENTER_NOTES_ADMISSION_ROOT;
@@ -37,34 +37,91 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
   assert.equal(await realpath(admissionRoot), path.resolve(admissionRoot));
   const stat = await lstat(admissionRoot);
   assert.ok(stat.isDirectory() && !stat.isSymbolicLink()); assert.equal(stat.uid, process.getuid()); assert.equal(stat.mode & 0o777, 0o700);
-  const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.buildDigest, buildReceipt.digest);
-  const manifest = JSON.parse(await readFile(new URL('../fixtures/notes-qualification-candidate.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.mode, mode); assert.equal(manifest.nativeCommit, descriptor.commit);
+  const receiptBytes = await readFile(receiptPath);
+  const receipt = JSON.parse(receiptBytes);
+  const identities = JSON.parse(await readFile(new URL('../fixtures/notes-qualification-artifacts.json', import.meta.url), 'utf8'));
+  const combinedBinding = process.env.CC_PACKAGE_BINDING ? validatePackageBinding(
+    JSON.parse(process.env.CC_PACKAGE_BINDING), process.env.COMMAND_CENTER_SOURCE_COMMIT ?? process.env.GITHUB_SHA) : null;
+  const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+  const expected = combinedBinding ?? identities.candidates[mode];
+  if (combinedBinding) validatePackageReceipt(combinedBinding, receiptBytes);
+  assertNotesQualificationReceipt(receipt, expected);
+  assert.equal(combinedBinding ? manifest.commandCenter.compatibilityTuple.host.commit : identities.nativeCommit, descriptor.commit);
+  const evidencePath = process.env.COMMAND_CENTER_NOTES_EVIDENCE_PATH;
+  assert.ok(evidencePath && path.isAbsolute(evidencePath));
+  assert.equal(path.dirname(evidencePath), admissionRoot);
+  assert.equal(await lstat(evidencePath).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }), false);
+  const declaredFixtureRevision = process.env.COMMAND_CENTER_NOTES_FIXTURE_REVISION;
+  assert.match(declaredFixtureRevision ?? '', /^[a-f0-9]{40}$/u);
+  if (combinedBinding) assert.equal(declaredFixtureRevision, combinedBinding.sourceCommit);
+  const fixtureInputs = {};
+  for (const name of ['test/support/notes-installed-package-journey.mjs', 'test/support/notes-installed-journey.mjs',
+    ...(combinedBinding ? ['scripts/rehearsal-package-binding.mjs', 'package.json', 'src/compatibility-tuple.json'] : []),
+    ...(mode === 'recall' ? ['test/support/notes-recall-browser-lifecycle.mjs'] : []),
+    'test/support/fictional-openai-model.mjs', 'test/support/notes-recall-diagnostics.mjs', 'test/support/first-live-native-journey.mjs', 'test/support/real-host-runtime.mjs',
+    'test/support/attention-startup-readiness.mjs', 'test/support/isolated-acceptance-preflight.mjs',
+    'test/fixtures/notes-qualification-artifacts.json', 'src/host-harness.mjs', 'src/fixtures.mjs', 'src/build.mjs',
+    'src/plugin-artifact.mjs', 'package-lock.json']) {
+    fixtureInputs[name] = createHash('sha256').update(await readFile(new URL(`../../${name}`, import.meta.url))).digest('hex');
+  }
+  const cases = [];
+  const report = { schemaVersion: 1, status: 'failed', mode, candidate: expected, nativeCommit: descriptor.commit,
+    hostIntegrity: descriptor.integrity, declaredFixtureRevision, fixtureInputs, cases,
+    productionActivationAllowed: false };
+  let stagedDist;
   const admission = await mkdtemp(path.join(admissionRoot, 'notes-test-admission-'));
   try {
     const candidateRoot = await verifyPluginArtifact({ archivePath, expectedReceipt: receipt, destinationDirectory: path.join(admission, 'candidate') });
     await assertCandidatePluginPermissions(candidateRoot);
+    // Reuse the audited dist; never rebuild or replace an existing checkout tree.
+    try {
+      await mkdir(distRoot); stagedDist = await lstat(distRoot);
+      const candidateDist = path.join(candidateRoot, 'dist');
+      for (const name of await readdir(candidateDist)) {
+        await cp(path.join(candidateDist, name), path.join(distRoot, name), { recursive: true, force: false, errorOnExist: true });
+      }
+    } catch (error) { if (error.code !== 'EEXIST' || stagedDist) throw error; }
+    const buildReceipt = await readBuiltReceipt(); assert.equal(buildReceipt.digest, expected.buildDigest);
+    const { FIRST_LIVE_FEATURES } = await import(pathToFileURL(path.join(candidateRoot, 'dist/release-scope.mjs')).href);
+    assert.equal(FIRST_LIVE_FEATURES.noteProposals, true);
+    assert.equal(FIRST_LIVE_FEATURES.topicNoteRecall, combinedBinding ? true : mode === 'recall');
+    assert.equal(FIRST_LIVE_FEATURES.acceptedChatCapture, Boolean(combinedBinding));
+    for (const flag of ['search', 'noteWrite', 'noteMaintenance']) assert.equal(FIRST_LIVE_FEATURES[flag], false);
+    const packagedManifest = JSON.parse(await readFile(path.join(candidateRoot, 'dist/plugin-manifest.json'), 'utf8'));
+    assert.equal(packagedManifest.contracts.tools.includes('command_center_recall_topic_notes'), combinedBinding ? true : mode === 'recall');
+    cases.push('immutable-archive-and-build-verified');
+
     await withIsolatedWorld(async world => {
-      const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true }) : null;
-      let host, managed, transport, controlUiBuildId;
+      const provider = mode === 'recall' ? await startFictionalOpenAiModel({ noteRecall: true, noteRecallDiscovery: true }) : null;
+      const nativeEvents = [];
+      const progress = { phase: 'gateway-ui-readiness', successfulReadinessChecks: 0 };
+      let host, managed, transport, controlUiBuildId, recallPage, recallSessionKey, turnObserver, chat;
       const guard = new TrafficGuard(); const evidence = { requests: [], responses: [], console: [], errors: [] };
       const deviceIdentity = createGatewayDeviceIdentity();
       const ready = async () => {
+        progress.phase = 'gateway-ui-readiness';
         await waitForConsecutiveReadiness(() => readAttentionStartupReadiness({ world, signal }), host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
         controlUiBuildId = await readAttentionControlUiBuildId({ world, signal });
+        progress.successfulReadinessChecks += 1;
       };
-      const rpc = async (method, params) => {
+      const recallWait = async (phase, observe, deadlineMs = 120_000) => {
+        progress.phase = phase;
+        await waitForRecallObservation(waitForConsecutiveReadiness, observe, host.earlyExit,
+          { phase, deadlineMs, delayMs: 100, signal });
+        progress.phase = `${phase}-observed`;
+      };
+      const request = async (method, params, scopes) => {
         signal.throwIfAborted();
         return requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params,
-          scopes: ['operator.read', 'operator.write'], deviceIdentity, controlUiBuildId, signal, responseTimeoutMs: 30_000 });
+          scopes, deviceIdentity, controlUiBuildId, signal, responseTimeoutMs: 30_000 });
       };
+      const rpc = (method, params) => request(method, params, ['operator.read', 'operator.write']);
+      const readOnlyRpc = (method, params) => request(method, params, ['operator.read']);
       try {
       if (provider) {
         const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
-        config.models.providers.fixture.baseUrl = provider.baseUrl;
-        config.models.providers.fixture.request = { allowPrivateNetwork: true };
-        config.tools = { ...(config.tools ?? {}), alsoAllow: ['command_center_recall_topic_notes'] };
+        configureNotesRecallModel(config, provider.baseUrl);
+        assert.equal(config.tools.toolSearch, undefined, 'Recall qualification must preserve native default Tool Search');
         await writeFile(world.manifest.configPath, JSON.stringify(config));
       }
         host = await launchPinnedHost({ descriptor, world, buildReceipt, signal }); await ready();
@@ -87,8 +144,26 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
           proposedText: `${topic.noteText}\nFictional operator-staged comparison only.\n`,
           readNoteBytes: pointer => readFile(path.join(topic.folder, pointer.path)),
           restart: async () => { host = await restartPinnedHost(host, { signal }); await ready(); } });
+        cases.push('proposal-prepare-publish-discard-and-three-restarts');
+        cases.push(...await runInstalledNoteProposalNegatives({ rpc, readOnlyRpc,
+          refreshRequest: async () => {
+            const current = await loadTopicCatalog({ request: rpc, topicId: topic.topicId, current: () => !signal.aborted, validate() {}, maxEntries: 300 });
+            const exact = pointer => { const row = current.notes.find(row => row.sourceReference.referenceId === pointer.referenceId && row.path === pointer.path); assert.ok(row); return { ...pointer, revision: row.revision }; };
+            const latest = await rpc('command-center.v1.topics.get', { schemaVersion: 1, topicId: topic.topicId });
+            return { topicId: topic.topicId, expectedTopicRevision: (latest.result ?? latest).topic.revision,
+              target: exact(target), sources: sources.map(exact), panel: { sessionKey: topic.sessionKey, sessionId: topic.sessionId, referenceId: topic.sessionReferenceId } };
+          }, readNoteBytes: pointer => readFile(path.join(topic.folder, pointer.path)),
+          writeFixtureBytes: (pointer, bytes) => writeFile(path.join(topic.folder, pointer.path), bytes),
+          setFixtureMode: (pointer, mode) => chmod(path.join(topic.folder, pointer.path), mode),
+          restart: async () => { host = await restartPinnedHost(host, { signal }); await ready(); } }));
         managed = await launchManagedBrowser({ headless: true });
         const page = await managed.browser.newPage(); transport = await configureEvidencePage(page, guard, evidence);
+        if (provider) {
+          recallPage = page; recallSessionKey = topic.sessionKey;
+          turnObserver = createRecallTurnObserver(topic.sessionKey); turnObserver.attach(page);
+        }
+        // Passive observation preserves the existing guarded WebSocket route.
+        if (provider) page.on('websocket', socket => socket.on('framereceived', frame => recordRecallNativeEvent(nativeEvents, frame.payload)));
         const href = new URL(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topic',
           fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
         href.searchParams.set('p.topicId', topic.topicId); href.searchParams.set('p.sourceReferenceId', target.referenceId);
@@ -118,6 +193,7 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
         await page.getByRole('button', { name: 'Discard', exact: true }).click();
         await page.getByRole('status').filter({ hasText: 'Suggestion: discarded.' }).waitFor();
         await unchanged();
+        cases.push('proposal-browser-review-recover-discard');
         if (provider) {
           const texts = new Map(); const indexed = [];
           const foreignCatalog = await loadTopicCatalog({ request: rpc, topicId: foreign.topicId, current: () => !signal.aborted, validate() {}, maxEntries: 300 });
@@ -141,43 +217,138 @@ export async function runNotesInstalledPackageJourney({ signal } = {}) {
             await publishTopicSearchSnapshot({ stateDir: path.join(world.root, '.openclaw'), metadata, prepared });
           } finally { metadata.close(); }
           host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
+          progress.phase = 'native-chat-submit';
           await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
-          const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]'); await chatPane.waitFor({ timeout: 30_000 });
-          await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, topic.sessionKey);
-          const composer = chatPane.locator('.agent-chat__composer-combobox textarea');
-          await composer.fill('[fixture:notes-recall] Recall alpha from my Topic Notes.');
-          await chatPane.getByRole('button', { name: 'Send message', exact: true }).click();
-          await waitForConsecutiveReadiness(async () => provider.recallResults.length > 0, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
-          assert.ok(provider.requests.some(row => row.action === 'recall' && row.issuedToolCallId));
+          chat = await pinRecallChat(page, topic.sessionKey);
+          const chatPane = chat.locator;
+          const sendRecall = async (phase, prompt) => {
+            const resultCount = provider.recallResults.length, requestCount = provider.requests.length, mark = turnObserver.mark();
+            await chat.composer.fill(prompt);
+            await chat.locator.getByRole('button', { name: 'Send message', exact: true }).click();
+            await recallWait(`${phase}-tool-result`, async () => provider.recallResults.length > resultCount);
+            await recallWait(`${phase}-turn-settled`, async () => {
+              const turn = turnObserver.current(mark); if (!turn) return false;
+              return recallTurnSettled(turn, await readRecallPaneState(chat, turn), recallProviderFinal(provider.requests, requestCount));
+            });
+          };
+          await sendRecall('initial', '[fixture:notes-recall] Recall alpha from my Topic Notes.');
+          assert.ok(provider.requests.some(row => row.action === 'recall-search' && row.issuedToolCallId));
+          assert.ok(provider.requests.some(row => row.action === 'recall-call' && row.issuedToolCallId && row.recallCatalogMatched));
+          assert.ok(provider.requests.some(row => row.recallCatalogResultVerified));
           const recalled = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
           assert.ok(recalled.every(row => row.originatingTopic.topicId !== foreign.topicId));
-          const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }); await link.waitFor({ timeout: 30_000 });
-          const draft = 'Fictional unsent draft: retain punctuation and newline.\nSecond line.';
-          await composer.fill(draft); await composer.evaluate(element => element.setSelectionRange(7, 19));
-          await link.click();
-          const nativePage = page.locator('openclaw-plugin-page');
-          await nativePage.getByRole('region', { name: 'Note content', exact: true }).getByText('alpha fictional shared observation.', { exact: false }).waitFor({ timeout: 30_000 });
-          await nativePage.getByRole('navigation', { name: 'File path', exact: true }).getByText('shared.md', { exact: true }).waitFor();
+          assert.deepEqual(recalled.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
+          const issued = provider.requests.filter(row => row.action === 'recall-call');
+          assert.ok(issued.every(row => row.tools.includes('tool_search') && row.tools.includes('tool_call')
+            && !row.tools.includes('command_center_recall_topic_notes') && row.recallCatalogMatched && row.recallCatalogOtherCommandCenterCount === 0));
+          for (const name of ['command_center_topic_context', 'command_center_topic_analysis', 'command_center_update_working_note'])
+            assert.ok(issued.every(row => !row.tools.includes(name)));
+          cases.push('native-model-registration-and-exact-two-note-recall');
+          cases.push('native-default-catalog-discovery-and-authorized-execution');
+          // Repeat through the actual native tool after an owned host restart.
+          host = await restartPinnedHost(host, { signal }); await ready(); await page.reload();
+          progress.phase = 'restart-chat-reentry';
+          // The native Chat URL survives reload. Reacquire its exact current
+          // Session/client; the Topic-page entry button is absent on this route.
+          await chat.dispose(); chat = await pinRecallChat(page, topic.sessionKey);
+          await sendRecall('restart', '[fixture:notes-recall] Recall alpha after restart.');
+          const restarted = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
+          assert.deepEqual(restarted.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
+          assert.equal(new Set(provider.requests.filter(row => row.action === 'recall-call').map(row => row.issuedToolCallId)).size, 2);
+          cases.push('native-recall-after-restart');
+          const shared = sources.find(row => row.path === 'shared.md');
+          await chmod(path.join(topic.folder, shared.path), 0o000);
+          try {
+            await sendRecall('permission-loss', '[fixture:notes-recall] Recall alpha with one denied Note.');
+            const denied = provider.recallResults.at(-1);
+            assert.equal(denied.status, 'partial');
+            const remaining = verifyInstalledRecallEvidence(denied, { topicId: topic.topicId, noteTextByReference: texts });
+            assert.deepEqual(remaining.map(row => row.navigation.path), ['nested/source.md']);
+          } finally { await chmod(path.join(topic.folder, shared.path), 0o600); }
+          cases.push('native-recall-permission-loss-omits-private-source');
+          const priorLinks = await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count();
+          await sendRecall('permission-recovery', '[fixture:notes-recall] Recall alpha after Note permission recovery.');
+          const restored = verifyInstalledRecallEvidence(provider.recallResults.at(-1), { topicId: topic.topicId, noteTextByReference: texts });
+          assert.deepEqual(restored.map(row => row.navigation.path).sort(), ['nested/source.md', 'shared.md']);
+          await recallWait('citation-link', async () => await chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).count() > priorLinks, 30_000);
+          const allCalls = provider.requests.filter(row => row.action === 'recall-call');
+          assert.equal(allCalls.length, 4);
+          assert.ok(allCalls.every(row => row.recallCatalogMatched && row.recallCatalogOtherCommandCenterCount === 0));
+          assert.equal(provider.requests.filter(row => row.recallCatalogResultVerified).length, 4);
+          cases.push('native-recall-permission-recovery');
+
+          const link = chatPane.getByRole('link', { name: 'Source: shared.md', exact: true }).last(); await link.waitFor({ timeout: 30_000 });
           const actualLink = new URL(await link.getAttribute('href'), page.url());
           const source = sources.find(row => row.path === 'shared.md');
           for (const [key, value] of Object.entries({ 'p.topicId': topic.topicId, 'p.sourceReferenceId': source.referenceId,
             'p.sourcePath': source.path, 'p.evidenceSourceVersion': source.revision })) assert.equal(actualLink.searchParams.get(key), value);
-          assert.equal(await chatPane.evaluate(element => element.sessionKey), topic.sessionKey);
-          assert.equal(await composer.inputValue(), draft);
-          assert.deepEqual(await composer.evaluate(element => [element.selectionStart, element.selectionEnd]), [7, 19]);
+          const draft = 'Fictional unsent draft: retain punctuation and newline.\nSecond line.';
+          await chat.composer.fill(draft); await chat.composer.evaluate(element => element.setSelectionRange(7, 19));
+          const draftExpected = { sessionKey: topic.sessionKey, draft, selection: [7, 19] };
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: true });
+          progress.phase = 'citation-navigation';
+          await link.click();
+          const nativePage = page.locator('openclaw-plugin-page');
+          await nativePage.getByRole('region', { name: 'Note content', exact: true }).getByText('alpha fictional shared observation.', { exact: false }).waitFor({ timeout: 30_000 });
+          const heading = nativePage.getByRole('heading', { name: 'shared.md', exact: true }); await heading.waitFor();
+          assert.equal(await heading.getAttribute('title'), source.path);
+          // This must fail if a raw citation replaces the document. A new Chat
+          // mount or restored draft is not proof of retained native ownership.
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: false });
+          cases.push('citation-reader-exact-identity-and-mounted-chat-draft-caret');
           await writeFile(path.join(topic.folder, 'shared.md'), '# Shared\nalpha fictional newer revision.\n');
+          // A new reader mount is explicit; same-route clicks do not promise a reread.
+          await nativePage.getByRole('button', { name: 'All Topics', exact: true }).click();
+          await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+          // Re-present the retained Chat before interacting with its citation;
+          // hidden/inert pane controls must never be force-clicked.
+          await page.goBack(); await nativePage.getByRole('region', { name: 'Note content', exact: true }).waitFor();
+          await page.goBack(); await chat.composer.waitFor();
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: true });
+          progress.phase = 'stale-citation-navigation';
           await link.click(); await nativePage.getByText(/It was not opened as the earlier evidence/).waitFor({ timeout: 30_000 });
-          assert.equal(await composer.inputValue(), draft);
+          await nativePage.getByRole('button', { name: 'Open current Note', exact: true }).waitFor();
+          assert.equal(await nativePage.getByText('alpha fictional newer revision.', { exact: false }).count(), 0);
+          assert.equal(await nativePage.getByRole('region', { name: 'Note content', exact: true }).textContent(), '');
+          await assertRetainedRecallDraft(chat, { ...draftExpected, presented: false, phase: 'stale-citation-navigation' });
+          cases.push('stale-citation-on-fresh-reader-retains-draft');
         }
         await transport.drain(); transport.assertClean(); guard.assertClean(); await assertRecordedChildTraffic(world);
+      } catch (error) {
+        if (provider) report.recallFailure = summarizeRecallFailure(error);
+        throw error;
       } finally {
         try {
-          if (managed) await closeManagedBrowser(managed, signal);
+          try { if (provider) {
+            report.recallDiagnostics = { ...progress, ...collectRecallDiagnostics(provider, nativeEvents),
+              browser: recallPage && recallSessionKey ? await recallBrowserState(recallPage, recallSessionKey).catch(() => ({ unavailable: true })) : null };
+          } }
+          finally {
+            try { if (chat) await chat.dispose(); }
+            finally { if (managed) await closeManagedBrowser(managed, signal); }
+          }
         } finally {
-          try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
-          finally { if (provider) await provider.close(); }
+          try { turnObserver?.dispose(); }
+          finally {
+            try { if (host) { await stopPinnedHost(host.child); await host.outputDrained; } }
+            finally { if (provider) await provider.close(); }
+          }
         }
       }
     }, { candidateRoot });
-  } finally { await rm(admission, { recursive: true, force: true }); }
+    report.status = 'passed';
+  } finally {
+    try {
+      await rm(admission, { recursive: true, force: true });
+      if (stagedDist) {
+        const current = await lstat(distRoot);
+        assert.equal(current.dev, stagedDist.dev); assert.equal(current.ino, stagedDist.ino); assert.equal(current.isSymbolicLink(), false);
+        await rm(distRoot, { recursive: true, force: false });
+      }
+    } catch (error) {
+      report.status = 'failed'; report.cleanupFailed = true; throw error;
+    } finally {
+      await writeFile(evidencePath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    }
+  }
 }

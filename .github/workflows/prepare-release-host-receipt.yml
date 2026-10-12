@@ -1,17 +1,16 @@
 name: Prepare release host receipt
 
 on:
-  push:
-    branches: [upgrade/openclaw-2026.9.5]
-    paths:
-      - .github/workflows/prepare-release-host-receipt.yml
-      - src/host-harness.mjs
-      - src/packaged-host-integrity.mjs
-      - src/runtime-capability.json
+  # An immutable image must be explicitly selected by the existing collector.
+  # The historical 9.5 push route had an implicit image and cannot select 9.9.
   workflow_dispatch:
     inputs:
       image_digest:
         description: Immutable ghcr.io/ashleyhollis/openclaw image digest
+        required: true
+        type: string
+      native_archive_sha256:
+        description: Collector-reviewed native archive SHA256 for this exact image and source
         required: true
         type: string
 
@@ -30,7 +29,7 @@ jobs:
     steps:
       - name: Validate immutable selection
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:714d71199e498398a75e519b4ef3e19154eb48950a9185391b89aa34896d5980' }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -39,11 +38,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Resolve existing release metadata
+        id: selection
+        env:
+          PREPARE_HOST_RECEIPT: '1'
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          COMMAND_CENTER_NATIVE_PACKAGE_SHA256: ${{ inputs.native_archive_sha256 }}
+        run: node scripts/release-rehearsal-selection.mjs
+
+      - name: Install supported verifier runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ steps.selection.outputs.node }}
+
       - name: Checkout exact OpenClaw source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: AshleyHollis/openclaw
-          ref: 21f1ca697532a9bd9e9cc46322a598a31435de15
+          ref: ${{ steps.selection.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
           path: _openclaw-source
@@ -53,13 +65,10 @@ jobs:
 
       - name: Materialize and verify packaged host
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:714d71199e498398a75e519b4ef3e19154eb48950a9185391b89aa34896d5980' }}
-          IMAGE_REPOSITORY: ghcr.io/ashleyhollis/openclaw
-          OPENCLAW_COMMIT: 21f1ca697532a9bd9e9cc46322a598a31435de15
-          OPENCLAW_VERSION: 2026.9.5
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
         run: |
           set -euo pipefail
-          image="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          image="$IMAGE"
           docker pull "$image"
           test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$OPENCLAW_COMMIT"
           test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" = "$OPENCLAW_VERSION"

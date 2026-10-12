@@ -119,6 +119,10 @@ export default definePluginEntry({
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
         if (property === 'billActionsList') return (input, runtime) => service.billActionsList(input, runtime);
+        if (property === 'conversationPlansMessages') return (input, runtime) => service.conversationPlansMessages(input, runtime);
+        if (property === 'conversationPlansTrack') return (input, runtime) => service.conversationPlansTrack(input, runtime);
+        if (property === 'conversationPlansReconcile') return (input, runtime) => service.conversationPlansReconcile(input, runtime);
+        if (property === 'conversationPlansList') return (input, runtime) => service.conversationPlansList(input, runtime);
         if (property === 'billActionsRead') return (input, runtime) => service.billActionsRead(input, runtime);
         if (property === 'billActionsAdmit') return (input, runtime) => service.billActionsAdmit(input, runtime);
         if (property === 'billActionsHandle') return (input, runtime) => service.billActionsHandle(input, runtime);
@@ -239,7 +243,7 @@ export default definePluginEntry({
     api.registerTool(sourceTopicResolverToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_resolve_source_topic', optional: true });
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
-    api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
+    api.registerTool({ contextVersion: 2, create: intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners(), acceptedChatCommands: service }) }, { name: 'command_center_plan_intake_source', optional: true });
     api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
     api.registerTool(pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_pending_clarification', optional: true });
     api.registerTool(interpretClarificationToolFactory({ interpret: (input, authority) => service.openLoopsInterpretClarification(input, { ...authority, deferFollowUp: true }) }), { name: 'command_center_interpret_clarification', optional: true });

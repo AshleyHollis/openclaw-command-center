@@ -2,7 +2,7 @@
 
 This separate Class 3 source and archive exist only for isolated fictional qualification. `productionAdmission:false`, no deployment permission and no installed qualification. Independent alternatives PR382/385 (disabled) and PR388/392 (enabled TEST) remain unchanged.
 
-The reviewed source chain is Capture PR386 `c0ceacd1100843fa5db1c0f2f5cbb12b231341de`, Notes TEST PR390 `eafd742937372efeb5c2bac44a1f4715bcc22a3f`, and Recall TEST PR391 `b2e1b213c8fea5720967f6daa39d530816c34608`, followed by this Filing TEST successor.
+The reviewed source chain is Capture PR386 `c0ceacd1100843fa5db1c0f2f5cbb12b231341de`, Notes TEST PR390 `eafd742937372efeb5c2bac44a1f4715bcc22a3f`, and Recall TEST PR391 `b2e1b213c8fea5720967f6daa39d530816c34608`, followed by this Filing TEST successor and its Track TEST child.
 
 The predecessor TEST gates `noteProposals:true` and `topicNoteRecall:true` are preserved. Filing enables `topicDocuments:true` through only the six existing attachment list/review/prepare/file/check/reopen HTTP owner actions. Track additionally enables `conversationPlans:true` through only messages/track/reconcile/list. General Search, Note writes, automatic maintenance, Topic provisioning, notifications and Accepted Chat capture activation stay disabled. No security grants, model-dispatch expansion, queues, schedulers or live-state changes are introduced. Production source policies and the disabled alternatives are not modified.
 

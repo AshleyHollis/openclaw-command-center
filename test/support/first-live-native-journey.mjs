@@ -428,17 +428,21 @@ export async function exerciseNativeTopicChatHandoffJourney({ descriptor, buildR
 // This is intentionally separate from the Reader journey: it proves that an
 // actual native primary Chat can invoke our two narrow model tools without
 // coupling that proof to Conversation-creation recovery.
+export async function exerciseNativeConversationPlanJourney(options) {
+  return exerciseNativeTopicToolsJourney(options, { trackOnly: true });
+}
+
 export async function exerciseNativeTopicFilingJourney(options) {
   return exerciseNativeTopicToolsJourney(options, { filingOnly: true });
 }
 
-export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt, signal, onFinalization }, { filingOnly = false } = {}) {
+export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt, signal, onFinalization }, { filingOnly = false, trackOnly = false } = {}) {
   let fictionalModel;
   let providerEvidence = { ingress: [], actions: [], tools: [] };
   let nativeEventEvidence = [];
   try {
     return await withIsolatedWorld(async (world) => {
-    fictionalModel = await startFictionalOpenAiModel({ firstTurnFinal: true });
+    fictionalModel = await startFictionalOpenAiModel({ firstTurnFinal: true, ...(trackOnly ? { firstTurnFinalText: 'Agreed outcome: Prepare the fictional garden plan.\nSteps:\n1. Draft a planting plan.\n2. Compare the fictional budget.\nCompletion criteria: Both documents ready for human review.' } : {}) });
     const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     configured.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
     configured.models.providers.fixture.api = 'openai-completions';
@@ -450,9 +454,9 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
     configured.models.providers.fixture.request = { allowPrivateNetwork: true };
     configured.agents.entries = { ...(configured.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
     // Grants are confined to this disposable fictional world. Filing-only uses the explicit Files owner and grants neither legacy model tool.
-    const fixtureTools = filingOnly ? []
+    const fixtureTools = filingOnly || trackOnly ? []
       : ['command_center_file_topic_attachment', 'command_center_update_working_note'];
-    const priorTools = (configured.tools?.alsoAllow ?? []).filter(name => !filingOnly || !['command_center_update_working_note', 'command_center_file_topic_attachment'].includes(name));
+    const priorTools = (configured.tools?.alsoAllow ?? []).filter(name => !(filingOnly || trackOnly) || !['command_center_update_working_note', 'command_center_file_topic_attachment'].includes(name));
     configured.tools = { ...(configured.tools ?? {}), alsoAllow: [...new Set([...priorTools, ...fixtureTools])] };
     await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
     let host = await withDeadline('native tool host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
@@ -506,7 +510,7 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
       await chatPane.waitFor({ timeout: 30_000 });
       await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
       let jobs = [];
-      if (!filingOnly) {
+      if (!filingOnly && !trackOnly) {
         // A settled native turn without a working-Note result must schedule the
         // durable catch-up. Verify that host boundary before the following turn
         // exercises the successful tool path, which correctly suppresses only
@@ -530,76 +534,146 @@ export async function exerciseNativeTopicToolsJourney({ descriptor, buildReceipt
         assert.ok(maintenance.tools.includes('command_center_update_working_note'), `The exact fixture model must receive both granted native tools: ${JSON.stringify({ ingress: fictionalModel.ingress, actions: fictionalModel.requests.map(entry => entry.action), tools: fictionalModel.requests.map(entry => entry.tools) })}`);
         await waitForConsecutiveReadiness(async () => (await readFile(path.join(fixture.folder, fixture.notePath), 'utf8')) === maintainedNote, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       }
-      // This compact but structurally valid PDF is a fictional original. The
-      // journey verifies its exact stored bytes rather than treating an
-      // extension or a requested tool call as filing evidence.
-      const attachment = fictionalPdfBytes();
-      await chatPane.locator('.agent-chat__file-input').setInputFiles({ name: 'fictional-topic-document.pdf', mimeType: 'application/pdf', buffer: attachment });
-      await chatPane.locator('.chat-attachment-thumb').waitFor({ timeout: 30_000 });
-      await chatPane.locator('.agent-chat__composer-combobox textarea').fill('File this fictional attachment in this Topic.');
-      await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-      let filing;
-      if (filingOnly) {
+      if (trackOnly) {
+        const outcome = 'Prepare the fictional garden plan';
+        const steps = ['Draft a planting plan.', 'Compare the fictional budget.'];
+        const criteria = ['Both documents ready for human review.'];
+        await chatPane.locator('.agent-chat__composer-combobox textarea').fill('Propose the concrete fictional garden plan for agreement.');
+        await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
         await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'final' && entry.currentRole === 'user'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-        const workspace = await openNativeTopicFiles({ page, fixture });
-        await workspace.getByRole('button', { name: 'File Chat attachment', exact: true }).click();
-        const review = workspace.getByRole('region', { name: 'Review Chat attachment filing', exact: true });
-        await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
-          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).waitFor({ state: 'attached', timeout: 30_000 });
-        const options = await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
-          .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).evaluateAll(items => items.map(item => item.value));
-        assert.equal(options.length, 1, 'Select exactly the uploaded fictional original.');
-        await review.getByRole('combobox', { name: 'Chat attachment', exact: true }).selectOption(options[0]);
-        await review.getByRole('button', { name: 'Review destination', exact: true }).click();
-        await review.getByRole('status').filter({ hasText: 'Destination reviewed' }).waitFor({ timeout: 30_000 });
-        assert.equal(await review.getByRole('button', { name: 'File original', exact: true }).isEnabled(), true,
-          'Installed filing qualification requires a separately admitted candidate; disabled builds must refuse.');
-        await review.getByRole('button', { name: 'File original', exact: true }).click();
-        await review.getByRole('status').filter({ hasText: 'Original filed:' }).waitFor({ timeout: 30_000 });
+        const draft = 'Fictional unsent draft retained while tracking.';
+        const composer = chatPane.locator('.agent-chat__composer-combobox textarea');
+        await composer.fill(draft);
+        await composer.focus();
+        assert.equal(await composer.evaluate(element => element === document.activeElement), true);
+        const documentOwner = await page.evaluate(() => performance.timeOrigin);
+        // Native ea4135 renders this registered navigation contribution as an
+        // SPA link that invokes the real plugin host's navigation.openPage.
+        // Reloading the page here would discard the native draft under test.
+        const manageTopics = page.locator('openclaw-app-sidebar:visible')
+          .getByRole('link', { name: 'Manage Topics', exact: true });
+        await manageTopics.click({ timeout: 30_000 });
+        await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+        assert.equal(await page.evaluate(() => performance.timeOrigin), documentOwner, 'Native navigation must retain the document owner.');
+        await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
+        await nativePage.getByRole('button', { name: 'Review agreed plan', exact: true }).click();
+        const plans = nativePage.getByRole('region', { name: 'Conversation plans', exact: true });
+        await plans.getByLabel('Source Conversation message').locator('option').first().waitFor({ state: 'attached', timeout: 30_000 });
+        await plans.getByLabel('Agreed outcome', { exact: true }).fill(outcome);
+        await plans.getByLabel('Exact agreed steps, one per line', { exact: true }).fill(steps.join('\n'));
+        await plans.getByLabel('Completion criteria, one per line', { exact: true }).fill(criteria.join('\n'));
+        await plans.getByLabel('Exact Workboard tenant', { exact: true }).fill('fictional-plan');
+        await plans.getByLabel('Exact Workboard board', { exact: true }).fill('default');
+        await plans.getByRole('button', { name: 'Review this plan', exact: true }).click();
+        const review = plans.getByRole('region', { name: 'Review Conversation plan', exact: true });
+        await review.getByRole('button', { name: 'Track this plan', exact: true }).dblclick();
+        await review.getByRole('status').filter({ hasText: 'Native status: todo.' }).waitFor({ timeout: 30_000 });
+        const read = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+          method: 'workboard.cards.list', params: { boardId: 'default' }, signal });
+        const cards = (read?.result ?? read)?.cards ?? [];
+        const matches = cards.filter(card => card.title === outcome && card.metadata?.automation?.tenant === 'fictional-plan');
+        assert.equal(matches.length, 1, 'The actual authenticated Workboard owner must hold exactly one tracked card.');
+        assert.equal(matches[0].status, 'todo');
+        assert.equal(String(matches[0].runId ?? '').trim(), '', 'Tracking must never dispatch a run.');
+        assert.deepEqual(matches[0].metadata?.attempts ?? [], []);
+        assert.equal(await nativePage.getByRole('button', { name: 'Review native human request', exact: true }).count(), 0);
+        await review.getByRole('button', { name: 'Open native card', exact: true }).click();
+        // Native ea4135 gives the detail dialog the exact card title. Its
+        // heading includes a translated screen-reader prefix, so the dialog
+        // owner is the stable exact-title assertion.
+        const nativeCard = page.getByRole('dialog', { name: outcome, exact: true });
+        await nativeCard.waitFor({ timeout: 30_000 });
+        await nativeCard.getByRole('button', { name: 'Close', exact: true }).click();
+        await nativeCard.waitFor({ state: 'hidden', timeout: 30_000 });
+        // Return through the same native UI owners, then prove the linked
+        // Conversation still owns its unsent draft and a usable composer.
+        await manageTopics.click({ timeout: 30_000 });
+        await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+        await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
+        await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
+        await chatPane.waitFor({ state: 'visible', timeout: 30_000 });
+        await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
+        assert.equal(await composer.inputValue(), draft, 'Tracking and native card navigation must preserve the unsent Conversation draft.');
+        assert.equal(await page.evaluate(() => performance.timeOrigin), documentOwner);
+        // A full-page route owns focus while it is open. On return, exercise
+        // the visible native composer rather than asserting a hidden element.
+        await composer.focus();
+        assert.equal(await composer.evaluate(element => element === document.activeElement), true, 'The returned native composer must accept focus.');
+        result = Object.freeze({ nativeCardId: matches[0].id, nativeStatus: 'todo', cardCount: 1,
+          nativeNavigation: true, executionStarted: false, resultReviewQualified: false,
+          nativeDraftPreserved: true, nativeComposerFocusUsable: true, draftFixture: draft });
       } else {
-        await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'file'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-        filing = fictionalModel.requests.find(entry => entry.action === 'file');
-        assert.match(filing.mediaRef, /^media:\/\/inbound\//u);
+        // This compact but structurally valid PDF is a fictional original. The
+        // journey verifies its exact stored bytes rather than treating an
+        // extension or a requested tool call as filing evidence.
+        const attachment = fictionalPdfBytes();
+        await chatPane.locator('.agent-chat__file-input').setInputFiles({ name: 'fictional-topic-document.pdf', mimeType: 'application/pdf', buffer: attachment });
+        await chatPane.locator('.chat-attachment-thumb').waitFor({ timeout: 30_000 });
+        await chatPane.locator('.agent-chat__composer-combobox textarea').fill('File this fictional attachment in this Topic.');
+        await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
+        let filing;
+        if (filingOnly) {
+          await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'final' && entry.currentRole === 'user'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+          const workspace = await openNativeTopicFiles({ page, fixture });
+          await workspace.getByRole('button', { name: 'File Chat attachment', exact: true }).click();
+          const review = workspace.getByRole('region', { name: 'Review Chat attachment filing', exact: true });
+          await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
+            .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).waitFor({ state: 'attached', timeout: 30_000 });
+          const options = await review.getByRole('combobox', { name: 'Chat attachment', exact: true })
+            .locator('option').filter({ hasText: 'fictional-topic-document.pdf' }).evaluateAll(items => items.map(item => item.value));
+          assert.equal(options.length, 1, 'Select exactly the uploaded fictional original.');
+          await review.getByRole('combobox', { name: 'Chat attachment', exact: true }).selectOption(options[0]);
+          await review.getByRole('button', { name: 'Review destination', exact: true }).click();
+          await review.getByRole('status').filter({ hasText: 'Destination reviewed' }).waitFor({ timeout: 30_000 });
+          assert.equal(await review.getByRole('button', { name: 'File original', exact: true }).isEnabled(), true,
+            'Installed filing qualification requires a separately admitted candidate; disabled builds must refuse.');
+          await review.getByRole('button', { name: 'File original', exact: true }).click();
+          await review.getByRole('status').filter({ hasText: 'Original filed:' }).waitFor({ timeout: 30_000 });
+        } else {
+          await waitForConsecutiveReadiness(async () => fictionalModel.requests.some(entry => entry.action === 'file'), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+          filing = fictionalModel.requests.find(entry => entry.action === 'file');
+          assert.match(filing.mediaRef, /^media:\/\/inbound\//u);
+        }
+        // The isolated host owns the exact durable source descriptor.  Verify
+        // publication through that authenticated owner rather than treating a
+        // harness pathname as authoritative: the latter can refer to a stale
+        // fixture view after the host has enrolled its own descriptor.
+        let filedDocument;
+        await waitForConsecutiveReadiness(async () => {
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+            method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: fixture.topicId, offset: 0, limit: 100, includeDocuments: true }, signal });
+          const catalog = response?.result ?? response;
+          const matches = catalog?.notes?.filter(note => note?.sourceKind === 'document'
+            && /^Documents\/fictional-topic-document--[a-f0-9]{12}\.pdf$/u.test(note.path)
+            && note.sourceReference?.topicId === fixture.topicId) ?? [];
+          if (matches.length !== 1) return false;
+          filedDocument = matches[0];
+          return filedDocument.revision === `sha256:${createHash('sha256').update(attachment).digest('hex')}`;
+        }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+        const readResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+          method: 'command-center.v1.notes.read', params: { schemaVersion: 1, topicId: fixture.topicId, referenceId: filedDocument.sourceReference.referenceId,
+            path: filedDocument.path, observedRevision: filedDocument.revision, sourceKind: 'document', offset: 0 }, signal });
+        const filedRead = readResponse?.result ?? readResponse;
+        assert.equal(filedRead?.sourceReference?.topicId, fixture.topicId);
+        assert.equal(filedRead?.revision, filedDocument.revision);
+        assert.deepEqual(Buffer.from(filedRead?.contentBase64 ?? '', 'base64'), attachment, 'The exact native Topic source must return the original fictional PDF bytes.');
+        if (filingOnly) {
+          assert.equal(fictionalModel.requests.some(entry => entry.action === 'maintain'), false);
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+            method: 'cron.list', params: { includeDisabled: true }, scopes: ['operator.read', 'operator.write'], signal });
+          jobs = response?.jobs ?? response?.result?.jobs ?? [];
+          assert.equal(jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length, 0,
+            'The filing-only candidate must keep Note maintenance disabled.');
+          const workspace = await openNativeTopicFiles({ page, fixture });
+          await workspace.locator('.control-ui-file-explorer')
+            .getByRole('button', { name: path.basename(filedDocument.path), exact: true }).click({ timeout: 30_000 });
+          await page.getByRole('region', { name: 'Original attachment preview', exact: true })
+            .getByRole('status').filter({ hasText: 'Page 1 of 1' }).waitFor({ timeout: 30_000 });
+        }
+        result = Object.freeze({ workingNoteTool: !filingOnly, attachmentFilingTool: !filingOnly, explicitFilesFiling: filingOnly,
+          maintenanceCatchUpScheduled: !filingOnly, nativeFilesPreview: filingOnly, filedMediaRef: filing?.mediaRef ?? null,
+          maintenanceJobs: jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length });
       }
-      // The isolated host owns the exact durable source descriptor.  Verify
-      // publication through that authenticated owner rather than treating a
-      // harness pathname as authoritative: the latter can refer to a stale
-      // fixture view after the host has enrolled its own descriptor.
-      let filedDocument;
-      await waitForConsecutiveReadiness(async () => {
-        const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-          method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: fixture.topicId, offset: 0, limit: 100, includeDocuments: true }, signal });
-        const catalog = response?.result ?? response;
-        const matches = catalog?.notes?.filter(note => note?.sourceKind === 'document'
-          && /^Documents\/fictional-topic-document--[a-f0-9]{12}\.pdf$/u.test(note.path)
-          && note.sourceReference?.topicId === fixture.topicId) ?? [];
-        if (matches.length !== 1) return false;
-        filedDocument = matches[0];
-        return filedDocument.revision === `sha256:${createHash('sha256').update(attachment).digest('hex')}`;
-      }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const readResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-        method: 'command-center.v1.notes.read', params: { schemaVersion: 1, topicId: fixture.topicId, referenceId: filedDocument.sourceReference.referenceId,
-          path: filedDocument.path, observedRevision: filedDocument.revision, sourceKind: 'document', offset: 0 }, signal });
-      const filedRead = readResponse?.result ?? readResponse;
-      assert.equal(filedRead?.sourceReference?.topicId, fixture.topicId);
-      assert.equal(filedRead?.revision, filedDocument.revision);
-      assert.deepEqual(Buffer.from(filedRead?.contentBase64 ?? '', 'base64'), attachment, 'The exact native Topic source must return the original fictional PDF bytes.');
-      if (filingOnly) {
-        assert.equal(fictionalModel.requests.some(entry => entry.action === 'maintain'), false);
-        const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-          method: 'cron.list', params: { includeDisabled: true }, scopes: ['operator.read', 'operator.write'], signal });
-        jobs = response?.jobs ?? response?.result?.jobs ?? [];
-        assert.equal(jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length, 0,
-          'The filing-only candidate must keep Note maintenance disabled.');
-        const workspace = await openNativeTopicFiles({ page, fixture });
-        await workspace.locator('.control-ui-file-explorer')
-          .getByRole('button', { name: path.basename(filedDocument.path), exact: true }).click({ timeout: 30_000 });
-        await page.getByRole('region', { name: 'Original attachment preview', exact: true })
-          .getByRole('status').filter({ hasText: 'Page 1 of 1' }).waitFor({ timeout: 30_000 });
-      }
-      result = Object.freeze({ workingNoteTool: !filingOnly, attachmentFilingTool: !filingOnly, explicitFilesFiling: filingOnly,
-        maintenanceCatchUpScheduled: !filingOnly, nativeFilesPreview: filingOnly, filedMediaRef: filing?.mediaRef ?? null,
-        maintenanceJobs: jobs.filter(job => isCommandCenterMaintenanceJob(job, fixture.sessionKey)).length });
     } catch (error) { failure = error; }
     finally {
       providerEvidence = Object.freeze({

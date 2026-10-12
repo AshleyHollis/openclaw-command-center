@@ -315,10 +315,12 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });
 test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-accepted-chat'), { kind: 'focused', scenarioIds: [], isolatedSliceIds: ['accepted-chat'] });
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['native-topic-chat-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
   assert.deepEqual(resolveRealHostAcceptancePlan('topic-document-filing').scenarioIds, ['topic-document-filing']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('conversation-plan-native-owner').scenarioIds, ['conversation-plan-native-owner']);
 });
 
 test('reader MVP selection includes its reader ownership boundaries and excludes deferred filing and maintenance', () => {

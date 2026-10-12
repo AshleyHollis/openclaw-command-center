@@ -14,13 +14,13 @@
   "devDependencies": {
     "dompurify": "3.4.15",
     "markdown-it": "15.0.2",
-    "openclaw": "2026.9.9",
+    "openclaw": "2026.10.1",
     "pdfjs-dist": "6.3.289",
     "playwright": "1.63.0",
     "playwright-core": "1.63.0"
   },
   "peerDependencies": {
-    "openclaw": "2026.9.9"
+    "openclaw": "2026.10.1"
   },
   "commandCenter": {
     "runtimeCapability": {
@@ -68,12 +68,12 @@
         }
       },
       "host": {
-        "range": "=2026.9.9",
-        "commit": "ea4135dbeced9c393ab4f6ebde8bf3e751ea5fa2"
+        "range": "=2026.10.1",
+        "commit": "f48eadbd4137ddd7bc15639bc2410e31408ee96f"
       },
       "pluginApi": {
         "package": "openclaw",
-        "range": "=2026.9.9"
+        "range": "=2026.10.1"
       },
       "commandCenterSchema": {
         "readable": {
@@ -97,9 +97,11 @@
     "testCandidate": {
       "kind": "isolated-enabled-feature-test",
       "features": [
+        "acceptedChatCapture",
         "noteProposals",
         "topicNoteRecall",
-        "topicDocuments"
+        "topicDocuments",
+        "conversationPlans"
       ],
       "productionAdmission": false
     }
@@ -109,7 +111,7 @@
       "./dist/plugin.mjs"
     ],
     "compat": {
-      "pluginApi": "=2026.9.9"
+      "pluginApi": "=2026.10.1"
     }
   }
 }

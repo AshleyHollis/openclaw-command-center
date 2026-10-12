@@ -2,6 +2,7 @@ import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
 import { billActionResultSchema } from './bill-action-contracts.mjs';
 import { acceptedChatResultSchema, CHAT_CAPTURE_METHODS } from './chat-capture-contracts.mjs';
+import { conversationPlanResultSchema } from './conversation-plan-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
@@ -9,6 +10,8 @@ import { NOTE_PROPOSAL_METHODS, NOTE_PROPOSAL_PARAMS, NOTE_PROPOSAL_RESULT, prop
 
 export const READ_METHODS = Object.freeze([
   'command-center.v1.chat-capture.load',
+  'command-center.v1.conversation-plans.messages',
+  'command-center.v1.conversation-plans.list',
   'command-center.v1.bill-actions.list',
   'command-center.v1.bill-actions.read',
   'command-center.v1.histories.list',
@@ -52,6 +55,8 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.chat-capture.accept',
   'command-center.v1.chat-capture.replay',
   ...NOTE_PROPOSAL_METHODS,
+  'command-center.v1.conversation-plans.track',
+  'command-center.v1.conversation-plans.reconcile',
   'command-center.v1.bill-actions.reconcile',
   'command-center.v1.bill-actions.admit',
   'command-center.v1.bill-actions.handle',
@@ -187,6 +192,7 @@ function parameterSchema(field, method) {
 function actionResultSchema(method) {
   if (CHAT_CAPTURE_METHODS.includes(method)) return acceptedChatResultSchema;
   if (NOTE_PROPOSAL_METHODS.includes(method)) return NOTE_PROPOSAL_RESULT;
+  if (conversationPlanResultSchema(method)) return conversationPlanResultSchema(method);
   if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
@@ -430,6 +436,10 @@ const required = Object.freeze({
   'command-center.v1.chat-capture.accept': ['input'],
   'command-center.v1.chat-capture.load': ['planId'],
   'command-center.v1.chat-capture.replay': ['planId'],
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': [],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
   'command-center.v1.bill-actions.list': [],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
@@ -532,6 +542,10 @@ const fields = Object.freeze({
   'command-center.v1.chat-capture.accept': ['input'],
   'command-center.v1.chat-capture.load': ['planId'],
   'command-center.v1.chat-capture.replay': ['planId'],
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': ['topicId'],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
   'command-center.v1.bill-actions.list': ['topicId', 'offset', 'limit'],
   'command-center.v1.bill-actions.read': ['loopId'],
   'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
