@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile, lstat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
+import { validateProducedNativePackageMetadata } from './produced-native-package-metadata.mjs';
+
+// Real produced bytes only. Do not call until package and installed host exist.
+const [nativeArchive,nativeReceipt,ccArchive,ccReceipt,provenanceFile,runtimeRoot,nativeCheckout,output] = process.argv.slice(2);
+for (const p of [nativeArchive,nativeReceipt,ccArchive,ccReceipt,provenanceFile,runtimeRoot,nativeCheckout,output]) assert.ok(p && path.isAbsolute(p), 'Eight absolute paths are required');
+assert.equal(process.platform,'linux','Installed executable-bit receipt must be measured on Linux');
+const read = async p => JSON.parse(await readFile(p,'utf8'));
+const sha = b => createHash('sha256').update(b).digest('hex');
+const n = await read(nativeReceipt), c = await read(ccReceipt), provenance = await read(provenanceFile);
+const nativeSha = '7aaa0289cc95f683decddfca1cc506e550d24b48', ccSha = 'dc1fb006d0c3c57821129e7d1d645e237b91b65f';
+validateProducedNativePackageMetadata(n, nativeSha);
+assert.equal(n.sha256,sha(await readFile(nativeArchive)));
+assert.equal(c.sourceCommit,ccSha); assert.equal(c.buildDigest,'da18debd1f5aa312e534b0e71a888fceb843d0d4ec381b51b8e3c384df996c05');
+assert.equal(c.archive.sha256,sha(await readFile(ccArchive)));
+assert.equal(provenance.schemaVersion,1); assert.equal(provenance.sourceCommit,nativeSha); assert.equal(provenance.hostVersion,n.version);
+assert.match(provenance.image,/^ghcr\.io\/ashleyhollis\/openclaw@sha256:[a-f0-9]{64}$/);
+const git = (...args) => {const result=spawnSync('git',['-C',nativeCheckout,...args],{maxBuffer:256*1024*1024});assert.equal(result.status,0,'Exact source Git operation failed');return result.stdout;};
+assert.equal(git('rev-parse','HEAD').toString().trim(),nativeSha); assert.equal(git('status','--porcelain','--untracked-files=no').toString().trim(),'');
+const contract=await read(new URL('../src/runtime-capability.json',import.meta.url));
+const installed=path.join(runtimeRoot,'node_modules/openclaw');
+const metadata=await read(path.join(installed,'package.json')),buildInfo=await read(path.join(installed,'dist/build-info.json'));
+assert.equal(metadata.version,n.version); assert.equal(buildInfo.commit,nativeSha);
+assert.equal(await lstat(path.join(installed,'.openclaw-lifecycle-pending')).then(()=>true,e=>{if(e.code==='ENOENT')return false;throw e;}),false);
+const measured={schemaVersion:2,sourceDigest:`sha256:${sha(git('archive','--format=tar',nativeSha))}`,commit:nativeSha,executableDigest:`sha256:${sha(await readFile(path.join(installed,'openclaw.mjs')))}`,contractDigest:`sha256:${sha(Buffer.from(JSON.stringify(contract)))}`,packageDigest:`sha256:${n.sha256}`,runtimeDigest:await packagedHostDigest(runtimeRoot)};
+assert.deepEqual(provenance.receipt,measured,'Produced host provenance differs from remeasured installed bytes');
+const identity={schemaVersion:1,hostVersion:n.version,hostReceipt:measured,hostImage:provenance.image,nativeArchiveSha256:n.sha256,ccSourceCommit:ccSha,ccBuildDigest:c.buildDigest,ccArchiveSha256:c.archive.sha256,nativeReceiptSha256:sha(await readFile(nativeReceipt)),ccReceiptSha256:sha(await readFile(ccReceipt)),provenanceSha256:sha(await readFile(provenanceFile))};
+await writeFile(output,JSON.stringify(identity,null,2)+'\n',{flag:'wx'});
+console.log(JSON.stringify({status:'real-produced-performance-host-bound',identitySha256:sha(await readFile(output)),releaseQualified:false}));

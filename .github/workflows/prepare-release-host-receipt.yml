@@ -1,6 +1,26 @@
 name: Prepare release host receipt
 
 on:
+  workflow_call:
+    inputs:
+      harness_ref:
+        required: true
+        type: string
+      image_digest:
+        required: true
+        type: string
+      input_release:
+        required: true
+        type: string
+      assembly_run_id:
+        required: true
+        type: string
+      assembly_run_attempt:
+        required: true
+        type: string
+      assembly_source_commit:
+        required: true
+        type: string
   # An immutable image must be explicitly selected by the existing collector.
   # The historical 9.5 push route had an implicit image and cannot select 9.9.
   workflow_dispatch:
@@ -17,6 +37,7 @@ on:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 concurrency:
   group: prepare-release-host-receipt-${{ github.ref }}
@@ -30,20 +51,85 @@ jobs:
       - name: Validate immutable selection
         env:
           IMAGE_DIGEST: ${{ inputs.image_digest }}
+          HARNESS_REF: ${{ inputs.harness_ref }}
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+          ASSEMBLY_SOURCE_COMMIT: ${{ inputs.assembly_source_commit }}
+          INPUT_RELEASE: ${{ inputs.input_release }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          if [ -n "$HARNESS_REF" ]; then
+            [[ "$HARNESS_REF" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$ASSEMBLY_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$ASSEMBLY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$ASSEMBLY_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+            test "$INPUT_RELEASE" = sealed-next2-7aaa-dc1-20261012
+            test "$ASSEMBLY_RUN_ID" = "$GITHUB_RUN_ID"
+            test "$ASSEMBLY_RUN_ATTEMPT" = "$GITHUB_RUN_ATTEMPT"
+            test "$ASSEMBLY_SOURCE_COMMIT" = "$GITHUB_SHA"
+          fi
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref == ''
         with:
           persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref != ''
+        with:
+          repository: AshleyHollis/openclaw-command-center
+          ref: ${{ inputs.harness_ref }}
+          persist-credentials: false
+
+      - name: Bind reviewed harness checkout
+        env:
+          HARNESS_REF: ${{ inputs.harness_ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ -n "$HARNESS_REF" ]; then test "$actual" = "$HARNESS_REF"; else test "$actual" = "$GITHUB_SHA"; fi
+
+      - name: Download same-run admitted inputs and pinned source bundle
+        if: inputs.harness_ref != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE: ${{ inputs.input_release }}
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/next2-inputs" "$RUNNER_TEMP/next2-source"
+          gh run download "$ASSEMBLY_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "sealed-pair-assembly-next2-7aaa-dc1-20261012-$ASSEMBLY_RUN_ID-$ASSEMBLY_RUN_ATTEMPT" --dir "$RUNNER_TEMP/next2-inputs"
+          gh release download "$INPUT_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern native-next2-discord.bundle --dir "$RUNNER_TEMP/next2-source"
+          test -f "$RUNNER_TEMP/next2-inputs/receipt.json"
+          test -f "$RUNNER_TEMP/next2-inputs/reviewed-manifest.json"
+          test -f "$RUNNER_TEMP/next2-inputs/workflow.json"
+          test -f "$RUNNER_TEMP/next2-source/native-next2-discord.bundle"
+
+      - name: Install pinned verifier runtime for Next2 preflight
+        if: inputs.harness_ref != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+
+      - name: Verify frozen native bundle and five retained input bytes
+        if: inputs.harness_ref != ''
+        env:
+          ASSEMBLY_DIRECTORY: ${{ runner.temp }}/next2-inputs
+          NATIVE_BUNDLE: ${{ runner.temp }}/next2-source/native-next2-discord.bundle
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+          ASSEMBLY_SOURCE_COMMIT: ${{ inputs.assembly_source_commit }}
+          HOST_IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: node scripts/seal-next2-produced-host.mjs preflight
 
       - name: Resolve existing release metadata
         id: selection
         env:
           PREPARE_HOST_RECEIPT: '1'
           IMAGE_DIGEST: ${{ inputs.image_digest }}
-          COMMAND_CENTER_NATIVE_PACKAGE_SHA256: ${{ inputs.native_archive_sha256 }}
+          COMMAND_CENTER_NATIVE_PACKAGE_SHA256: ${{ inputs.harness_ref != '' && '248259c5a7cdab28954cfa292b18c87991743a81e3ddc41cf8206e96e86b19e2' || inputs.native_archive_sha256 }}
         run: node scripts/release-rehearsal-selection.mjs
 
       - name: Install supported verifier runtime
@@ -52,6 +138,7 @@ jobs:
           node-version: ${{ steps.selection.outputs.node }}
 
       - name: Checkout exact OpenClaw source
+        if: inputs.harness_ref == ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: AshleyHollis/openclaw
@@ -59,6 +146,20 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: _openclaw-source
+
+      - name: Checkout public prerequisite for authenticated native source
+        if: inputs.harness_ref != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: AshleyHollis/openclaw
+          ref: 6f17361bd93a84978601eb4c884129ebd714a49b
+          fetch-depth: 1
+          persist-credentials: false
+          path: _openclaw-source
+
+      - name: Restore exact native source from pinned bundle
+        if: inputs.harness_ref != ''
+        run: node scripts/restore-next2-native-source.mjs "$RUNNER_TEMP/next2-source/native-next2-discord.bundle" "$GITHUB_WORKSPACE/_openclaw-source"
 
       - name: Install pinned verifier dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -136,9 +237,42 @@ jobs:
           NODE
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: inputs.harness_ref == ''
         with:
           name: command-center-host-receipt-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/receipt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Bind actual produced installed host and seal package selection
+        if: inputs.harness_ref != ''
+        env:
+          ASSEMBLY_DIRECTORY: ${{ runner.temp }}/next2-inputs
+          NATIVE_BUNDLE: ${{ runner.temp }}/next2-source/native-next2-discord.bundle
+          IDENTITY_FILE: ${{ runner.temp }}/receipt/candidate-qualification-identity.json
+          PROVENANCE_FILE: ${{ runner.temp }}/receipt/provenance.json
+          FINAL_DIRECTORY: ${{ runner.temp }}/next2-final
+          FINAL_ARTIFACT_NAME: sealed-pair-next2-7aaa-dc1-20261012-${{ inputs.assembly_run_id }}-${{ inputs.assembly_run_attempt }}
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+          ASSEMBLY_SOURCE_COMMIT: ${{ inputs.assembly_source_commit }}
+          HOST_IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          node scripts/bind-produced-performance-host.mjs \
+            "$ASSEMBLY_DIRECTORY/openclaw-current.tgz" "$ASSEMBLY_DIRECTORY/package-candidate.json" \
+            "$ASSEMBLY_DIRECTORY/command-center.tgz" "$ASSEMBLY_DIRECTORY/command-center-receipt.json" \
+            "$PROVENANCE_FILE" "$RUNNER_TEMP/command-center-host/runtime" \
+            "$GITHUB_WORKSPACE/_openclaw-source" "$IDENTITY_FILE"
+          mv "$PROVENANCE_FILE" "$RUNNER_TEMP/receipt/host-provenance.json"
+          printf 'PROVENANCE_FILE=%s\n' "$RUNNER_TEMP/receipt/host-provenance.json" >> "$GITHUB_ENV"
+          PROVENANCE_FILE="$RUNNER_TEMP/receipt/host-provenance.json" node scripts/seal-next2-produced-host.mjs
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: inputs.harness_ref != ''
+        with:
+          name: sealed-pair-next2-7aaa-dc1-20261012-${{ inputs.assembly_run_id }}-${{ inputs.assembly_run_attempt }}
+          path: ${{ runner.temp }}/next2-final
           if-no-files-found: error
           retention-days: 14
 
