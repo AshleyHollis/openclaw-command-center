@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { selectNativeSdkPackage, selectReleaseRehearsal, selectReleaseRuntime } from '../scripts/release-rehearsal-selection.mjs';
+import { admitRehearsalBuildIdentity, readRehearsalIdentity, selectNativeSdkPackage, selectReleaseRehearsal, selectReleaseRuntime } from '../scripts/release-rehearsal-selection.mjs';
+import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 const json = async file => JSON.parse(await readFile(new URL(`../${file}`, import.meta.url), 'utf8'));
 const metadata = { manifest: await json('package.json'), lock: await json('package-lock.json'),
@@ -14,6 +15,22 @@ const provenance = { schemaVersion: 1, image: `ghcr.io/ashleyhollis/openclaw@${h
     contractDigest: hash, packageDigest: hash, runtimeDigest: hash } };
 const selection = () => ({ ...structuredClone(metadata), provenance: structuredClone(provenance),
   performanceIdentity: { hostVersion: 'historical', hostReceipt: {} }, scenario: 'capability-only' });
+
+test('historical dispatch uses its frozen identity while callable qualification requires a produced identity', () => {
+  assert.equal(readRehearsalIdentity('historical'), releasePerformanceIdentity);
+  assert.throws(() => readRehearsalIdentity('candidate'), /Produced candidate qualification identity is required/);
+  assert.throws(() => readRehearsalIdentity(undefined), /must be explicit/);
+});
+test('historical dispatch preparation admits its pinned host without a candidate file', () => {
+  assert.equal(admitRehearsalBuildIdentity({ mode: 'historical', buildDigest: 'a'.repeat(64),
+    hostReceipt: structuredClone(releasePerformanceIdentity.hostReceipt) }), releasePerformanceIdentity);
+  const changed = structuredClone(releasePerformanceIdentity.hostReceipt);
+  changed.runtimeDigest = `sha256:${'b'.repeat(64)}`;
+  assert.throws(() => admitRehearsalBuildIdentity({ mode: 'historical', buildDigest: 'a'.repeat(64),
+    hostReceipt: changed }), /selected receipt/);
+  assert.throws(() => admitRehearsalBuildIdentity({ mode: 'candidate', buildDigest: 'a'.repeat(64),
+    hostReceipt: releasePerformanceIdentity.hostReceipt }), /Produced candidate qualification identity is required/);
+});
 
 test('focused rehearsal derives the current native tuple and existing packaging runtime', () => {
   assert.deepEqual(selectReleaseRehearsal(selection()), { ...runtime, image: provenance.image, receipt: provenance.receipt });
@@ -67,4 +84,9 @@ test('native SDK packaging rejects stale source, archive and receipt identities'
     const value = structuredClone({ binding, receipt }); mutation(value);
     assert.throws(() => selectNativeSdkPackage(metadata, value.binding, value.receipt));
   }
+});
+test('full qualification rejects another image even with matching host receipt',()=>{
+  const value=selection();value.scenario='scale-performance';
+  value.performanceIdentity={hostVersion:provenance.hostVersion,hostReceipt:structuredClone(provenance.receipt),hostImage:'ghcr.io/ashleyhollis/openclaw@sha256:'+ 'b'.repeat(64)};
+  assert.throws(()=>selectReleaseRehearsal(value),/Produced qualification image changed/);
 });

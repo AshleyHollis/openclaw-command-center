@@ -40,7 +40,7 @@ function exactNames(value, required, label) {
   if (!Array.isArray(value) || value.length !== required.length || new Set(value).size !== required.length || required.some((name) => !value.includes(name))) invalid(`${label} must contain each required retained action or state exactly once`);
 }
 
-function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) {
+function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline, expectedHostReceipt = releasePerformanceIdentity.hostReceipt) {
   let encoded;
   try { encoded = JSON.stringify(evidence); } catch { invalid(`${id} is not serializable`); }
   if (!encoded || Buffer.byteLength(encoded) > MAX_EVIDENCE_BYTES) invalid(`${id} is empty or unbounded`);
@@ -49,7 +49,10 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
     case 'pinned-host-startup': {
       closed(evidence, ['schemaVersion', 'hostReceipt', 'buildDigest', 'startupMigrationVerified', 'routeGrantObserved', 'secureOrigin', 'nativeUi'], id);
       if (evidence.buildDigest !== buildDigest) invalid(`${id}.buildDigest is stale`);
-      exactMap(evidence.hostReceipt, releasePerformanceIdentity.hostReceipt, `${id}.hostReceipt`);
+      closed(expectedHostReceipt, ['schemaVersion','sourceDigest','commit','executableDigest','contractDigest','packageDigest','runtimeDigest'], 'expectedHostReceipt');
+      if (expectedHostReceipt.schemaVersion !== 2 || !/^[a-f0-9]{40}$/u.test(expectedHostReceipt.commit)) invalid('expectedHostReceipt identity is incomplete');
+      for (const key of ['sourceDigest','executableDigest','contractDigest','packageDigest','runtimeDigest']) if (!DIGEST.test(expectedHostReceipt[key])) invalid(`expectedHostReceipt.${key} is invalid`);
+      exactMap(evidence.hostReceipt, expectedHostReceipt, `${id}.hostReceipt`);
       for (const key of ['startupMigrationVerified', 'routeGrantObserved']) yes(evidence[key], `${id}.${key}`);
       closed(evidence.secureOrigin, ['protocol', 'hostname', 'loopbackOnly'], `${id}.secureOrigin`);
       if (evidence.secureOrigin.protocol !== 'https:' || !evidence.secureOrigin.hostname.endsWith('.fictional.ts.net')) invalid(`${id}.secureOrigin is not fictional HTTPS`);
@@ -143,17 +146,17 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
 export const NON_PERFORMANCE_ROW_IDS = Object.freeze(RELEASE_ROW_IDS.filter(id => !['scale-performance', 'privacy-artifact-output'].includes(id)));
 
 /** Validate prerequisite facts without manufacturing a complete release report. */
-export function assertNonPerformanceAcceptanceEvidence({ buildDigest, rows }) {
+export function assertNonPerformanceAcceptanceEvidence({ buildDigest, rows, expectedHostReceipt = releasePerformanceIdentity.hostReceipt }) {
   if (typeof buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(buildDigest)) invalid('prerequisite buildDigest is invalid');
   if (!Array.isArray(rows) || rows.length !== NON_PERFORMANCE_ROW_IDS.length || rows.some((row, index) => row?.id !== NON_PERFORMANCE_ROW_IDS[index])) invalid('prerequisite rows are not complete and canonical');
   for (const row of rows) {
     closed(row, ['id', 'evidence'], `prerequisite.${row.id}`);
-    validatePassedEvidence(row.id, row.evidence, buildDigest);
+    validatePassedEvidence(row.id, row.evidence, buildDigest, undefined, expectedHostReceipt);
   }
   return deepFreeze(structuredClone(rows));
 }
 
-function validateStoredAcceptanceReport(report) {
+function validateStoredAcceptanceReport(report, expectedHostReceipt = releasePerformanceIdentity.hostReceipt) {
   closed(report, ['schemaVersion', 'buildDigest', 'outcome', 'performanceBaseline', 'performanceBudget', 'rows', 'finalization'], 'report');
   if (report.schemaVersion !== ACCEPTANCE_REPORT_VERSION) invalid('report.schemaVersion is unsupported');
   if (typeof report.buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(report.buildDigest)) invalid('report.buildDigest is invalid');
@@ -162,7 +165,7 @@ function validateStoredAcceptanceReport(report) {
   if (!Array.isArray(report.rows) || report.rows.length !== RELEASE_ROW_IDS.length || report.rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) invalid('report.rows are not in canonical order');
   for (const row of report.rows) {
     closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);
-    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, report.buildDigest, baseline);
+    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, report.buildDigest, baseline, expectedHostReceipt);
     else if (row.outcome !== 'failed' || typeof row.error !== 'string' || row.error.length < 1 || row.error.length > 300) invalid(`row.${row.id} has an invalid failure`);
   }
   if (!Array.isArray(report.finalization) || report.finalization.length !== FINALIZATION_PHASES.length || report.finalization.some((entry, index) => entry.phase !== FINALIZATION_PHASES[index])) invalid('report.finalization is not in canonical order');
@@ -252,13 +255,13 @@ export async function runAcceptanceRows(rows, { timeoutMs = 120_000, cleanupTime
   return Object.freeze(results);
 }
 
-export function createAcceptanceReport({ buildDigest, rows, finalization, performanceBaseline }) {
+export function createAcceptanceReport({ buildDigest, rows, finalization, performanceBaseline, expectedHostReceipt = releasePerformanceIdentity.hostReceipt }) {
   if (typeof buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(buildDigest)) throw new TypeError('Acceptance report requires the exact build digest.');
   const validatedBaseline = validateReleasePerformanceBaseline(performanceBaseline);
   if (!Array.isArray(rows) || rows.length !== RELEASE_ROW_IDS.length || rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) throw new TypeError('Acceptance report requires all release rows in canonical order.');
   for (const row of rows) {
     closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);
-    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, buildDigest, validatedBaseline);
+    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, buildDigest, validatedBaseline, expectedHostReceipt);
     else if (row.outcome !== 'failed' || typeof row.error !== 'string' || row.error.length > 300) invalid(`row.${row.id} has an invalid failure`);
   }
   if (!Array.isArray(finalization) || finalization.length !== FINALIZATION_PHASES.length || finalization.some((entry, index) => entry.phase !== FINALIZATION_PHASES[index])) throw new TypeError('Acceptance report requires every finalization phase in canonical order.');
@@ -267,11 +270,11 @@ export function createAcceptanceReport({ buildDigest, rows, finalization, perfor
     return Object.freeze({ phase, outcome: error ? 'failed' : 'passed', ...(error ? { error: boundedError(error) } : {}) });
   });
   const passed = rows.every((row) => row.outcome === 'passed') && finalizationResults.every((result) => result.outcome === 'passed');
-  return validateStoredAcceptanceReport({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', performanceBaseline: structuredClone(validatedBaseline), performanceBudget: deriveReleasePerformanceBudget(validatedBaseline), rows: structuredClone(rows), finalization: structuredClone(finalizationResults) });
+  return validateStoredAcceptanceReport({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', performanceBaseline: structuredClone(validatedBaseline), performanceBudget: deriveReleasePerformanceBudget(validatedBaseline), rows: structuredClone(rows), finalization: structuredClone(finalizationResults) }, expectedHostReceipt);
 }
 
-export function assertAcceptanceReportPassed(report) {
-  const validated = validateStoredAcceptanceReport(report);
+export function assertAcceptanceReportPassed(report, { expectedHostReceipt = releasePerformanceIdentity.hostReceipt } = {}) {
+  const validated = validateStoredAcceptanceReport(report, expectedHostReceipt);
   if (validated.outcome !== 'passed') {
     const failures = [...validated.rows.filter((row) => row.outcome !== 'passed').map((row) => row.id), ...validated.finalization.filter((row) => row.outcome !== 'passed').map((row) => row.phase)];
     throw new Error(`Release acceptance failed in: ${failures.join(', ')}`);

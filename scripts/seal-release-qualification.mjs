@@ -1,3 +1,4 @@
+import { readCandidateQualificationIdentity } from '../src/candidate-qualification-identity.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,7 +44,7 @@ function validateTerminals(entries, label, { paired = false } = {}) {
 
 const sliceDirectory = process.env.QUALIFICATION_SLICE_DIRECTORY;
 const outputDirectory = process.env.QUALIFICATION_OUTPUT_DIRECTORY;
-const sourceCommit = process.env.GITHUB_SHA;
+const sourceCommit = process.env.HARNESS_SOURCE_COMMIT ?? process.env.GITHUB_SHA;
 const workflowRun = process.env.GITHUB_RUN_ID;
 const hostImage = process.env.IMAGE;
 assert.ok(sliceDirectory && outputDirectory, 'Qualification slice and output directories are required');
@@ -56,6 +57,16 @@ const prerequisites = validateSlice(JSON.parse(await readFile(path.join(sliceDir
 const scale = validateSlice(JSON.parse(await readFile(path.join(sliceDirectory, 'scale-performance.json'), 'utf8')),
   'scale-performance', sourceCommit, workflowRun, hostImage);
 assert.equal(prerequisites.buildDigest, scale.buildDigest, 'Qualification slices use different builds');
+const historical = process.env.REHEARSAL_IDENTITY_MODE === 'historical';
+assert.ok(historical || process.env.REHEARSAL_IDENTITY_MODE === 'candidate', 'Qualification identity mode must be explicit');
+const qualificationIdentity = historical ? null : readCandidateQualificationIdentity();
+if (qualificationIdentity) {
+  assert.equal(qualificationIdentity.ccSourceCommit, process.env.COMMAND_CENTER_SOURCE_COMMIT,
+    'Frozen CC product source differs from produced package');
+  assert.equal(qualificationIdentity.ccBuildDigest, prerequisites.buildDigest, 'Qualification build differs from produced package');
+  assert.equal(qualificationIdentity.hostImage, hostImage, 'Qualification image differs from produced host');
+}
+const expectedHostReceipt = historical ? releasePerformanceIdentity.hostReceipt : qualificationIdentity.hostReceipt;
 
 const prerequisiteEvidence = exactKeys(prerequisites.evidence,
   ['schemaVersion', 'kind', 'performanceQualified', 'buildDigest', 'hostIntegrity', 'rows', 'participants', 'finalization', 'privacy'],
@@ -65,11 +76,11 @@ assert.equal(prerequisiteEvidence.kind, 'native-release-prerequisites');
 assert.equal(prerequisiteEvidence.performanceQualified, false);
 assert.equal(prerequisiteEvidence.buildDigest, prerequisites.buildDigest);
 const { schemaVersion: _hostReceiptVersion, commit: _hostReceiptCommit, ...expectedHostIntegrity } =
-  releasePerformanceIdentity.hostReceipt;
+  expectedHostReceipt;
 assert.deepEqual(prerequisiteEvidence.hostIntegrity, expectedHostIntegrity);
 const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({
   buildDigest: prerequisites.buildDigest,
-  rows: prerequisiteEvidence.rows
+  expectedHostReceipt, rows: prerequisiteEvidence.rows
 });
 exactKeys(prerequisiteEvidence.participants, PARTICIPANTS, 'prerequisite participants');
 for (const id of PARTICIPANTS) assert.equal(prerequisiteEvidence.participants[id], 'passed', `${id} did not pass`);
@@ -111,9 +122,9 @@ const report = createAcceptanceReport({
   buildDigest: prerequisites.buildDigest,
   rows: RELEASE_ROW_IDS.map((id, index) => ({ id, outcome: 'passed', evidence: rowEvidence[index] })),
   finalization: FINALIZATION_PHASES.map(phase => ({ phase })),
-  performanceBaseline: baseline
+  performanceBaseline: baseline, expectedHostReceipt
 });
-assertAcceptanceReportPassed(report);
+assertAcceptanceReportPassed(report, { expectedHostReceipt });
 const acceptance = {
   schemaVersion: 1,
   outcome: 'passed',
@@ -123,7 +134,8 @@ const acceptance = {
   buildDigest: prerequisites.buildDigest,
   performanceBaseline: report.performanceBaseline
 };
-const receipt = { schemaVersion: 1, sourceCommit, workflowRun, hostImage, acceptance };
+const receipt = { schemaVersion: 1, sourceCommit, productSourceCommit: qualificationIdentity?.ccSourceCommit ?? sourceCommit,
+  workflowRun, hostImage, acceptance };
 scanPublicEvidence([JSON.stringify(prerequisites), JSON.stringify(scale), JSON.stringify(report), JSON.stringify(receipt)],
   { label: 'qualification-receipt' });
 await mkdir(outputDirectory, { recursive: true });

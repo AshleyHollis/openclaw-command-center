@@ -1,10 +1,24 @@
+import { readCandidateQualificationIdentity } from '../src/candidate-qualification-identity.mjs';
 import assert from 'node:assert/strict';
 import { appendFile, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
+import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 const digest = /^sha256:[a-f0-9]{64}$/u;
 const receiptKeys = ['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest'];
+export function readRehearsalIdentity(mode) {
+  if (mode === 'historical') return releasePerformanceIdentity;
+  assert.equal(mode, 'candidate', 'Qualification identity mode must be explicit');
+  return readCandidateQualificationIdentity();
+}
+export function admitRehearsalBuildIdentity({ mode, buildDigest, hostReceipt }) {
+  const identity = readRehearsalIdentity(mode);
+  if (mode === 'candidate') assert.equal(buildDigest, identity.ccBuildDigest,
+    'Executed CC build differs from produced package');
+  assert.deepEqual(hostReceipt, identity.hostReceipt, 'Executed host differs from selected receipt');
+  return identity;
+}
 function keys(value, expected) {
   assert.ok(value && typeof value === 'object' && !Array.isArray(value));
   assert.deepEqual(Object.keys(value).sort(), [...expected].sort());
@@ -62,13 +76,13 @@ export function selectReleaseRehearsal({ provenance, manifest, lock, packageWork
   if (scenario === '' || ['native-release-prerequisites', 'scale-performance'].includes(scenario)) {
     assert.equal(provenance.hostVersion, performanceIdentity.hostVersion, 'Frozen performance host changed; separate baseline qualification is required');
     assert.deepEqual(provenance.receipt, performanceIdentity.hostReceipt, 'Frozen performance receipt changed');
+    if (performanceIdentity.hostImage) assert.equal(provenance.image,performanceIdentity.hostImage,'Produced qualification image changed');
   }
   return { image: provenance.image, commit, version, node, receipt: provenance.receipt };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const json = async file => JSON.parse(await readFile(file, 'utf8'));
-  const { releasePerformanceIdentity } = await import('../src/performance-baseline.mjs');
   const metadata = {
     manifest: await json('package.json'), lock: await json('package-lock.json'),
     packageWorkflow: await readFile('.github/workflows/package-candidate.yml', 'utf8')
@@ -88,7 +102,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     selected = { ...selectReleaseRuntime(metadata), image: `ghcr.io/ashleyhollis/openclaw@${process.env.IMAGE_DIGEST}` };
   } else selected = selectReleaseRehearsal({
     ...metadata, provenance: JSON.parse(process.env.HOST_PROVENANCE),
-    performanceIdentity: releasePerformanceIdentity, scenario: process.env.REHEARSAL_SCENARIO ?? ''
+    performanceIdentity: readRehearsalIdentity(process.env.REHEARSAL_IDENTITY_MODE), scenario: process.env.REHEARSAL_SCENARIO ?? ''
   });
   await appendFile(process.env.GITHUB_ENV, `IMAGE=${selected.image}\nOPENCLAW_COMMIT=${selected.commit}\nOPENCLAW_VERSION=${selected.version}\nREHEARSAL_NODE=${selected.node}\nCOMMAND_CENTER_NATIVE_PACKAGE_SHA256=${selected.receipt ? selected.receipt.packageDigest.slice(7) : process.env.COMMAND_CENTER_NATIVE_PACKAGE_SHA256}\n${selected.receipt ? `EXPECTED_HOST_RECEIPT=${JSON.stringify(selected.receipt)}\n` : ''}`);
   await appendFile(process.env.GITHUB_OUTPUT, `commit=${selected.commit}\nnode=${selected.node}\n`);

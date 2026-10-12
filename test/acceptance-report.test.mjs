@@ -349,3 +349,24 @@ test('each finalization failure prevents a passing release even with complete re
     assert.throws(() => assertAcceptanceReportPassed(report), new RegExp(phase));
   }
 });
+
+test('current qualification host is independent of historical baseline and rejects altered receipts', async () => {
+  const rows = await validRows();
+  const current = { ...releasePerformanceIdentity.hostReceipt, commit: 'b'.repeat(40), runtimeDigest: `sha256:${'b'.repeat(64)}` };
+  rows[0].evidence.hostReceipt = structuredClone(current);
+  assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }));
+  const report = createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization(), expectedHostReceipt: current });
+  assert.equal(assertAcceptanceReportPassed(report, { expectedHostReceipt: current }),true);
+  assert.deepEqual(report.performanceBaseline,performanceBaseline);
+  const changed=structuredClone(current);changed.packageDigest=`sha256:${'c'.repeat(64)}`;
+  assert.throws(()=>assertAcceptanceReportPassed(report,{expectedHostReceipt:changed}));
+  rows[3].evidence.observations.startupReadinessMs=thresholds.startupReadinessMs+1;
+  assert.throws(()=>createAcceptanceReport({buildDigest:BUILD,rows,finalization:finalization(),expectedHostReceipt:current}),/frozen performance budget/);
+});
+
+test('current expected host receipt cannot weaken the complete schema2 contract',async()=>{
+  for(const receipt of [{}, {...releasePerformanceIdentity.hostReceipt,runtimeDigest:undefined}, {...releasePerformanceIdentity.hostReceipt,schemaVersion:1}, {...releasePerformanceIdentity.hostReceipt,commit:'invalid'}]){
+    const rows=await validRows();rows[0].evidence.hostReceipt=structuredClone(receipt);
+    assert.throws(()=>createAcceptanceReport({buildDigest:BUILD,rows,finalization:finalization(),expectedHostReceipt:receipt}),/expectedHostReceipt/);
+  }
+});

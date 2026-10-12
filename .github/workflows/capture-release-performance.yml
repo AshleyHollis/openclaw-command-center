@@ -1,6 +1,25 @@
 name: Qualify Command Center release
 
 on:
+  workflow_call:
+    inputs:
+      harness_ref:
+        description: Reviewed Command Center harness checkout SHA, distinct from the frozen product source
+        required: true
+        type: string
+      cc_package_binding:
+        required: true
+        type: string
+      assembly_run_id:
+        required: true
+        type: string
+      assembly_run_attempt:
+        required: true
+        type: string
+      scenario:
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       cc_package_binding:
@@ -40,21 +59,63 @@ jobs:
         scenario: ${{ fromJSON(inputs.scenario == '' && '["native-release-prerequisites","scale-performance"]' || format('[{0}]', toJSON(inputs.scenario))) }}
     env:
       CC_PACKAGE_BINDING: ${{ inputs.cc_package_binding }}
+      HARNESS_REF: ${{ inputs.harness_ref }}
+      ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+      ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+      REHEARSAL_IDENTITY_MODE: ${{ inputs.harness_ref == '' && 'historical' || 'candidate' }}
       COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
       COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref == ''
         with:
           persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref != ''
+        with:
+          repository: AshleyHollis/openclaw-command-center
+          ref: ${{ inputs.harness_ref }}
+          persist-credentials: false
+
+      - name: Bind actual harness checkout
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ -n "$HARNESS_REF" ]; then
+            [[ "$HARNESS_REF" =~ ^[a-f0-9]{40}$ ]]
+            test "$actual" = "$HARNESS_REF"
+          else
+            test "$actual" = "$GITHUB_SHA"
+          fi
+          printf 'HARNESS_SOURCE_COMMIT=%s\n' "$actual" >> "$GITHUB_ENV"
+
+      - name: Download completed private assembly artifact
+        if: inputs.harness_ref != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$ASSEMBLY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ASSEMBLY_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          package="$RUNNER_TEMP/selected-cc-package"
+          mkdir -p "$package"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ASSEMBLY_RUN_ID" > "$package/run.json"
+          gh run download "$ASSEMBLY_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "sealed-pair-next2-7aaa-dc1-20261012-$ASSEMBLY_RUN_ID-$ASSEMBLY_RUN_ATTEMPT" --dir "$package"
+          node scripts/rehearsal-package-binding.mjs select
 
       - name: Resolve existing release metadata
         id: selection
         env:
-          HOST_PROVENANCE: ${{ inputs.host_provenance }}
+          DISPATCH_HOST_PROVENANCE: ${{ inputs.host_provenance }}
           REHEARSAL_SCENARIO: ${{ inputs.scenario }}
         run: |
+          if [ -z "$HARNESS_REF" ]; then export HOST_PROVENANCE="$DISPATCH_HOST_PROVENANCE"; fi
           node scripts/release-rehearsal-selection.mjs
-          node scripts/rehearsal-package-binding.mjs select
+          if [ -z "$HARNESS_REF" ]; then node scripts/rehearsal-package-binding.mjs select; fi
 
       - name: Install the supported Node runtime
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -79,17 +140,19 @@ jobs:
           set -euo pipefail
           npm ci --ignore-scripts --no-audit --no-fund
           npx playwright install --with-deps chromium
-          npm run build
+          if [ -z "$HARNESS_REF" ]; then npm run build; fi
 
       - name: Reuse collector-selected immutable CC package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          package="$RUNNER_TEMP/selected-cc-package"
-          mkdir -p "$package"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CC_PACKAGE_RUN" > "$package/run.json"
-          gh run download "$CC_PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --name "$CC_PACKAGE_ARTIFACT" --dir "$package"
+          if [ -z "$HARNESS_REF" ]; then
+            package="$RUNNER_TEMP/selected-cc-package"
+            mkdir -p "$package"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CC_PACKAGE_RUN" > "$package/run.json"
+            gh run download "$CC_PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --name "$CC_PACKAGE_ARTIFACT" --dir "$package"
+          fi
           node scripts/rehearsal-package-binding.mjs before
 
       - name: Prepare disposable Btrfs acceptance storage
@@ -141,7 +204,7 @@ jobs:
           import path from 'node:path';
           import { parseHostDescriptor, pinnedHost, verifyHost } from './src/host-harness.mjs';
           import { packagedHostDigest } from './src/packaged-host-integrity.mjs';
-          import { releasePerformanceIdentity } from './src/performance-baseline.mjs';
+          import { readRehearsalIdentity } from './scripts/release-rehearsal-selection.mjs';
 
           const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
           const host = path.join(process.env.RUNNER_TEMP, 'command-center-host');
@@ -160,7 +223,8 @@ jobs:
           const { default: assert } = await import('node:assert/strict');
           assert.deepEqual(receipt, expected, 'Prepared host receipt differs from selected release provenance');
           if (!process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO || ['native-release-prerequisites', 'scale-performance'].includes(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO)) {
-            assert.deepEqual(receipt, releasePerformanceIdentity.hostReceipt, 'Frozen performance host changed');
+            assert.deepEqual(receipt, readRehearsalIdentity(process.env.REHEARSAL_IDENTITY_MODE).hostReceipt,
+              'Qualification host changed');
           }
           await writeFile(path.join(host, 'receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o400 });
           const descriptor = {
@@ -281,7 +345,7 @@ jobs:
             schemaVersion: 1,
             kind: 'command-center-release-qualification-slice',
             scenario,
-            sourceCommit: process.env.GITHUB_SHA,
+            sourceCommit: process.env.HARNESS_SOURCE_COMMIT,
             workflowRun: process.env.GITHUB_RUN_ID,
             hostImage: process.env.IMAGE,
             buildDigest: build.digest,
@@ -307,10 +371,51 @@ jobs:
     needs: qualify
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CC_PACKAGE_BINDING: ${{ inputs.cc_package_binding }}
+      HARNESS_REF: ${{ inputs.harness_ref }}
+      ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+      ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+      REHEARSAL_IDENTITY_MODE: ${{ inputs.harness_ref == '' && 'historical' || 'candidate' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref == ''
         with:
           persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.harness_ref != ''
+        with:
+          repository: AshleyHollis/openclaw-command-center
+          ref: ${{ inputs.harness_ref }}
+          persist-credentials: false
+
+      - name: Bind actual harness checkout
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ -n "$HARNESS_REF" ]; then test "$actual" = "$HARNESS_REF"; else test "$actual" = "$GITHUB_SHA"; fi
+          printf 'HARNESS_SOURCE_COMMIT=%s\n' "$actual" >> "$GITHUB_ENV"
+
+      - name: Read completed private assembly identity
+        if: inputs.harness_ref != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSEMBLY_RUN_ID: ${{ inputs.assembly_run_id }}
+          ASSEMBLY_RUN_ATTEMPT: ${{ inputs.assembly_run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$ASSEMBLY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ASSEMBLY_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          package="$RUNNER_TEMP/selected-cc-package"
+          mkdir -p "$package"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ASSEMBLY_RUN_ID" > "$package/run.json"
+          gh run download "$ASSEMBLY_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "sealed-pair-next2-7aaa-dc1-20261012-$ASSEMBLY_RUN_ID-$ASSEMBLY_RUN_ATTEMPT" --dir "$package"
+          node scripts/rehearsal-package-binding.mjs select
 
       - uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427
         with:
@@ -320,9 +425,11 @@ jobs:
 
       - name: Resolve same release metadata for sealing
         env:
-          HOST_PROVENANCE: ${{ inputs.host_provenance }}
+          DISPATCH_HOST_PROVENANCE: ${{ inputs.host_provenance }}
           REHEARSAL_SCENARIO: ${{ inputs.scenario }}
-        run: node scripts/release-rehearsal-selection.mjs
+        run: |
+          if [ -z "$HARNESS_REF" ]; then export HOST_PROVENANCE="$DISPATCH_HOST_PROVENANCE"; fi
+          node scripts/release-rehearsal-selection.mjs
 
       - name: Seal coherent qualification receipt
         env:

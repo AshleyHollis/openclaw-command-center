@@ -1,3 +1,4 @@
+import { admitRehearsalBuildIdentity, readRehearsalIdentity } from '../scripts/release-rehearsal-selection.mjs';
 import assert from 'node:assert/strict';
 import { access, chmod, copyFile, cp, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
@@ -53,6 +54,7 @@ import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-na
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
 import { startFictionalOpenAiModel, fictionalAccountedEmailBinding, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
+const qualificationIdentityMode = process.env.REHEARSAL_IDENTITY_MODE ?? 'historical';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -886,7 +888,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15', 'the launched runtime must match the exact authenticated compatibility tuple');
+      assert.equal(descriptor.commit, readRehearsalIdentity(qualificationIdentityMode).hostReceipt.commit, 'the launched runtime must match the exact authenticated compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -1097,7 +1099,7 @@ async function exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind
       if (kind === 'plugin-api') {
         const refusal = await withDeadline('incompatible plugin API admission', () => variantHost.earlyExit, 30_000, signal);
         assert.equal(refusal.category, 'plugin-not-found');
-        const escapedHostVersion = releasePerformanceIdentity.hostVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedHostVersion = readRehearsalIdentity(qualificationIdentityMode).hostVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         assert.match(`${variantHost.diagnostics.stdout}\n${variantHost.diagnostics.stderr}`, new RegExp(`plugin requires plugin API =1900\\.1\\.1, but this host is ${escapedHostVersion}; skipping (?:discovery|load)`, 'u'));
         expectedAdmissionFailure = true;
         const exited = () => new HarnessFailure('host-early-exit', 'The incompatible plugin prevented host startup');
@@ -2611,6 +2613,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertFastHostAdmission(descriptor, { requireBoundCron: Boolean(requiresBoundCron) });
       buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
       await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+      admitRehearsalBuildIdentity({ mode: qualificationIdentityMode, buildDigest: buildReceipt.digest,
+        hostReceipt: { schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity } });
       await assertCandidatePluginPermissions(process.cwd());
       if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
         baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
@@ -2668,7 +2672,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const bind = (run, options = {}) => ({ signal, onFinalization }) => run({ descriptor, buildReceipt, ...options, signal, onFinalization });
     const execute = prerequisitesOnly ? runNativeReleasePrerequisites : runNativeReleaseCapture;
     const nativeResult = await execute({
-      descriptor, buildReceipt, ...(prerequisitesOnly ? {} : { baseline, capturePerformanceBaseline }),
+      descriptor, buildReceipt, qualificationIdentity: readRehearsalIdentity(qualificationIdentityMode), ...(prerequisitesOnly ? {} : { baseline, capturePerformanceBaseline }),
       timeoutMs: 285_000,
       cleanupTimeoutMs: 14_000,
       maxConcurrency: Number(process.env.COMMAND_CENTER_RELEASE_MAX_CONCURRENCY ?? 2),
@@ -4259,7 +4263,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scenarioResult('authenticated-control-ui-mount');
         const secure = await isolatedResult('secure-origin');
         const lifecycle = scenarioResult('scale-performance');
-        return { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
+        return { schemaVersion: 1, hostReceipt: { schemaVersion: descriptor.schemaVersion, commit: descriptor.commit, ...descriptor.integrity }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
       } },
       { id: 'desktop-primary-journey', run: async () => {
         const desktop = scenarioResult('desktop-primary-journey');
@@ -4324,13 +4328,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
     const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
     let report;
-    try { report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases, performanceBaseline: baseline }); }
+    try { report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases, performanceBaseline: baseline, expectedHostReceipt: readRehearsalIdentity(qualificationIdentityMode).hostReceipt }); }
     catch (error) { failure ??= error; }
     if (!failure && finalizationErrors.length > 0) failure = finalizationErrors[0].error;
     let reportPassed = false;
     if (!failure) {
       try {
-        assertAcceptanceReportPassed(report);
+        assertAcceptanceReportPassed(report, { expectedHostReceipt: readRehearsalIdentity(qualificationIdentityMode).hostReceipt });
         reportPassed = true;
       }
       catch (error) { failure = error; }

@@ -39,7 +39,7 @@ try {
   // Paths, UUIDs and inodes stay local. Only bounded version and binding facts
   // enter public evidence, after all fixture/browser cleanup has succeeded.
   const receipt = { schemaVersion: 1, kind: 'hosted-rehearsal-capability', linux: release(),
-    node: process.versions.node, chromium: browser.version(), sourceCommit: process.env.GITHUB_SHA,
+    node: process.versions.node, chromium: browser.version(), sourceCommit: process.env.HARNESS_SOURCE_COMMIT,
     workflowRun: process.env.GITHUB_RUN_ID, hostImage: process.env.IMAGE,
     hostReceipt: JSON.parse(process.env.EXPECTED_HOST_RECEIPT), buildDigest: build.digest,
     btrfsSdkIdentity: true, ordinaryStorageRejected: true, performanceQualified: false };

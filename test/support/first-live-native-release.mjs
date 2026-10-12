@@ -85,7 +85,7 @@ export async function runNativeReleasePrerequisites(options = {}) {
 }
 
 async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerformanceBaseline = false, baseline,
-  scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, cleanupTimeoutMs = 15_000, maxConcurrency = 2 } = {}, prerequisitesOnly) {
+  qualificationIdentity = releasePerformanceIdentity, scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, cleanupTimeoutMs = 15_000, maxConcurrency = 2 } = {}, prerequisitesOnly) {
   assert.match(buildReceipt?.digest ?? '', /^[a-f0-9]{64}$/u, 'An exact sealed build receipt is required');
   assert.equal(typeof descriptor?.integrity, 'object', 'The verified host descriptor integrity is required');
   const participants = prerequisitesOnly ? PREREQUISITE_PARTICIPANTS : PARTICIPANTS;
@@ -152,7 +152,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   if (failures.length) throw captureFailure(failures, outcomes);
   validateSupplementalEvidence(results);
   const primary = results.get('primary');
-  assert.deepEqual(primary.startup.hostReceipt, releasePerformanceIdentity.hostReceipt, 'Startup must observe the pinned host receipt');
+  assert.deepEqual(primary.startup.hostReceipt, qualificationIdentity.hostReceipt, 'Startup must observe the pinned host receipt');
   const { schemaVersion: _schema, commit: _commit, ...observedIntegrity } = primary.startup.hostReceipt;
   assert.deepEqual(observedIntegrity, sealedIntegrity, 'Startup must observe the supplied sealed host');
   const secure = results.get('secure');
@@ -182,7 +182,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
       exactIdentityValidated: restoration.exactIdentityValidated, postValidationMutation: restoration.postValidationMutation,
       boundaries: { beforeCommit: restoration.beforeCommitBytesPreserved, afterCommitBeforeManifest: restoration.afterCommitBytesPreserved } }
   ];
-  const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({ buildDigest: sealedDigest,
+  const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({ buildDigest: sealedDigest, expectedHostReceipt: qualificationIdentity.hostReceipt,
     rows: NON_PERFORMANCE_ROW_IDS.map((id, index) => ({ id, evidence: prerequisiteEvidence[index] })) });
   assert.equal(buildReceipt.digest, sealedDigest, 'The sealed build receipt changed during prerequisites');
   assert.deepEqual(descriptor.integrity, sealedIntegrity, 'The host identity changed during prerequisites');
@@ -240,7 +240,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: true });
   let report;
   try {
-    report = createAcceptanceReport({ buildDigest: sealedDigest,
+    report = createAcceptanceReport({ buildDigest: sealedDigest, expectedHostReceipt: qualificationIdentity.hostReceipt,
       rows: RELEASE_ROW_IDS.map((id, index) => ({ id, outcome: 'passed', evidence: rowEvidence[index] })),
       finalization: FINALIZATION_PHASES.map(phase => ({ phase })), performanceBaseline: qualifiedBaseline });
   } catch (error) {
@@ -255,6 +255,6 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     }]));
     throw new TypeError(`${error.message}; performance-comparison=${JSON.stringify(comparison)}`, { cause: error });
   }
-  assertAcceptanceReportPassed(report);
+  assertAcceptanceReportPassed(report, { expectedHostReceipt: qualificationIdentity.hostReceipt });
   return Object.freeze({ report, capturedBaseline: capturePerformanceBaseline ? report.performanceBaseline : undefined });
 }
