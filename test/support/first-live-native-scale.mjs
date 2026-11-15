@@ -133,19 +133,19 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
         textLength: node.textContent?.length,
         draftCount: root.querySelectorAll('textarea:not([readonly])').length,
         viewerCount: root.querySelectorAll('textarea[data-large-note-viewer][readonly]').length,
-        viewerLength: root.querySelector('textarea[data-large-note-viewer][readonly]')?.value.length ?? 0,
+        viewerLength: node.querySelector('textarea[data-large-note-viewer][readonly]')?.value.length ?? 0,
         footer: root.querySelector('.reader-footer')?.textContent ?? null,
       };
     });
-    return renderedNote.textLength === 8_388_609;
+    return renderedNote.viewerLength === RELEASE_FIXTURE_COUNTS.largeNoteBytes;
   });
   onProgress('large-note-rendered');
   observations.largeNoteReadMs = now() - started;
   assert.deepEqual(renderedNote, {
-    textLength: 8_388_609,
+    textLength: 0,
     draftCount: 0,
     viewerCount: 1,
-    viewerLength: 8_388_609,
+    viewerLength: RELEASE_FIXTURE_COUNTS.largeNoteBytes,
     footer: 'Read-only · Edit Notes in your external Note application.',
   });
 
