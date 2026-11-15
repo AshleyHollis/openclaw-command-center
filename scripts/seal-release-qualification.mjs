@@ -4,9 +4,9 @@ import path from 'node:path';
 import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerformanceAcceptanceEvidence, FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../src/acceptance-report.mjs';
 import { deriveReleasePerformanceBudget, RELEASE_FIXTURE_IDENTITY, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence } from '../src/safety.mjs';
+import { validatePackageBinding } from './qualification-package.mjs';
 
 const SOURCE_COMMIT = /^[a-f0-9]{40}$/u;
-const BUILD_DIGEST = /^[a-f0-9]{64}$/u;
 const PARTICIPANTS = Object.freeze([
   'primary', 'keyboard', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'restoration',
   'hostMismatch', 'buildMismatch', 'pluginApiMismatch', 'bridgeProtocolMismatch', 'bindingMismatch',
@@ -19,17 +19,18 @@ function exactKeys(value, keys, label) {
   return value;
 }
 
-function validateSlice(receipt, scenario, sourceCommit, workflowRun, hostImage) {
-  const keys = ['schemaVersion', 'kind', 'scenario', 'sourceCommit', 'workflowRun', 'hostImage', 'buildDigest', 'evidence',
+function validateSlice(receipt, scenario, candidatePackage, workflowRun, hostImage) {
+  const keys = ['schemaVersion', 'kind', 'scenario', 'sourceCommit', 'workflowRun', 'hostImage', 'buildDigest', 'candidatePackage', 'evidence',
     ...(scenario === 'scale-performance' ? ['finalization'] : [])];
   exactKeys(receipt, keys, `${scenario} receipt`);
   assert.equal(receipt.schemaVersion, 1);
   assert.equal(receipt.kind, 'command-center-release-qualification-slice');
   assert.equal(receipt.scenario, scenario);
-  assert.equal(receipt.sourceCommit, sourceCommit);
+  assert.equal(receipt.sourceCommit, candidatePackage.sourceCommit);
   assert.equal(receipt.workflowRun, workflowRun);
   assert.equal(receipt.hostImage, hostImage);
-  assert.match(receipt.buildDigest, BUILD_DIGEST);
+  assert.equal(receipt.buildDigest, candidatePackage.buildDigest);
+  assert.deepEqual(receipt.candidatePackage, candidatePackage, 'Qualification slice used a different candidate package');
   return receipt;
 }
 
@@ -50,12 +51,12 @@ assert.ok(sliceDirectory && outputDirectory, 'Qualification slice and output dir
 assert.match(sourceCommit ?? '', SOURCE_COMMIT);
 assert.match(workflowRun ?? '', /^[0-9]+$/u);
 assert.match(hostImage ?? '', /^ghcr\.io\/ashleyhollis\/openclaw@sha256:[a-f0-9]{64}$/u);
+const candidatePackage = validatePackageBinding(JSON.parse(process.env.CC_PACKAGE_BINDING), sourceCommit);
 
 const prerequisites = validateSlice(JSON.parse(await readFile(path.join(sliceDirectory, 'native-release-prerequisites.json'), 'utf8')),
-  'native-release-prerequisites', sourceCommit, workflowRun, hostImage);
+  'native-release-prerequisites', candidatePackage, workflowRun, hostImage);
 const scale = validateSlice(JSON.parse(await readFile(path.join(sliceDirectory, 'scale-performance.json'), 'utf8')),
-  'scale-performance', sourceCommit, workflowRun, hostImage);
-assert.equal(prerequisites.buildDigest, scale.buildDigest, 'Qualification slices use different builds');
+  'scale-performance', candidatePackage, workflowRun, hostImage);
 
 const prerequisiteEvidence = exactKeys(prerequisites.evidence,
   ['schemaVersion', 'kind', 'performanceQualified', 'buildDigest', 'hostIntegrity', 'rows', 'participants', 'finalization', 'privacy'],
@@ -123,7 +124,7 @@ const acceptance = {
   buildDigest: prerequisites.buildDigest,
   performanceBaseline: report.performanceBaseline
 };
-const receipt = { schemaVersion: 1, sourceCommit, workflowRun, hostImage, acceptance };
+const receipt = { schemaVersion: 1, sourceCommit, workflowRun, hostImage, candidatePackage, acceptance };
 scanPublicEvidence([JSON.stringify(prerequisites), JSON.stringify(scale), JSON.stringify(report), JSON.stringify(receipt)],
   { label: 'qualification-receipt' });
 await mkdir(outputDirectory, { recursive: true });

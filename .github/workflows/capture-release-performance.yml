@@ -3,6 +3,10 @@ name: Qualify Command Center release
 on:
   workflow_dispatch:
     inputs:
+      cc_package_binding:
+        description: Reviewed candidate JSON (runId, sourceCommit, receiptSha256, archiveSha256, buildDigest)
+        required: true
+        type: string
       scenario:
         description: Optional focused acceptance scenario; blank runs the complete release qualification
         required: false
@@ -19,6 +23,10 @@ concurrency:
 
 jobs:
   qualify:
+    permissions:
+      contents: read
+      packages: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -27,6 +35,7 @@ jobs:
       matrix:
         scenario: ${{ fromJSON(inputs.scenario == '' && '["native-release-prerequisites","scale-performance"]' || format('[{0}]', toJSON(inputs.scenario))) }}
     env:
+      CC_PACKAGE_BINDING: ${{ inputs.cc_package_binding }}
       IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:714d71199e498398a75e519b4ef3e19154eb48950a9185391b89aa34896d5980
       OPENCLAW_COMMIT: 21f1ca697532a9bd9e9cc46322a598a31435de15
       OPENCLAW_VERSION: 2026.9.5
@@ -43,6 +52,25 @@ jobs:
           node-version: 24.20.0
           cache: npm
 
+      - name: Select the reviewed candidate package
+        run: node scripts/qualification-package.mjs select
+
+      - name: Install qualification dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download the selected candidate archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/selected-cc-package"
+          mkdir -p "$package"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CC_PACKAGE_RUN" > "$RUNNER_TEMP/selected-cc-package-run.json"
+          gh run download "$CC_PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --name "$CC_PACKAGE_ARTIFACT" --dir "$package"
+
+      - name: Verify and use the selected candidate archive
+        run: node scripts/qualification-package.mjs install
+
       - name: Configure browser cache
         run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s/ms-playwright\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
@@ -55,12 +83,8 @@ jobs:
           persist-credentials: false
           path: _openclaw-source
 
-      - name: Install sealed candidate and browser dependencies
-        run: |
-          set -euo pipefail
-          npm ci --ignore-scripts --no-audit --no-fund
-          npx playwright install --with-deps chromium
-          npm run build
+      - name: Install browser dependencies
+        run: npx playwright install --with-deps chromium
 
       - name: Prepare disposable Btrfs acceptance storage
         run: |
@@ -191,6 +215,7 @@ jobs:
           import path from 'node:path';
           import { readBuiltReceipt } from './src/build.mjs';
           import { scanPublicEvidence } from './src/safety.mjs';
+          import { validatePackageBinding } from './scripts/qualification-package.mjs';
 
           const scenario = process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO;
           const marker = scenario === 'native-release-prerequisites' ? 'acceptance-prerequisites=' : 'acceptance-scenario-result=';
@@ -199,6 +224,8 @@ jobs:
           assert.equal(lines.length, 1, 'qualification slice must emit one canonical completion receipt');
           const evidence = JSON.parse(lines[0].slice(lines[0].indexOf(marker) + marker.length));
           const build = await readBuiltReceipt();
+          const candidatePackage = validatePackageBinding(JSON.parse(process.env.CC_PACKAGE_BINDING), process.env.GITHUB_SHA);
+          assert.equal(build.digest, candidatePackage.buildDigest);
           assert.equal(evidence.buildDigest, build.digest);
           if (scenario === 'native-release-prerequisites') {
             assert.equal(evidence.kind, 'native-release-prerequisites');
@@ -221,6 +248,7 @@ jobs:
             workflowRun: process.env.GITHUB_RUN_ID,
             hostImage: process.env.IMAGE,
             buildDigest: build.digest,
+            candidatePackage,
             evidence,
             ...(finalization ? { finalization } : {})
           };
@@ -256,6 +284,7 @@ jobs:
 
       - name: Seal coherent qualification receipt
         env:
+          CC_PACKAGE_BINDING: ${{ inputs.cc_package_binding }}
           IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:714d71199e498398a75e519b4ef3e19154eb48950a9185391b89aa34896d5980
           QUALIFICATION_SLICE_DIRECTORY: ${{ runner.temp }}/qualification-slices
           QUALIFICATION_OUTPUT_DIRECTORY: ${{ runner.temp }}/qualification
@@ -270,4 +299,4 @@ jobs:
 
       - name: Record qualification boundary
         run: |
-          printf '%s\n' 'Coherent native release qualification passed on fresh prerequisite and performance workers for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Coherent native release qualification passed on fresh prerequisite and performance workers for the selected candidate archive, exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"

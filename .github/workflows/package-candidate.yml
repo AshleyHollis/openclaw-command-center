@@ -21,6 +21,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Identify checked-out source
+        id: source
+        run: |
+          set -euo pipefail
+          source_commit="$(git rev-parse HEAD)"
+          printf 'commit=%s\n' "$source_commit" >> "$GITHUB_OUTPUT"
       - name: Install pinned candidate dependencies
         run: |
           set -euo pipefail
@@ -33,7 +40,7 @@ jobs:
       - name: Build and verify candidate archive
         env:
           TOOLCHAIN: ghcr.io/ashleyhollis/openclaw@sha256:1154a8fdd314ddf2e87be56f8e33eef78c7bd2eb93d3bd325723d4e9ca03d9c0
-          COMMAND_CENTER_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          COMMAND_CENTER_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
           docker pull "$TOOLCHAIN"
@@ -52,7 +59,7 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
-              node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
+              node --test test/plugin-artifact.test.mjs test/qualification-package.test.mjs test/note-folder-identity-migration.test.mjs \
                 test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
                 test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
@@ -71,7 +78,7 @@ jobs:
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: command-center-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          name: command-center-candidate-${{ steps.source.outputs.commit }}
           path: |
             ${{ runner.temp }}/candidate-package/artifact/command-center.tgz
             ${{ runner.temp }}/candidate-package/artifact/receipt.json
