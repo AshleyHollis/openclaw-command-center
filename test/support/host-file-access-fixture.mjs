@@ -50,3 +50,9 @@ export function installHostFileAccessFixture() {
   const releaseCoordinator = setHostNoteFilesystemCoordinator(fileAccess.tryAcquireExclusiveSqliteCoordinator);
   return () => { releaseCoordinator(); releaseIdentityReader(); releaseStager(); };
 }
+
+// Unit-only filesystem metadata binding. Keep the actual SDK staging and
+// cross-process SQLite coordinator when those semantics are under test.
+export function installHostFilesystemIdentityFixture() {
+  return setHostFilesystemIdentityReader(createHostFileAccessFixture().readDurableFilesystemIdentity);
+}

@@ -79,14 +79,29 @@ test('native delivered one-shot remains the same actionable Reminder across refr
   await withReminder(async (fixture) => {
     await fixture.refresh();
     const episodeId = fixture.episodes()[0].episodeId;
+    const original = fixture.all()[0];
     fixture.row.job.enabled = false;
     fixture.row.job.state = deliveredState;
+    fixture.row.job.updatedAtMs = Date.parse(now) + 1000;
     for (let index = 0; index < 3; index += 1) await fixture.refresh();
     assert.equal(fixture.episodes().length, 1, 'delivery is not user acknowledgement');
     assert.equal(fixture.episodes()[0].episodeId, episodeId);
+    assert.equal(fixture.all()[0].occurredAt, original.occurredAt);
+    assert.equal(fixture.all()[0].revision, original.revision, 'unchanged occurrence is an exact replay');
     fixture.restart();
     await fixture.refresh();
     assert.equal(fixture.episodes()[0]?.episodeId, episodeId);
+    assert.equal(fixture.all()[0].occurredAt, original.occurredAt);
+    assert.equal(fixture.all()[0].revision, original.revision);
+  });
+});
+
+test('a reused Reminder occurrence still rejects changed immutable schedule evidence', async () => {
+  await withReminder(async (fixture) => {
+    await fixture.refresh();
+    fixture.row.job.schedule.at = '2026-09-05T09:59:00.000Z';
+    await assert.rejects(fixture.refresh(), { code: 'intent-mismatch' });
+    assert.equal(fixture.all()[0].revision, 1);
   });
 });
 

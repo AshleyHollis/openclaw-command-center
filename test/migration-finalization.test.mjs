@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 
@@ -156,3 +157,9 @@ test('destination corruption blocks activation and completion; success leaves on
     } finally { cleanMetadata?.close(); await rm(cleanState, { recursive: true, force: true }); }
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

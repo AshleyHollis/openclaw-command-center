@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
@@ -37,8 +38,14 @@ for (const mode of ['release', 'sigkill', 'padded-recovery']) test(`two-process 
       metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional', topicId: 'fictional-recovery', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'note-folder:fictional-recovery' });
     }
     metadata.close(); metadata = null;
-    const holder = participant(stateDir, 'holder'); const contender = participant(stateDir, mode === 'padded-recovery' ? 'recovery' : 'contender'); children.push(holder, contender);
-    await Promise.all(children.map((child) => child.wait('ready')));
+    // Startup admission is fixture preparation. The subject is real enrollment
+    // contention after both participants have admitted the same metadata store.
+    const holder = participant(stateDir, 'holder'); children.push(holder);
+    const holderReady = await holder.wait('ready');
+    assert.ok(['ready', 'degraded'].includes(holderReady.metadataMode), JSON.stringify(holderReady));
+    const contender = participant(stateDir, mode === 'padded-recovery' ? 'recovery' : 'contender'); children.push(contender);
+    const contenderReady = await contender.wait('ready');
+    assert.ok(['ready', 'degraded'].includes(contenderReady.metadataMode), JSON.stringify(contenderReady));
     holder.child.send({ type: 'start' }); await holder.wait('marker-held');
     const marker = path.join(stateDir, 'vault/Projects/Shared Folder/.command-center-folder-identity');
     const markerBytes = await fs.readFile(marker);
@@ -83,3 +90,9 @@ for (const mode of ['release', 'sigkill', 'padded-recovery']) test(`two-process 
     await Promise.all(children.map((child) => child.ended)); metadata?.close(); await fs.rm(stateDir, { recursive: true, force: true });
   }
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

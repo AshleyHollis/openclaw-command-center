@@ -1,7 +1,11 @@
+import { installHostFilesystemIdentityFixture } from '../support/host-file-access-fixture.mjs';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
+
+const releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture();
+process.once('exit', () => { releaseFilesystemIdentityFixture(); });
 
 // Crash at the real filesystem boundary, after its effect and before its reply.
 const [stateDir, vault, encoded, method = 'recategorizeConfirm', fault = 'after-move'] = process.argv.slice(2);

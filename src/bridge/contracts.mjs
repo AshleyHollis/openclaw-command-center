@@ -1,10 +1,20 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
+import { billActionResultSchema } from './bill-action-contracts.mjs';
+import { acceptedChatResultSchema, CHAT_CAPTURE_METHODS } from './chat-capture-contracts.mjs';
+import { conversationPlanResultSchema } from './conversation-plan-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
+import { validateFilesSyncStatus } from '../sources/files-sync-status.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 import { parseLexicalQuery } from '../search/query.mjs';
+import { NOTE_PROPOSAL_METHODS, NOTE_PROPOSAL_PARAMS, NOTE_PROPOSAL_RESULT, proposalFields } from './note-proposal-contracts.mjs';
 
 export const READ_METHODS = Object.freeze([
+  'command-center.v1.chat-capture.load',
+  'command-center.v1.conversation-plans.messages',
+  'command-center.v1.conversation-plans.list',
+  'command-center.v1.bill-actions.list',
+  'command-center.v1.bill-actions.read',
   'command-center.v1.histories.list',
   'command-center.v1.histories.read',
   'command-center.v1.histories.attachment-read',
@@ -43,6 +53,15 @@ export const READ_METHODS = Object.freeze([
 ]);
 
 export const WRITE_METHODS = Object.freeze([
+  'command-center.v1.chat-capture.accept',
+  'command-center.v1.chat-capture.replay',
+  ...NOTE_PROPOSAL_METHODS,
+  'command-center.v1.conversation-plans.track',
+  'command-center.v1.conversation-plans.reconcile',
+  'command-center.v1.bill-actions.reconcile',
+  'command-center.v1.bill-actions.admit',
+  'command-center.v1.bill-actions.handle',
+  'command-center.v1.bill-actions.defer',
   'command-center.v1.migration.resume',
   'command-center.v1.reminders.create',
   'command-center.v1.topics.create',
@@ -135,6 +154,10 @@ const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
 function parameterSchema(field, method) {
+  if (field === 'planId') return Object.freeze({ type: 'string', minLength: 1 });
+  if (NOTE_PROPOSAL_METHODS.includes(method) && NOTE_PROPOSAL_PARAMS[field]) return NOTE_PROPOSAL_PARAMS[field];
+  if (field === 'expectedUpdatedAt' || field === 'offsetMinutes') return Object.freeze({ type: 'number' });
+  if (field === 'expectedEligibilityRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedRevisions') return Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ source: { enum: ['topic', 'reference'] }, id: { type: 'string', minLength: 1 }, revision: { type: ['string', 'integer'] } }), required: ['source', 'id', 'revision'] }) });
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedSessionId') return Object.freeze({ type: 'string', minLength: 1 });
@@ -168,6 +191,10 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (CHAT_CAPTURE_METHODS.includes(method)) return acceptedChatResultSchema;
+  if (NOTE_PROPOSAL_METHODS.includes(method)) return NOTE_PROPOSAL_RESULT;
+  if (conversationPlanResultSchema(method)) return conversationPlanResultSchema(method);
+  if (billActionResultSchema(method)) return billActionResultSchema(method);
   if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
   if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
   if (method.startsWith('command-center.v1.open-loops.')) {
@@ -237,6 +264,7 @@ function actionResultSchema(method) {
     });
   }
   const properties = {
+    billActions: billActionResultSchema('command-center.v1.bill-actions.list'),
     schemaVersion: Object.freeze({ const: 1 }),
     status: Object.freeze({ type: 'string' }),
     name: Object.freeze({ type: 'string' }),
@@ -390,7 +418,7 @@ function actionResultSchema(method) {
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
     : method.endsWith('dashboard.get')
-    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'briefings', 'briefingHistory', 'routineOccurrences', 'notificationSettings']
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'briefings', 'briefingHistory', 'routineOccurrences', 'notificationSettings', 'billActions']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];
@@ -406,6 +434,19 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.chat-capture.accept': ['input'],
+  'command-center.v1.chat-capture.load': ['planId'],
+  'command-center.v1.chat-capture.replay': ['planId'],
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': [],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
+  'command-center.v1.bill-actions.list': [],
+  'command-center.v1.bill-actions.read': [],
+  'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
+  'command-center.v1.bill-actions.admit': ['loopId', 'tenantId', 'boardId'],
+  'command-center.v1.bill-actions.handle': ['loopId', 'expectedUpdatedAt'],
+  'command-center.v1.bill-actions.defer': ['loopId', 'expectedEligibilityRevision', 'reviewAt', 'timeZone', 'offsetMinutes'],
   'command-center.v1.histories.list': [],
   'command-center.v1.histories.read': ['historyId'],
   'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset'],
@@ -499,6 +540,19 @@ const required = Object.freeze({
   'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt']
 });
 const fields = Object.freeze({
+  'command-center.v1.chat-capture.accept': ['input'],
+  'command-center.v1.chat-capture.load': ['planId'],
+  'command-center.v1.chat-capture.replay': ['planId'],
+  'command-center.v1.conversation-plans.messages': ['topicId', 'referenceId'],
+  'command-center.v1.conversation-plans.list': ['topicId'],
+  'command-center.v1.conversation-plans.track': ['input', 'logicalOperationId'],
+  'command-center.v1.conversation-plans.reconcile': ['input', 'logicalOperationId'],
+  'command-center.v1.bill-actions.list': ['topicId', 'offset', 'limit'],
+  'command-center.v1.bill-actions.read': ['loopId', 'notificationRecord'],
+  'command-center.v1.bill-actions.reconcile': ['loopId', 'logicalOperationId'],
+  'command-center.v1.bill-actions.admit': ['loopId', 'tenantId', 'boardId'],
+  'command-center.v1.bill-actions.handle': ['loopId', 'expectedUpdatedAt'],
+  'command-center.v1.bill-actions.defer': ['loopId', 'expectedEligibilityRevision', 'reviewAt', 'timeZone', 'offsetMinutes'],
   'command-center.v1.histories.list': ['topicId'],
   'command-center.v1.histories.read': ['historyId', 'offset', 'limit'],
   'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset', 'observedRevision'],
@@ -596,14 +650,14 @@ const fields = Object.freeze({
 });
 
 export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => {
-  const contractFields = [...common, ...(fields[method] ?? []), ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])];
+  const contractFields = [...common, ...(NOTE_PROPOSAL_METHODS.includes(method) ? proposalFields(method) : fields[method] ?? []), ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])];
   const properties = Object.freeze(Object.fromEntries(
     contractFields.map((key) => [key, parameterSchema(key, method)])
   ));
   return [method, Object.freeze({
     method,
     version: 1,
-    scope: READ_METHODS.includes(method) ? 'operator.read' : ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write',
+    scope: CHAT_CAPTURE_METHODS.includes(method) ? 'operator.write' : READ_METHODS.includes(method) ? 'operator.read' : ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write',
     closed: true,
     fields: Object.freeze(contractFields),
     paramsSchema: Object.freeze({
@@ -612,7 +666,7 @@ export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHOD
       properties,
       required: Object.freeze([
         'schemaVersion',
-        ...(required[method] ?? []),
+        ...(NOTE_PROPOSAL_METHODS.includes(method) ? proposalFields(method).filter(key => key !== 'panel') : required[method] ?? []),
         ...(WRITE_METHODS.includes(method) ? ['logicalOperationId'] : [])
       ])
     }),
@@ -626,6 +680,10 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw sourceError('invalid-request', 'Bridge request params must be an object.');
   for (const key of Object.keys(params)) if (!contract.fields.includes(key)) throw sourceError('invalid-request', `Unsupported bridge request field: ${key}`);
   if (params.schemaVersion !== 1) throw sourceError('unsupported-version', 'Bridge request schemaVersion must be 1.');
+  if (method === 'command-center.v1.bill-actions.read' &&
+      (params.loopId === undefined) === (params.notificationRecord === undefined)) {
+    throw sourceError('invalid-request', 'Bill read requires one exact loop or private alert record.');
+  }
   if (method === 'command-center.v1.search.query') parseLexicalQuery(params.query);
   for (const [key, schema] of Object.entries(contract.paramsSchema.properties)) {
     if (params[key] === undefined) continue;
@@ -663,7 +721,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     }
   }
   if (method === 'command-center.v1.sessions.create' && params.authoritativeSession === undefined && !Number.isInteger(params.expectedRevision)) throw sourceError('invalid-request', 'Native Conversation creation requires the original Topic revision.');
-  const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse');
+  const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse') && !NOTE_PROPOSAL_METHODS.includes(method);
   if (requiresPath && !(typeof params.path === 'string' || typeof params.notePath === 'string' || typeof params.sourcePath === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires a path.');
   if (['notes.create', 'notes.edit'].some((suffix) => method.endsWith(suffix)) && !(typeof params.text === 'string' || typeof params.content === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires Markdown text.');
   if (method.endsWith('notes.rename') && !(typeof params.newPath === 'string' || typeof params.destinationPath === 'string')) throw sourceError('invalid-request', 'Bridge rename requires a destination path.');
@@ -795,11 +853,15 @@ function sanitizeRecovery(value) {
   return result;
 }
 
-function sanitizeTopic(value) {
+function sanitizeTopic(value, includeSyncStatus = false) {
   const result = copyClosed(value, ['topicId', 'name', 'revision', 'paraCategory', 'lifecycle', 'health', 'usable', 'noteFolderReferenceId', 'provisioningOperationId', 'recovery', 'sourceReferences', 'locators', 'activatedAt', 'createdAt', 'updatedAt'], 'Topic');
   if (Array.isArray(result.recovery)) result.recovery = result.recovery.map(sanitizeRecovery);
   if (Array.isArray(result.sourceReferences)) result.sourceReferences = result.sourceReferences.map(sanitizeTopicSourceReference);
   if (Array.isArray(result.locators)) result.locators = result.locators.map(sanitizeTopicLocator);
+  if (includeSyncStatus) {
+    const syncStatus = validateFilesSyncStatus(value.filesSyncStatus, { allowUnknown: true });
+    if (syncStatus) result.filesSyncStatus = syncStatus;
+  }
   return result;
 }
 
@@ -869,7 +931,7 @@ export function sanitizeBridgeResult(method, result) {
   const contract = BRIDGE_CONTRACTS[method];
   if (!contract) throw sourceError('invalid-request', 'Unsupported Command Center bridge method.');
   const sanitized = sanitize(result, contract.resultSchema.properties.result, 'Bridge result');
-  if (sanitized?.topic !== undefined) sanitized.topic = sanitizeTopic(sanitized.topic);
+  if (sanitized?.topic !== undefined) sanitized.topic = sanitizeTopic(sanitized.topic, method === 'command-center.v1.topics.get');
   if (sanitized?.activeGroups !== undefined) sanitized.activeGroups = sanitizeGroups(sanitized.activeGroups);
   for (const key of ['provisioning', 'archived', 'retired']) if (Array.isArray(sanitized?.[key])) sanitized[key] = sanitized[key].map(sanitizeTopic);
   if (Array.isArray(sanitized?.recovery)) sanitized.recovery = sanitized.recovery.map(sanitizeTopic);

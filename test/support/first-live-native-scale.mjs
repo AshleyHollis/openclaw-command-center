@@ -169,16 +169,18 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(firstCatalog.nextOffset, 50);
   onProgress('notes-next-click');
   started = now();
-  await contentHandle.evaluate(node => {
-    const next = [...node.getRootNode().querySelectorAll('nav[aria-label="Note pages"] button')]
-      .find(button => button.textContent === 'Next Notes');
-    if (!next) throw new Error('Next Notes is unavailable');
+  await ready(async () => await contentHandle.evaluate(node => {
+    const next = [...node.getRootNode().querySelectorAll('nav[aria-label="Root file pages"] button')]
+      .find(button => button.textContent === 'Next files' && !button.disabled);
+    if (!next) return false;
     next.click();
-  });
+    return true;
+  }));
   await ready(async () => observed().notePages?.get(50)?.value?.offset === 50);
   await ready(async () => await contentHandle.evaluate(node => {
-    const pages = node.getRootNode().querySelector('nav[aria-label="Note pages"]');
-    return pages?.previousElementSibling?.textContent === 'Notes 51–100 of 5000.';
+    const pager = node.getRootNode().querySelector('nav[aria-label="Root file pages"]');
+    const range = pager?.querySelector('[role="status"]')?.textContent?.match(/^Files 51–100 of (\d+)\.$/u);
+    return Number(range?.[1]) >= 100;
   }));
   onProgress('notes-next-rendered');
   observations.noteNextPageMs = now() - started;

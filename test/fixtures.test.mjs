@@ -55,6 +55,8 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
     assert.equal(config.gateway.controlUi?.experimental?.customPlugins, true);
     assert.equal(config.models.catalogRefresh.enabled, false);
     assert.equal(config.models.providers.fixture.baseUrl, 'http://127.0.0.1:9/v1');
+    assert.equal(config.models.providers.fixture.api, 'openai-completions');
+    assert.deepEqual(config.models.providers.fixture.models, [{ id: 'fixture-model', name: 'Fixture model' }]);
     assert.equal(config.agents.defaults.model.primary, 'fixture/fixture-model');
     assert.deepEqual(config.update, { channel: 'extended-stable', checkOnStart: false });
     assert.equal(config.plugins.enabled, true);

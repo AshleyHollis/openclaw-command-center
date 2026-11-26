@@ -50,6 +50,15 @@ test('release performance baseline rejects host version drift', () => {
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
 });
 
+test('a current-host pending identity cannot replace historical capture authority', () => {
+  const { seed } = coherentGeneratedBaseline();
+  const hostReceipt = { ...seed.hostReceipt, commit: 'c'.repeat(40),
+    packageDigest: `sha256:${'c'.repeat(64)}`, runtimeDigest: `sha256:${'d'.repeat(64)}` };
+  const { schemaVersion, commit, ...integrity } = hostReceipt;
+  assert.throws(() => assertPerformanceHostIdentity({ schemaVersion, commit, integrity }), /pinned host/u);
+  assert.throws(() => validateReleasePerformanceBaselineSeed({ ...seed, hostVersion: '2026.10.3', hostReceipt }), /pinned/u);
+});
+
 test('measured fractional timings retain exact immutable ceiling checks', () => {
   const { baseline } = coherentGeneratedBaseline();
   const name = 'topicsLoadMs';

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { createServer as createHttpsServer } from 'node:https';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { HarnessFailure, redact, stopPinnedHost } from '../../src/host-harness.mjs';
 import { assertWebSocketDestination, boundedTrafficEvidence } from '../../src/isolation.mjs';
@@ -14,6 +19,31 @@ export const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 // quotas. Queue time remains inside all performance measurements.
 export const BRIDGE_UI_OPERATION_BUDGET_MS = 185_000;
 export const acceptanceSignalContext = new AsyncLocalStorage();
+
+export async function createLoopbackNotificationReceiver(tempRoot) {
+  const keyPath = path.join(tempRoot, 'notification-loopback.key.pem');
+  const certificatePath = path.join(tempRoot, 'notification-loopback.cert.pem');
+  await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyPath, '-out', certificatePath, '-days', '1', '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1']);
+  const deliveries = [];
+  const server = createHttpsServer({ key: await readFile(keyPath), cert: await readFile(certificatePath) }, (request, response) => {
+    const chunks = [];
+    request.on('data', chunk => { chunks.push(chunk); });
+    request.on('end', () => {
+      deliveries.push({ method: request.method, body: Buffer.concat(chunks),
+        contentEncoding: request.headers['content-encoding'], topic: request.headers.topic });
+      response.writeHead(201);
+      response.end();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  server.unref();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new HarnessFailure('endpoint-isolation', 'Loopback notification receiver did not bind a TCP port.');
+  return Object.freeze({ certificatePath, endpoint: `https://127.0.0.1:${address.port}/push`, deliveries, close: () => new Promise((resolve) => server.close(resolve)) });
+}
 
 export function createGatewayDeviceIdentity() {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -63,7 +93,9 @@ function managedChromiumOptions(options) {
   const stabilityArgs = process.env.COMMAND_CENTER_BROWSER_DISABLE_GPU_COMPOSITING === '1'
     ? ['--disable-gpu', '--disable-gpu-compositing']
     : [];
-  return { ...options, args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  return { ...(executablePath ? { executablePath } : {}), ...options,
+    args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
 }
 
 export async function launchManagedBrowser(options) {

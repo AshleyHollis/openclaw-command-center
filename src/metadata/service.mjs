@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { assertAcceptedChatEffect } from '../open-loops/accepted-chat-scope.mjs';
 import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
@@ -56,9 +57,14 @@ import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topi
 import { RECONCILIATION_OPERATION, installReconciliationMetadata } from './reconciliation.mjs';
 import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvisioningPrimaryMetadata, assertConditionalFolderClaims } from './provisioning-primary.mjs';
 import { installOpenLoopMetadata } from './open-loops.mjs';
+import { BILL_ACTION_KINDS, installBillActionMetadata } from './bill-actions.mjs';
+import { PLAN_KINDS } from '../conversation-plans/contract.mjs';
+import { installConversationPlanMetadata } from './conversation-plans.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { CLARIFICATION_PROPOSAL_OPERATION, CLARIFICATION_WORKER_DISPOSITION_OPERATION, installClarificationProposalMetadata } from './clarification-proposals.mjs';
+import { installNoteProposalMetadata } from './note-proposals.mjs';
+import { NOTE_PROPOSAL_KIND } from '../maintenance/proposal-contract.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
 import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
@@ -308,6 +314,16 @@ function isStorageAccessError(error) {
   return ['EACCES', 'EPERM', 'EROFS'].includes(error?.code) || [3, 8, 10, 14, 23].includes(sqlitePrimaryCode);
 }
 
+function throwIfStorageContended(error) {
+  if (error instanceof CommandCenterMetadataError && error.code === 'storage-contended') throw error;
+  const primaryCode = Number.isInteger(error?.errcode) ? error.errcode & 0xff : undefined;
+  if ([5, 6].includes(primaryCode)) {
+    // A failed inspection under SQLite exclusion proves neither corruption nor
+    // a valid schema. Refuse admission without opening a recovery-only service.
+    throw new CommandCenterMetadataError('storage-contended', 'Command Center metadata is temporarily busy; retry admission after the competing owner releases storage.', { retryable: true, errcode: error.errcode, cause: error });
+  }
+}
+
 function closeQuietly(database) {
   try { database?.close(); } catch { /* preflight cleanup must not write or mask its classification */ }
 }
@@ -322,13 +338,15 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
   const integrity = database.prepare('PRAGMA integrity_check').get()?.integrity_check;
   if (integrity !== 'ok') return coreFailure('integrity-failure', 'The Command Center database failed SQLite integrity checks.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
   let shape;
-  try { shape = inspectSchema(database, schemaVersion); } catch {
+  try { shape = inspectSchema(database, schemaVersion); } catch (error) {
+    throwIfStorageContended(error);
     return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
   }
   if (!shape.valid) return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
   try {
     if (!inspectStoredIntegrity(database)) return coreFailure('integrity-failure', 'The Command Center database failed stored integrity checks for identities or relationships.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
-  } catch {
+  } catch (error) {
+    throwIfStorageContended(error);
     return coreFailure('integrity-failure', 'The Command Center database failed stored integrity inspection.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
   }
   return null;
@@ -359,6 +377,7 @@ function validateCurrentSchema(databasePath, stateDir, options = {}) {
     }
     return Object.freeze({ mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, diagnostics: Object.freeze([]) });
   } catch (error) {
+    throwIfStorageContended(error);
     return isStorageAccessError(error)
       ? coreFailure('storage-access-failure', 'The Command Center database could not be opened for inspection.', 'Check storage access and retry Command Center startup.', COMMAND_CENTER_SCHEMA_VERSION)
       : recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
@@ -376,6 +395,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   try {
     database = new DatabaseSync(databasePath, { readOnly: true });
   } catch (error) {
+    throwIfStorageContended(error);
     return isStorageAccessError(error)
       ? coreFailure('storage-access-failure', 'The Command Center database could not be opened for inspection.', 'Check storage access and retry Command Center startup.')
       : coreFailure('corrupt-storage', 'The Command Center database could not be read safely.', 'Restore or replace the database through the separate recovery workflow.');
@@ -385,6 +405,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     try {
       schemaVersion = readSchemaVersion(database);
     } catch (error) {
+      throwIfStorageContended(error);
       return isStorageAccessError(error)
         ? coreFailure('storage-access-failure', 'The Command Center database could not be read for inspection.', 'Check storage access and retry Command Center startup.')
         : coreFailure('corrupt-storage', 'The Command Center database could not be read safely.', 'Restore or replace the database through the separate recovery workflow.');
@@ -698,6 +719,7 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
       core = inspectExistingDatabase(databasePath);
     }
   } catch (error) {
+    throwIfStorageContended(error);
     if (phase === 'migration') core = coreFailure('migration-failure', 'The Command Center database migration could not be completed atomically.', 'Restore or retry the exact schema-1 database through the separate recovery workflow.');
     else core = phase === 'inspection' && isStorageAccessError(error)
       ? coreFailure('storage-access-failure', 'The Command Center database path could not be inspected.', 'Check storage access and retry Command Center startup.')
@@ -710,8 +732,9 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
       // Runtime writes may briefly overlap an external read snapshot. Wait at the
       // SQLite lock boundary; never replay the operation or change journal mode.
       database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000;');
-    } catch {
+    } catch (error) {
       closeQuietly(database);
+      throwIfStorageContended(error);
       core = coreFailure('storage-access-failure', 'The Command Center database could not be opened for use.', 'Check storage access and retry Command Center startup.', core.schemaVersion);
     }
   }
@@ -731,6 +754,7 @@ function openReadOnlyCore(stateDir, explicitDatabasePath) {
     return Object.freeze({ databasePath, database, core });
   } catch (error) {
     closeQuietly(database);
+    throwIfStorageContended(error);
     if (error instanceof CommandCenterMetadataError) throw error;
     throw new CommandCenterMetadataError('existing-metadata-required', 'Read-only inspection cannot create or migrate metadata.');
   }
@@ -1226,6 +1250,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     try { result = JSON.parse(resultIdentity); } catch { throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result is invalid.'); }
     if (!result || result.schemaVersion !== 1 || result.sourceKind !== match[2] || result.sourceVersion !== observedRevision) throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result does not match its operation identity.');
     return mutate(null, db => {
+      if (result.sourceKind === 'chat') assertAcceptedChatEffect(service, result, match[1] === 'intake-source' ? 'plan' : 'outcome');
       const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
       if (existing) {
         if (existing.operation_kind !== operationKind || existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Intake accounting identity was reused with a different result.');
@@ -1246,7 +1271,14 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const evidence = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
             WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
               AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
-          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
+          if (result.sourceKind === 'chat' && result.status === 'pending-decision') {
+            const captureHex = createHash('sha256').update(['command-center.source-capture.v1', 'chat', result.sourceExternalId, result.sourceVersion, result.outcomeId].join('\0')).digest('hex');
+            const captureId = `${captureHex.slice(0, 8)}-${captureHex.slice(8, 12)}-4${captureHex.slice(13, 16)}-${(Number.parseInt(captureHex[16], 16) & 3 | 8).toString(16)}${captureHex.slice(17, 20)}-${captureHex.slice(20, 32)}`;
+            let captured;
+            try { captured = JSON.parse(db.prepare("SELECT result_json FROM open_loop_operations WHERE logical_operation_id = ? AND state = 'applied'").get(captureId)?.result_json ?? 'null'); } catch { captured = null; }
+            if (captured?.loop?.loopId !== result.loopId || !['suggested', 'decision-needed', 'uncertain'].includes(captured.loop.state) || captured.observation?.source?.kind !== 'chat' || captured.observation.source.externalId !== result.sourceExternalId || captured.observation.facts?.sourceVersion !== result.sourceVersion || captured.observation.facts?.obligationId !== result.outcomeId || captured.observation.facts?.classification !== 'decision') throw new CommandCenterMetadataError('conflict', 'The accepted Chat decision lacks its original pending capture receipt.');
+          }
+          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && result.sourceKind !== 'chat' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
           const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
             LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
@@ -1417,6 +1449,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (operationKind === 'email-reader.refresh.v1' || existing?.operation_kind === 'email-reader.refresh.v1') throw new CommandCenterMetadataError('email-reader-owner-required', 'Email reader refresh receipts require their dedicated owner.');
       if (operationKind === CLARIFICATION_PROPOSAL_OPERATION || existing?.operation_kind === CLARIFICATION_PROPOSAL_OPERATION) throw new CommandCenterMetadataError('clarification-proposal-owner-required', 'Clarification proposals require their dedicated owner.');
       if (operationKind === CLARIFICATION_WORKER_DISPOSITION_OPERATION || existing?.operation_kind === CLARIFICATION_WORKER_DISPOSITION_OPERATION) throw new CommandCenterMetadataError('clarification-disposition-owner-required', 'Clarification worker dispositions require their dedicated owner.');
+      if (BILL_ACTION_KINDS.includes(operationKind) || BILL_ACTION_KINDS.includes(existing?.operation_kind)) throw new CommandCenterMetadataError('bill-action-owner-required', 'Bill action recovery requires its dedicated owner.');
+      if (PLAN_KINDS.includes(operationKind) || PLAN_KINDS.includes(existing?.operation_kind)) throw new CommandCenterMetadataError('conversation-plan-owner-required', 'Conversation plan recovery requires its dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
@@ -2129,9 +2163,11 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     ? readMany('SELECT * FROM source_locators ORDER BY reference_id', [], mapLocator)
     : readMany('SELECT locator.* FROM source_locators AS locator JOIN source_references AS reference ON reference.reference_id = locator.reference_id WHERE reference.topic_id = ? ORDER BY locator.reference_id', [requiredString(topicId, 'topicId')], mapLocator);
 
-  function recordTopicOperation(db, input = {}, structural = false) {
+  function recordTopicOperation(db, input = {}, structural = false, filing = false) {
     const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
     const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || existing?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
+    if (!filing && (input.operationKind === 'documents.file.v2' || existing?.operation_kind === 'documents.file.v2')) throw new CommandCenterMetadataError('filing-owner-required', 'Original filing transitions require their dedicated owner.');
     if (input.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE || (existing && jsonValue(existing.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE)) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning progress requires its dedicated owner.');
     reconciliationClaims.assertChildClaim(db, { logicalOperationId }, true);
     const intentJson = JSON.stringify(input.intent ?? {});
@@ -2144,6 +2180,52 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     return mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId));
   }
   service.recordTopicOperation = (input = {}) => mutate(null, db => recordTopicOperation(db, input));
+
+  service.prepareDocumentFiling = (input, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous preparation authority is required.');
+    if (input.operationKind !== 'documents.file.v2' || input.intent?.version !== 2 || input.state !== 'pending' || input.currentStep !== 'prepared') throw new CommandCenterMetadataError('invalid-value', 'One original prepared filing is required.');
+    const existing = service.getTopicOperation(input.logicalOperationId);
+    if (existing && (existing.operationKind !== input.operationKind || JSON.stringify(existing.intent) !== JSON.stringify(input.intent))) throw new CommandCenterMetadataError('intent-mismatch', 'The original filing intent changed.');
+    const record = existing ?? recordTopicOperation(db, input, false, true);
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous preparation authority is required.');
+    return record;
+  });
+  service.claimDocumentFiling = ({ logicalOperationId }, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous dispatch authority is required.');
+    const existing = service.getTopicOperation(logicalOperationId);
+    if (existing?.operationKind !== 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Original filing is required.');
+    if (existing.currentStep !== 'prepared' || existing.state !== 'pending') return { dispatch: false, operation: existing };
+    const operation = recordTopicOperation(db, { ...existing, state: 'unknown', currentStep: 'dispatch-claimed' }, false, true);
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous dispatch authority is required.');
+    return { dispatch: true, operation };
+  });
+
+  // Complete only the original filing whose existing Note owner has already
+  // recorded causal publication. Binding and retained public receipt share the
+  // same SQLite transaction; callers retain the Note filesystem exclusion.
+  service.completeDocumentFiling = ({ logicalOperationId }, assertCurrent) => mutate('notes', db => {
+    if (typeof assertCurrent !== 'function' || assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Synchronous filing completion authority is required.');
+    const parent = service.getTopicOperation(logicalOperationId);
+    if (parent?.operationKind !== 'documents.file.v2' || parent.intent?.version !== 2) throw new CommandCenterMetadataError('source-recovery', 'The original filing intent is unavailable.');
+    const intent = parent.intent;
+    const child = service.getTopicOperation(`notes.fs:${intent.noteLogicalOperationId}`);
+    const note = child?.result?.sourceReference;
+    if (child?.operationKind !== 'notes.filesystem-effect' || child.state !== 'applied' || child.topicId !== parent.topicId || child.intent.operation !== 'create' || child.intent.destinationPath !== intent.documentPath || child.intent.desiredRevision !== intent.sourceDigest || child.intent.sourceKind !== 'document' || !child.result.publishedIdentity || child.result.noteFolderReferenceId !== intent.folderReferenceId || note?.topicId !== parent.topicId || note.sourceKind !== 'document' || note.observedRevision !== intent.sourceDigest) throw new CommandCenterMetadataError('conflict', 'The causal Note publication does not match the original filing.');
+    const document = db.prepare('SELECT * FROM source_references WHERE reference_id=?').get(note.referenceId);
+    if (!document || document.topic_id !== parent.topicId || document.source_system !== 'obsidian' || document.source_kind !== 'document' || document.external_source_id !== note.externalSourceId || document.last_observed_revision !== intent.sourceDigest) throw new CommandCenterMetadataError('conflict', 'The exact document binding changed before completion.');
+    const referenceId = `attachment:${createHash('sha256').update(intent.mediaRef).digest('hex')}`;
+    const existing = db.prepare('SELECT * FROM source_references WHERE reference_id=? OR (source_system=? AND source_kind=? AND external_source_id=?)').all(referenceId, 'openclaw', 'attachment', intent.mediaRef);
+    if (existing.some(row => row.reference_id !== referenceId || row.topic_id !== parent.topicId || row.source_system !== 'openclaw' || row.source_kind !== 'attachment' || row.external_source_id !== intent.mediaRef || row.last_observed_revision !== intent.sourceDigest)) throw new CommandCenterMetadataError('cross-topic', 'The original attachment binding is foreign or changed.');
+    const now = timestamp(undefined, 'updatedAt');
+    if (!existing.length) insertSourceReference(db, { referenceId, topicId: parent.topicId, sourceSystem: 'openclaw', sourceKind: 'attachment', externalSourceId: intent.mediaRef, observedRevision: intent.sourceDigest }, now);
+    const receipt = { schemaVersion: 2, status: 'filed', logicalOperationId, topicId: parent.topicId, topicName: intent.topicName,
+      source: { referenceId: intent.sessionReferenceId, attachmentReferenceId: referenceId, sessionKey: intent.request.sessionKey, sessionId: intent.request.sessionId, entryId: intent.request.selection.entryId, mediaIndex: intent.request.selection.mediaIndex, generation: intent.request.selection.generation, createdAt: intent.sourceCreatedAt },
+      document: { referenceId: note.referenceId, path: intent.documentPath, revision: intent.sourceDigest, contentType: intent.contentType, sizeBytes: intent.sizeBytes } };
+    if (parent.state === 'applied' && JSON.stringify(parent.result?.value) !== JSON.stringify(receipt)) throw new CommandCenterMetadataError('conflict', 'The retained original filing receipt changed.');
+    recordTopicOperation(db, { ...parent, state: 'applied', currentStep: 'complete', result: { value: receipt }, updatedAt: now }, false, true);
+    if (assertCurrent()?.then) throw new CommandCenterMetadataError('unauthenticated', 'Asynchronous completion authority is unsupported.');
+    return receipt;
+  });
 
   // Retained Conversation creation has no executable replay. Its local claim,
   // native result evidence, and atomic attachment use the existing two ledgers.
@@ -2209,7 +2291,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (applied && !operation.result?.value?.sourceReference?.referenceId) throw new CommandCenterMetadataError('source-recovery', 'Conversation completion receipt is unavailable.');
       result = { schemaVersion: 1, status: applied ? 'applied' : 'unknown', logicalOperationId: operation.logicalOperationId,
         expectedTopicRevision: operation.intent.request.expectedTopicRevision, label: operation.intent.request.label,
-        ...(applied ? { referenceId: operation.result.value.sourceReference.referenceId } : {}) };
+        ...(applied ? { referenceId: operation.result.value.sourceReference.referenceId, sessionId: operation.result.nativeResult.sessionId } : {}) };
     }
     assertCurrent();
     return result;
@@ -2434,7 +2516,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.listSourceRecovery = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM source_recovery ORDER BY recovery_id', [], mapRecovery) : readMany('SELECT * FROM source_recovery WHERE topic_id = ? ORDER BY recovery_id', [requiredString(topicId, 'topicId')], mapRecovery);
 
   service.completeTopicProvisioning = (input = {}) => mutate(null, (db) => {
-    const parent = db.prepare('SELECT intent_json FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    const parent = db.prepare('SELECT intent_json, operation_kind FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || parent?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
+    if (parent?.operation_kind === 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Filing completion requires its dedicated owner.');
     if (parent && jsonValue(parent.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning activation requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId);
     if (topic?.lifecycle === 'active' && topic.activated_at) {
@@ -2486,6 +2570,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   }
   service.applySessionRecoveryRelink = (input = {}) => mutate(null, db => applySessionRecoveryRelink(db, input));
   service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
+    const reserved = db.prepare('SELECT operation_kind FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (input.operationKind === NOTE_PROPOSAL_KIND || reserved?.operation_kind === NOTE_PROPOSAL_KIND) throw new CommandCenterMetadataError('note-proposal-owner-required', 'Note proposals require their dedicated owner.');
+    if (service.getTopicOperation(input.logicalOperationId)?.operationKind === 'documents.file.v2') throw new CommandCenterMetadataError('filing-owner-required', 'Filing recovery requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
     if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
     const recoveryReference = input.operationKind === 'topics.recovery.verify' ? db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(input.intent.referenceId) : null;
@@ -2544,9 +2631,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installTopicBootstrapMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installProvisioningPrimaryMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installOpenLoopMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installBillActionMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installConversationPlanMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   installClarificationProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installNoteProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
   installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   installEntityCorrections(service, { ErrorType: CommandCenterMetadataError });

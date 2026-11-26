@@ -1,5 +1,7 @@
+import { normalizePaymentIdentity } from './payment-identity.mjs';
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
+import { assertAcceptedChatEffect } from './accepted-chat-scope.mjs';
 
 const sourceKinds = new Set(['email', 'chat', 'note']);
 const outcomeKinds = new Set(['obligation', 'decision', 'information', 'no-action']);
@@ -23,7 +25,7 @@ function jsonObject(value, name) {
   return Object.freeze(JSON.parse(encoded));
 }
 const extractionKeys = new Set(['schemaVersion', 'proposedTopic', 'notePath', 'knowledgeMarkdown', 'knowledgeOutcomeId', 'knowledgeSummary', 'obligations', 'noAction']);
-const obligationKeys = new Set(['obligationId', 'title', 'classification', 'obligationKind', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies']);
+const obligationKeys = new Set(['obligationId', 'title', 'classification', 'obligationKind', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies', 'paymentIdentity']);
 export function normalizeAcceptedExtraction(input) {
   const value = jsonObject(input, 'acceptedExtraction');
   if (value.schemaVersion !== 1 || Object.keys(value).some(key => !extractionKeys.has(key)) || !Array.isArray(value.obligations) || value.obligations.length > 100 || typeof value.notePath !== 'string' || value.notePath.length > 1000 || typeof value.knowledgeMarkdown !== 'string' || value.knowledgeMarkdown.length > 262_144) fail('invalid-request', 'acceptedExtraction is invalid.');
@@ -34,6 +36,10 @@ export function normalizeAcceptedExtraction(input) {
     const normalized = { ...item, obligationId: text(item.obligationId, `acceptedExtraction.obligations[${index}].obligationId`, 300), title: text(item.title, `acceptedExtraction.obligations[${index}].title`, 500), provenance: item.provenance, classification: item.classification ?? 'obligation' };
     if (!['explicit', 'inferred', 'idea', 'quoted'].includes(normalized.provenance) || !['obligation', 'decision'].includes(normalized.classification)) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
     if (normalized.obligationKind !== undefined && (normalized.obligationKind !== 'payment' || normalized.classification !== 'obligation')) fail('invalid-request', `acceptedExtraction.obligations[${index}] cannot use that obligationKind.`);
+    if (item.paymentIdentity !== undefined) {
+      if (normalized.classification !== 'obligation' || normalized.obligationKind !== 'payment' || normalized.provenance !== 'explicit') fail('invalid-request', 'Accepted payment identity requires an explicit payment obligation.');
+      normalized.paymentIdentity = normalizePaymentIdentity(item.paymentIdentity);
+    }
     return Object.freeze(normalized);
   });
   if (value.noAction !== undefined && (!value.noAction || typeof value.noAction !== 'object' || Array.isArray(value.noAction) || Object.keys(value.noAction).some(key => !['outcomeId', 'summary'].includes(key)))) fail('invalid-request', 'acceptedExtraction.noAction is invalid.');
@@ -50,9 +56,10 @@ function sourceIdentity(input) {
 
 export function normalizeIntakeSourcePlan(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake source plan is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'retainedNoteRevision', 'acceptedExtraction', 'outcomes', 'enumeration'];
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'retainedNoteRevision', 'acceptedExtraction', 'outcomes', 'enumeration', 'acceptedChat'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !Array.isArray(input.outcomes) || input.outcomes.length < 1 || input.outcomes.length > 100) fail('invalid-request', 'Intake source plan is invalid.');
   const source = sourceIdentity(input);
+  if (source.sourceKind !== 'email' && input.acceptedExtraction?.obligations?.some(item => item.paymentIdentity !== undefined)) fail('invalid-request', 'Structured payment identity is supported only for email intake.');
   const outcomes = input.outcomes.map((item, index) => {
     if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !['outcomeId', 'kind'].includes(key)) || !outcomeKinds.has(item.kind)) fail('invalid-request', `outcomes[${index}] is invalid.`);
     return Object.freeze({ outcomeId: text(item.outcomeId, `outcomes[${index}].outcomeId`, 300), kind: item.kind });
@@ -63,13 +70,14 @@ export function normalizeIntakeSourcePlan(input) {
   const incomplete = enumeration.scope !== 'complete' || enumeration.remainingCount > 0 || enumeration.failedReadCount > 0 || enumeration.scanCapReached;
   if (incomplete && (enumeration.scopeId === undefined || enumeration.resumeCursor === undefined)) fail('invalid-request', 'Incomplete enumeration requires an exact resume scope and cursor.');
   const retainedNoteRevision = input.retainedNoteRevision === undefined ? undefined : text(input.retainedNoteRevision, 'retainedNoteRevision', 100);
-  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), processorVersion: text(input.processorVersion, 'processorVersion', 300), ...(retainedNoteRevision ? { retainedNoteRevision } : {}), acceptedExtraction: normalizeAcceptedExtraction(input.acceptedExtraction), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
+  return Object.freeze({ schemaVersion: 1, ...source, ...(input.acceptedChat === undefined ? {} : { acceptedChat: jsonObject(input.acceptedChat, 'acceptedChat') }), checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), processorVersion: text(input.processorVersion, 'processorVersion', 300), ...(retainedNoteRevision ? { retainedNoteRevision } : {}), acceptedExtraction: normalizeAcceptedExtraction(input.acceptedExtraction), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
 }
 
 export function recordIntakeSourcePlan(metadata, input) {
   if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const plan = normalizeIntakeSourcePlan(input);
-  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, processorVersion: plan.processorVersion, ...(plan.retainedNoteRevision ? { retainedNoteRevision: plan.retainedNoteRevision } : {}), acceptedExtraction: plan.acceptedExtraction, outcomes: plan.outcomes, enumeration: plan.enumeration };
+  if (plan.sourceKind === 'chat') assertAcceptedChatEffect(metadata, plan, 'plan');
+  const identity = { schemaVersion: 1, ...(plan.acceptedChat ? { acceptedChat: plan.acceptedChat } : {}), sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, processorVersion: plan.processorVersion, ...(plan.retainedNoteRevision ? { retainedNoteRevision: plan.retainedNoteRevision } : {}), acceptedExtraction: plan.acceptedExtraction, outcomes: plan.outcomes, enumeration: plan.enumeration };
   const logicalOperationId = stableUuid(`command-center:intake-source:${plan.sourceKind}:${plan.sourceExternalId}:${plan.sourceVersion}`);
   const intentDigest = digest(identity);
   const committed = metadata.commitIntakeAccountingOperation({ logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt });
@@ -112,6 +120,7 @@ export function normalizeIntakeOutcome(input) {
 export function recordIntakeOutcome(metadata, input) {
   if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const outcome = normalizeIntakeOutcome(input);
+  if (outcome.sourceKind === 'chat') assertAcceptedChatEffect(metadata, outcome, 'outcome');
   const provisional = ['unresolved-topic', 'failed', 'unknown'].includes(outcome.status);
   const logicalOperationId = stableUuid(`command-center:intake-outcome:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}:${outcome.outcomeId}${provisional ? `:${outcome.status}` : ''}`);
   const intent = { schemaVersion: 1, sourceKind: outcome.sourceKind, sourceExternalId: outcome.sourceExternalId, sourceVersion: outcome.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind };

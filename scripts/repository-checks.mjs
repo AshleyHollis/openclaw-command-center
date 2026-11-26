@@ -9,6 +9,16 @@ import { validateReleasePerformanceBaseline } from '../src/performance-baseline.
 import { repositoryArtifactCheckPhases, runIndependentCheckPhases } from './check-phases.mjs';
 import { checkMutationArchitecture } from './mutation-architecture.mjs';
 
+export function assertNativeHttpRouteBoundary(controlUi) {
+  // Native authority independently admits these exact POST paths against
+  // registered gateway-authenticated handlers and enforces transport limits.
+  const nativeHttpRoutes = [
+    '/plugins/command-center/api/topics/actions',
+    '/plugins/command-center/api/topic/actions'
+  ];
+  if (JSON.stringify(controlUi?.httpRoutes) !== JSON.stringify(nativeHttpRoutes)) throw new Error('Native Control UI HTTP route boundary drift');
+}
+
 export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   if (!['qualification', 'capture-prerequisites'].includes(purpose)) throw new Error('Unsupported repository check purpose');
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,24 +37,22 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   if (pluginManifest.id !== 'command-center' || pluginManifest.controlUi?.entry !== 'dist/native-ui/entry.mjs') throw new Error('Plugin identity or native entry drift');
   if (pluginManifest.activation?.onStartup !== true) throw new Error('Route-registering plugin must activate at Gateway startup');
   if (Object.keys(pluginManifest.controlUi).some((key) => !['entry', 'httpRoutes'].includes(key))) throw new Error('Native Control UI declaration contains unsupported fields');
-  // These are the approved native transport boundaries, not arbitrary URLs or
-  // legacy iframe grants. Backend admission independently intersects this list.
-  const nativeHttpRoutes = [
-    { path: '/plugins/command-center/api/topic-analysis', method: 'GET', maxRequestBytes: 0, maxResponseBytes: 262144 },
-    { path: '/plugins/command-center/api/dashboard/actions', method: 'POST', maxRequestBytes: 32768, maxResponseBytes: 32768 },
-    { path: '/plugins/command-center/api/topics/actions', method: 'POST', maxRequestBytes: 32768, maxResponseBytes: 32768 },
-    { path: '/plugins/command-center/api/topic/actions', method: 'POST', maxRequestBytes: 12582912, maxResponseBytes: 32768 },
-    { path: '/plugins/command-center/api/search/rebuild', method: 'POST', maxRequestBytes: 2048, maxResponseBytes: 4096 },
-    { path: '/plugins/command-center/api/topic-analysis/actions', method: 'POST', maxRequestBytes: 65536, maxResponseBytes: 262144 }
-  ];
-  if (pluginManifest.controlUi.httpRoutes !== undefined && JSON.stringify(pluginManifest.controlUi.httpRoutes) !== JSON.stringify(nativeHttpRoutes)) throw new Error('Native Control UI HTTP route boundary drift');
+  assertNativeHttpRouteBoundary(pluginManifest.controlUi);
   if (!Array.isArray(packageJson.openclaw?.extensions) || !packageJson.openclaw.extensions.includes('./dist/plugin.mjs')) throw new Error('OpenClaw extension discovery must name the built plugin entry');
-  const pinnedPackageVersion = '2026.9.5';
-  if (packageJson.peerDependencies?.openclaw !== pinnedPackageVersion || packageJson.devDependencies?.openclaw !== pinnedPackageVersion) throw new Error('OpenClaw host peer and development packages must be pinned exactly');
-  if (packageJson.openclaw?.compat?.pluginApi !== '=2026.9.5') throw new Error('OpenClaw plugin API must match the current authenticated host exactly');
-  if (packageLock.packages?.['']?.peerDependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['']?.devDependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['node_modules/openclaw']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile peer and development packages must match the pinned host package');
-  if (packageLock.packages?.['node_modules/openclaw']?.dependencies?.['@openclaw/ai'] !== pinnedPackageVersion || packageLock.packages?.['node_modules/@openclaw/ai']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile dependency graph must match the stable host package');
-  for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) if (packageLock.packages[`node_modules/${name}`]?.version !== version) throw new Error(`OpenClaw lockfile dependency ${name} does not match the stable host package`);
+  const pinnedPackageVersion = '2026.11.10';
+  const pinnedArchiveSpec = 'file:./openclaw-current.tgz';
+  const lockedHost = packageLock.packages?.['node_modules/openclaw'];
+  if (packageJson.peerDependencies?.openclaw !== pinnedPackageVersion || packageJson.devDependencies?.openclaw !== pinnedArchiveSpec) throw new Error('OpenClaw host peer and development packages must be pinned exactly');
+  if (packageJson.openclaw?.compat?.pluginApi !== `=${pinnedPackageVersion}`) throw new Error('OpenClaw plugin API must match the current authenticated host exactly');
+  if (packageLock.packages?.['']?.peerDependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['']?.devDependencies?.openclaw !== pinnedArchiveSpec || lockedHost?.version !== pinnedPackageVersion || lockedHost?.resolved !== 'file:openclaw-current.tgz' || lockedHost?.integrity !== 'sha512-wnom6VN32cRMvn5bAYiHAKjfkp5SR8rrcRJG+ZN2Wd6ZfuHU1htpeFfX2nZKSa0tuYSvk58vGoauN0E2rXt3MQ==') throw new Error('OpenClaw lockfile peer and development packages must match the pinned host package');
+  const hostDependencies = packageLock.packages['node_modules/openclaw'].dependencies;
+  if (hostDependencies?.['@openclaw/ai'] !== pinnedPackageVersion) throw new Error('OpenClaw lockfile dependency graph must match the pinned host package');
+  for (const [name, version] of Object.entries(hostDependencies)) {
+    // npm may nest a host dependency when the plugin pins a different root version.
+    const dependency = packageLock.packages[`node_modules/openclaw/node_modules/${name}`]
+      ?? packageLock.packages[`node_modules/${name}`];
+    if (dependency?.version !== version) throw new Error(`OpenClaw lockfile dependency ${name} does not match the pinned host package`);
+  }
   if (!pluginManifest.configSchema || typeof pluginManifest.configSchema !== 'object' || Array.isArray(pluginManifest.configSchema)) throw new Error('Plugin configSchema must be an object');
   const buildReceipt = await build();
   const phases = repositoryArtifactCheckPhases(purpose, {

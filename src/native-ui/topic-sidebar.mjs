@@ -1,16 +1,19 @@
 import { createNativeTopicNavigation } from './topic-navigation.mjs';
+import { mountTopicConversationDialog } from './topic-creation-dialog.mjs';
+import { createNativeState } from './mutations.mjs';
 
-/** Display preferences outlive a Session-scoped mount, never its plugin activation.
- * No catalogs, source authority, DOM nodes or scoped host callbacks are retained. */
+/** Presentation outlives a Session-scoped mount, never its plugin activation.
+ * A retained projection may render during revalidation, but grants no authority. */
 export function createTopicSidebarState(signal) {
   const state = { expandedTopics: new Set(), collapsedCategories: new Set(['project', 'area', 'resource', 'archive']), lastConversations: new Map(), inboxOpen: false, nativeOpen: false, scrollTop: null, focusKey: null, active: !signal?.aborted,
-    retire() { state.active = false; state.expandedTopics.clear(); state.collapsedCategories.clear(); state.lastConversations.clear(); state.inboxOpen = false; state.nativeOpen = false; state.scrollTop = null; state.focusKey = null; signal?.removeEventListener('abort', state.retire); } };
+    topicProjection: null, expandedConversationLists: new Set(),
+    retire() { state.active = false; state.expandedTopics.clear(); state.collapsedCategories.clear(); state.lastConversations.clear(); state.expandedConversationLists.clear(); state.inboxOpen = false; state.nativeOpen = false; state.scrollTop = null; state.focusKey = null; state.topicProjection = null; signal?.removeEventListener('abort', state.retire); } };
   signal?.addEventListener('abort', state.retire, { once: true });
   return state;
 }
 
 /** PARA is presentation only; exact Topic references remain the authority. */
-export function mountTopicSidebar(container, context, viewState = createTopicSidebarState()) {
+export function mountTopicSidebar(container, context, viewState = createTopicSidebarState(), creationState = createNativeState(context.signal)) {
   const { host } = context;
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
@@ -18,9 +21,12 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   let activeContext = context;
   let presented = context.presented;
   let generation = 0;
+  const authorityRevision = () => JSON.stringify([host.connection.connected, host.connection.canRead, host.connection.canWrite]);
+  let observedAuthority = authorityRevision();
   let defaultView;
   let destination;
-  let topicRows = [];
+  let topicRows = viewState.topicProjection?.authority === observedAuthority ? viewState.topicProjection.rows : [];
+  let verifiedGeneration = -1;
   let assignments = new Map();
   let assignmentFailures = 0;
   let renderedSnapshot = '';
@@ -29,6 +35,9 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   let restoringScroll = false;
   const paraId = `topic-para-${crypto.randomUUID()}`;
   const assignmentOperations = new Map();
+  const assignmentPickers = [];
+  let creationDialog;
+  const dialogContainer = document.createElement('div');
   const navigation = createNativeTopicNavigation({ signal, get connection() { return host.connection; }, request: (method, params) => host.request(method, params), sessions: host.sessions });
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh Topic workspace';
   const status = document.createElement('p'); status.setAttribute('role', 'status');
@@ -48,7 +57,12 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   styles.textContent = `
     .topic-sidebar { font:inherit; font-size:13px; color:var(--text,inherit); padding:4px 8px; }
     .topic-sidebar [hidden] { display:none !important; }
-    .topic-sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:4px 8px; color:var(--muted,inherit); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+    .topic-sidebar-header { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:2px 8px; font-weight:650; }
+    .topic-sidebar .topic-options { position:relative; }
+    .topic-sidebar .topic-options > summary { justify-content:center; min-inline-size:40px; font-size:18px; }
+    .topic-sidebar .topic-options > summary::before { display:none; }
+    .topic-sidebar .topic-options > div { position:absolute; inset-inline-end:0; z-index:2; inline-size:max-content; max-inline-size:200px; padding:4px; border:1px solid var(--border,currentColor); border-radius:8px; background:var(--card,var(--bg,Canvas)); }
+    .topic-sidebar .topic-options button { display:block; inline-size:100%; }
     .topic-sidebar button, .topic-sidebar summary { font:inherit; color:inherit; cursor:pointer; border:0; background:transparent; border-radius:var(--radius-md,6px); box-sizing:border-box; min-height:30px; padding:6px 8px; text-align:start; }
     .topic-sidebar button:hover, .topic-sidebar summary:hover { background:var(--bg-hover,color-mix(in srgb,currentColor 8%,transparent)); }
     .topic-sidebar :is(button,summary,select):focus-visible { outline:2px solid var(--accent,currentColor); outline-offset:-2px; }
@@ -59,9 +73,9 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
     .topic-sidebar h2 > button::before { content:''; inline-size:5px; block-size:5px; border-inline-end:1px solid; border-block-end:1px solid; transform:rotate(-45deg); transition:transform .1s; }
     .topic-sidebar h2 > button[aria-expanded=true]::before { transform:rotate(45deg); }
     .topic-sidebar ul { list-style:none; margin:0; padding:0; }
-    .topic-sidebar .topic-para-body { padding-inline-start:14px; }
+    .topic-sidebar .topic-para-body { padding-inline-start:10px; }
     .topic-sidebar .topic-entry { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; }
-    .topic-sidebar .topic-entry-children { grid-column:1 / -1; padding-inline-start:15px; border-inline-start:1px solid var(--border,color-mix(in srgb,currentColor 12%,transparent)); margin-inline-start:42px; }
+    .topic-sidebar .topic-entry-children { grid-column:1 / -1; padding-inline-start:8px; border-inline-start:1px solid var(--border,color-mix(in srgb,currentColor 12%,transparent)); margin-inline-start:22px; }
     .topic-sidebar .topic-name { min-width:0; text-align:start; }
     .topic-sidebar .topic-toggle { inline-size:30px; padding-inline:8px; }
     .topic-sidebar .topic-toggle::before { content:''; display:inline-block; inline-size:5px; block-size:5px; border-inline-end:1px solid; border-block-end:1px solid; transform:rotate(-45deg); }
@@ -75,14 +89,15 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
     .topic-sidebar p:empty { display:none; }
     .topic-sidebar .topic-empty { font-size:12px; margin:4px 8px 8px; color:var(--muted,inherit); }
     .topic-sidebar .topic-history-label { margin:6px 8px 2px 27px; font-size:11px; }
-    .topic-sidebar .topic-tools { display:flex; gap:2px; padding-inline-start:22px; }
-    .topic-sidebar .topic-tools button { width:auto; font-size:12px; color:var(--muted,inherit); }
+    .topic-sidebar .topic-tools { display:flex; flex-wrap:wrap; gap:2px; }
+    .topic-sidebar .topic-tools button { width:auto; max-width:100%; white-space:normal; overflow-wrap:anywhere; font-size:12px; color:var(--muted,inherit); }
+    .topic-sidebar [data-topic-catalog-action][aria-disabled=true] { cursor:default; }
     .topic-sidebar .topic-general { display:block; width:100%; }
     .topic-sidebar > details { margin-top:8px; border-top:1px solid var(--border,color-mix(in srgb,currentColor 12%,transparent)); }
     .topic-sidebar select { max-width:100%; font:inherit; background:var(--bg,transparent); color:inherit; border:1px solid var(--border,currentColor); border-radius:6px; padding:5px; }
     @media (prefers-reduced-motion:reduce) { .topic-sidebar h2 > button::before { transition:none; } }
   `;
-  shell.append(header, status, projection, native); container.replaceChildren(styles, shell);
+  shell.append(header, status, projection, native); container.replaceChildren(styles, shell, dialogContainer);
 
   // The host owns the scroll region. Locate it by scrolling behavior, not a
   // private host selector; a replacement can also be mounted through a shadow root.
@@ -109,8 +124,15 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
 
   const current = generationId => !signal.aborted && presented && host.connection.connected && host.connection.canRead && generationId === generation;
   const button = (label, action) => { const value = document.createElement('button'); value.type = 'button'; value.textContent = label; value.addEventListener('click', action, { signal }); return value; };
+  const catalogButton = (label, action) => {
+    const value = button(label, () => { if (current(verifiedGeneration) && observedAuthority === authorityRevision()) action(); });
+    value.dataset.topicCatalogAction = '';
+    if (!current(verifiedGeneration)) value.setAttribute('aria-disabled', 'true');
+    return value;
+  };
   const unwrap = value => value?.result ?? value;
-  const selectedSessionId = () => activeContext.props.sessions?.find(row => row.key === activeContext.props.sessionKey)?.sessionId;
+  const selectedSessionId = () => activeContext.props.sessions?.find(row => row.key === activeContext.props.sessionKey)?.sessionId
+    ?? host.sessions.rows?.find(row => row.key === activeContext.props.sessionKey)?.sessionId;
   const allTopics = () => [...Object.values(destination?.activeGroups ?? {}).flat(), ...(destination?.recovery ?? [])]
     .filter((topic, index, rows) => topic?.lifecycle === 'active' && topicSourceAvailable(topic, 'session') && rows.findIndex(candidate => candidate.topicId === topic.topicId) === index);
   const visibleTopics = () => [...allTopics(), ...(destination?.recovery ?? []).filter(topic => topic?.lifecycle === 'active'), ...(destination?.archived ?? []).filter(topic => topic?.usable === true && topic?.lifecycle === 'archived')]
@@ -175,70 +197,108 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
     });
     disclosure.setAttribute('aria-expanded', String(viewState.inboxOpen)); disclosure.setAttribute('aria-controls', body.id);
     disclosure.setAttribute('data-topic-control-key', 'inbox'); heading.append(disclosure); box.append(heading, body);
-    if (!rows.length) { const empty = document.createElement('p'); empty.textContent = 'No unassigned conversations'; body.append(empty); return box; }
+    if (!rows.length) { const empty = document.createElement('p'); empty.textContent = current(verifiedGeneration) ? 'No unassigned conversations' : 'Checking unassigned conversations…'; body.append(empty); return box; }
     const list = document.createElement('ul');
     for (const row of rows) {
       const item = document.createElement('li'); const name = row.displayName || row.title || row.key;
       const label = document.createElement('strong'); label.textContent = name; item.append(label, document.createElement('br'));
-      item.append(button('Open Chat', () => host.sessions.openChat({ sessionKey: row.key })));
+      item.append(catalogButton('Open Chat', () => { creationDialog?.cancel(); host.sessions.openChat({ sessionKey: row.key }); }));
       const message = document.createElement('p'); message.textContent = 'No Topic assigned.';
       const targetLabel = document.createElement('label'); targetLabel.textContent = `Assign ${name} to Topic`;
-      const select = document.createElement('select');
-      for (const topic of allTopics()) { const option = document.createElement('option'); option.value = topic.topicId; option.textContent = topic.name; select.append(option); }
-      targetLabel.append(select);
+      const options = allTopics().map(topic => ({ value: topic.topicId, label: topic.name, description: `${topic.paraCategory} · ${topic.topicId}` }));
+      let selectedTopicId = '';
+      let assigning = false;
+      const selection = document.createElement('p'); selection.textContent = 'Choose a Topic before assigning.';
       const assign = button('Assign to Topic', () => void (async () => {
-        const target = allTopics().find(topic => topic.topicId === select.value);
-        if (!target || !current(generationId)) return;
+        const target = allTopics().find(topic => topic.topicId === selectedTopicId);
+        if (!target || !current(generationId) || !host.connection.canWrite || assigning) return;
+        assigning = true;
         assign.disabled = true; status.textContent = 'Assigning exact Conversation…';
         const operationKey = `${target.topicId}\u0000${row.key}\u0000${row.sessionId}\u0000${row.updatedAt}`;
-        const logicalOperationId = assignmentOperations.get(operationKey) ?? crypto.randomUUID();
-        assignmentOperations.set(operationKey, logicalOperationId);
+        const input = assignmentOperations.get(operationKey) ?? Object.freeze({ schemaVersion: 1, logicalOperationId: crypto.randomUUID(), topicId: target.topicId, expectedTopicRevision: target.revision, sessionKey: row.key, expectedSessionId: row.sessionId, expectedSessionRevision: String(row.updatedAt), expectedMembership: 'unassigned' });
+        const { logicalOperationId } = input;
+        assignmentOperations.set(operationKey, input);
         try {
-          const result = unwrap(await host.request('command-center.v1.sessions.assign-topic', { schemaVersion: 1, logicalOperationId, topicId: target.topicId, expectedTopicRevision: target.revision, sessionKey: row.key, expectedSessionId: row.sessionId, expectedSessionRevision: String(row.updatedAt), expectedMembership: 'unassigned' }));
+          const result = unwrap(await host.request('command-center.v1.sessions.assign-topic', input));
           if (!current(generationId)) return;
           if (!['applied', 'replayed'].includes(result?.status ?? '') || result?.logicalOperationId !== logicalOperationId || result?.referenceId !== `conversation-assignment:${logicalOperationId}` || result?.topicId !== target.topicId || result?.sessionKey !== row.key || result?.sessionId !== row.sessionId) throw new Error('The exact Topic assignment did not return an authoritative receipt.');
           assignmentOperations.delete(operationKey);
           status.textContent = `Assigned to ${target.name}.`; await load();
-        } catch (error) { if (current(generationId)) { status.textContent = host.redact(error?.message || 'Topic assignment was not applied.'); assign.disabled = false; } }
+        } catch (error) { if (current(generationId)) status.textContent = host.redact(error?.message || 'Topic assignment outcome is unavailable.'); }
+        finally { assigning = false; if (current(generationId)) assign.disabled = !host.connection.canWrite || !allTopics().some(topic => topic.topicId === selectedTopicId); }
       })());
-      assign.disabled = allTopics().length === 0;
-      item.append(message, targetLabel, assign); list.append(item);
+      assign.disabled = true;
+      const choose = value => {
+        selectedTopicId = current(generationId) && allTopics().some(topic => topic.topicId === value) ? value : '';
+        const target = allTopics().find(topic => topic.topicId === selectedTopicId);
+        selection.textContent = target ? `Selected Topic: ${target.name} (${target.paraCategory} · ${target.topicId})` : 'Choose a Topic before assigning.';
+        assign.disabled = !target || !host.connection.canWrite || assigning;
+      };
+      if (typeof host.components?.mountSelectPicker === 'function') {
+        const picker = document.createElement('div'); targetLabel.append(picker);
+        assignmentPickers.push(host.components.mountSelectPicker(picker, { options: [{ value: '', label: 'Choose a Topic…' }, ...options], value: '', searchable: true,
+          accessibleLabel: targetLabel.textContent, disabled: !host.connection.canWrite, onSelect: choose }));
+      } else {
+        const select = document.createElement('select');
+        for (const option of [{ value: '', label: 'Choose a Topic…' }, ...options]) {
+          const node = document.createElement('option'); node.value = option.value; node.textContent = option.description ? `${option.label} (${option.description})` : option.label; select.append(node);
+        }
+        select.disabled = !host.connection.canWrite;
+        select.addEventListener('change', () => choose(select.value), { signal }); targetLabel.append(select);
+      }
+      item.append(message, targetLabel, selection, assign); list.append(item);
     }
     body.append(list); return box;
   }
 
   const publishNavigationError = error => { if (!signal.aborted && error?.name !== 'AbortError') status.textContent = host.redact(error.message); };
   async function openConversation(entry, conversation) {
+    creationDialog?.cancel();
     const opened = await navigation.open({ topicId: entry.topic.topicId, referenceId: conversation.referenceId, expectedSessionId: conversation.sessionId });
     lastConversations.set(entry.topic.topicId, opened);
   }
-  async function openTopic(entry) {
+  function preferredConversation(entry) {
     const currentId = selectedSessionId();
-    const current = entry.conversations.find(row => row.sessionId === currentId);
-    const opened = await navigation.openPreferred(entry.topic.topicId, current ?? lastConversations.get(entry.topic.topicId) ?? null);
+    return entry.conversations.find(row => row.sessionId === currentId) ?? lastConversations.get(entry.topic.topicId) ?? null;
+  }
+  async function openTopic(entry) {
+    creationDialog?.cancel();
+    const opened = await navigation.openPreferred(entry.topic.topicId, preferredConversation(entry));
+    lastConversations.set(entry.topic.topicId, opened);
+  }
+  async function openTopicFiles(entry) {
+    creationDialog?.cancel();
+    const opened = await navigation.openPreferredFiles(entry.topic.topicId, preferredConversation(entry));
     lastConversations.set(entry.topic.topicId, opened);
   }
   const collapseAllTopics = () => { for (const category of ['project', 'area', 'resource', 'archive']) collapsedCategories.add(category); expandedTopics.clear(); renderedSnapshot = ''; render({ preserveDomExpansion: false }); };
   const expandAllTopics = () => { for (const category of ['project', 'area', 'resource', 'archive']) collapsedCategories.delete(category); for (const entry of topicRows) expandedTopics.add(entry.topic.topicId); renderedSnapshot = ''; render({ preserveDomExpansion: false }); };
-  const collapseAll = button('Collapse all Topics', collapseAllTopics); collapseAll.setAttribute('aria-label', 'Collapse all Topics');
-  const expandAll = button('Expand all Topics', expandAllTopics); expandAll.setAttribute('aria-label', 'Expand all Topics');
-  const headerActions = document.createElement('div'); headerActions.className = 'topic-sidebar-header-actions'; headerActions.append(collapseAll, expandAll, refresh); header.replaceChildren(title, headerActions);
+  const options = document.createElement('details'); options.className = 'topic-options';
+  const optionsToggle = document.createElement('summary'); optionsToggle.textContent = '⋯'; optionsToggle.setAttribute('aria-label', 'Topic options');
+  const closeOptions = () => { options.open = false; optionsToggle.focus({ preventScroll: true }); };
+  const collapseAll = button('Collapse all Topics', () => { collapseAllTopics(); closeOptions(); });
+  const expandAll = button('Expand all Topics', () => { expandAllTopics(); closeOptions(); });
+  const headerActions = document.createElement('div'); headerActions.append(collapseAll, expandAll, refresh);
+  refresh.textContent = 'Refresh Topics'; options.append(optionsToggle, headerActions); header.replaceChildren(title, options);
+  options.addEventListener('keydown', event => { if (options.open && event.key === 'Escape') { event.preventDefault(); closeOptions(); } }, { signal });
 
   function render({ preserveDomExpansion = true } = {}) {
     const focusedKey = activeElement()?.getAttribute?.('data-topic-control-key') ?? (!hasRendered ? viewState.focusKey : null);
     const selectedKey = activeContext.props.sessionKey;
     const selectedSessionIdValue = selectedSessionId();
     const snapshot = JSON.stringify({ selectedKey, selectedSessionId: selectedSessionIdValue, expandedTopics: [...expandedTopics].sort(), collapsedCategories: [...collapsedCategories].sort(), main: activeContext.props.mainSessionKey, topics: topicRows.map(entry => ({ id: entry.topic.topicId, revision: entry.topic.revision, name: entry.topic.name, category: entry.topic.paraCategory, lifecycle: entry.topic.lifecycle, health: entry.topic.health ?? null, recoveries: entry.topic.recovery?.filter(row => row.state === 'required').map(row => [row.referenceId, row.sourceKind]), error: entry.error?.message ?? null, historyUnavailable: entry.historyUnavailable, conversations: entry.conversations?.map(row => [row.referenceId, row.sessionId, row.status, row.displayName, row.isPrimary]), histories: entry.histories?.map(row => [row.historyId, row.title]) })), assignments: [...assignments.entries()].map(([key, value]) => [key, value?.status, value?.topicId ?? null]), inbox: eligibleSessions().map(row => [row.key, row.sessionId, row.updatedAt, row.displayName ?? null, row.title ?? null]), more: activeContext.props.nativeSessionsHaveMore === true });
-    if (snapshot === renderedSnapshot) return;
+    const renderIdentity = `${generation}:${authorityRevision()}:${snapshot}`;
+    if (renderIdentity === renderedSnapshot) return;
+    for (const picker of assignmentPickers.splice(0)) picker.dispose();
     const scrollTop = hasRendered ? scrollRegion?.scrollTop : viewState.scrollTop;
-    renderedSnapshot = snapshot;
+    renderedSnapshot = renderIdentity;
     const fragment = document.createDocumentFragment();
     if (preserveDomExpansion) for (const entry of projection.querySelectorAll('[data-topic-id]')) {
       if (entry.dataset.expanded === 'true') expandedTopics.add(entry.dataset.topicId); else expandedTopics.delete(entry.dataset.topicId);
     }
     const general = document.createElement('section');
     const main = activeContext.props.mainSessionKey;
-    if (typeof main === 'string' && main.trim()) { const control = button('General', () => host.sessions.openChat({ sessionKey: main })); control.className = 'topic-general'; control.setAttribute('aria-label', 'Open General'); if (selectedKey === main) control.setAttribute('aria-current', 'page'); general.append(control); }
+    if (typeof main === 'string' && main.trim()) { const control = button('General', () => { creationDialog?.cancel(); host.sessions.openChat({ sessionKey: main }); }); control.className = 'topic-general'; control.setAttribute('aria-label', 'Open General'); if (selectedKey === main) control.setAttribute('aria-current', 'page'); general.append(control); }
     fragment.append(general, renderAssignment(generation));
     for (const [category, label] of [['project', 'Projects'], ['area', 'Areas'], ['resource', 'Resources'], ['archive', 'Archives']]) {
       const section = document.createElement('section'); const heading = document.createElement('h2');
@@ -253,25 +313,62 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
       if (!entries.length) { const empty = document.createElement('p'); empty.className = 'topic-empty'; empty.textContent = `No ${label.toLocaleLowerCase()}`; body.append(empty); fragment.append(section); continue; }
       const list = document.createElement('ul');
       for (const entry of entries) {
-        const item = document.createElement('li'); const details = document.createElement('section'); details.className = 'topic-entry'; details.dataset.topicId = entry.topic.topicId; const setOpen = (open) => { details.dataset.expanded = String(open); children.hidden = !open; if (open) expandedTopics.add(entry.topic.topicId); else expandedTopics.delete(entry.topic.topicId); summary.setAttribute('aria-expanded', String(open)); summary.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} ${entry.topic.name}`); }; const initialOpen = expandedTopics.has(entry.topic.topicId); const summary = button('', () => setOpen(details.dataset.expanded !== 'true')); summary.className = 'topic-toggle'; summary.setAttribute('data-topic-control-key', `toggle:${entry.topic.topicId}`); const required = entry.topic.recovery?.filter(row => row.state === 'required') ?? []; const notesRecovering = required.some(row => row.sourceKind === 'note_folder'); const sessionsRecovering = required.some(row => row.sourceKind === 'session'); const recoveryLabel = notesRecovering && sessionsRecovering ? 'Sources unavailable' : notesRecovering ? 'Notes unavailable' : sessionsRecovering ? 'Conversations unavailable' : entry.topic.health === 'source-recovery' ? 'Source Recovery required' : null; const topicName = button(entry.error ? `${entry.topic.name} · unavailable` : recoveryLabel ? `${entry.topic.name} · ${recoveryLabel}` : entry.topic.name, () => void openTopic(entry).catch(publishNavigationError)); topicName.className = 'topic-name'; topicName.setAttribute('data-topic-control-key', `topic:${entry.topic.topicId}`); const children = document.createElement('div'); children.className = 'topic-entry-children'; details.append(summary, topicName, children); setOpen(initialOpen);
+        const item = document.createElement('li');
+        const details = document.createElement('section'); details.className = 'topic-entry'; details.dataset.topicId = entry.topic.topicId;
+        const children = document.createElement('div'); children.className = 'topic-entry-children'; children.id = `${paraId}-topic-${entry.topic.topicId}`;
+        const summary = button('', () => setOpen(details.dataset.expanded !== 'true')); summary.className = 'topic-toggle';
+        summary.setAttribute('data-topic-control-key', `toggle:${entry.topic.topicId}`);
+        summary.setAttribute('aria-controls', children.id);
+        const setOpen = open => {
+          details.dataset.expanded = String(open); children.hidden = !open;
+          if (open) expandedTopics.add(entry.topic.topicId); else expandedTopics.delete(entry.topic.topicId);
+          summary.setAttribute('aria-expanded', String(open)); summary.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} ${entry.topic.name}`);
+        };
+        const required = entry.topic.recovery?.filter(row => row.state === 'required') ?? [];
+        const notesRecovering = required.some(row => row.sourceKind === 'note_folder');
+        const sessionsRecovering = required.some(row => row.sourceKind === 'session');
+        const recoveryLabel = notesRecovering && sessionsRecovering ? 'Sources unavailable' : notesRecovering ? 'Notes unavailable' : sessionsRecovering ? 'Conversations unavailable' : entry.topic.health === 'source-recovery' ? 'Source Recovery required' : null;
+        const topicName = catalogButton(entry.error ? `${entry.topic.name} · unavailable` : recoveryLabel ? `${entry.topic.name} · ${recoveryLabel}` : entry.topic.name, () => void openTopic(entry).catch(publishNavigationError));
+        topicName.className = 'topic-name'; topicName.setAttribute('data-topic-control-key', `topic:${entry.topic.topicId}`); topicName.title = entry.topic.name;
+        if (entry.conversations.some(row => row.sessionId === selectedSessionIdValue)) topicName.setAttribute('aria-current', 'page');
+        details.append(summary, topicName, children); setOpen(expandedTopics.has(entry.topic.topicId));
         if (entry.error) { const notice = document.createElement('p'); notice.textContent = host.redact(entry.error.message || `The exact Topic catalog for ${entry.topic.name} is unavailable.`); children.append(notice); item.append(details); list.append(item); continue; }
         if (notesRecovering) { const notice = document.createElement('p'); notice.textContent = 'Notes require Source Recovery. Independently verified Conversations remain available.'; children.append(notice); }
         if (sessionsRecovering) { const notice = document.createElement('p'); notice.textContent = 'One or more Conversations require Source Recovery. Other independently verified Conversations remain available.'; children.append(notice); }
         const conversations = document.createElement('ul');
-        for (const conversation of entry.conversations) {
-          const label = conversation.isPrimary ? 'Primary Conversation' : (conversation.displayName || 'Linked Conversation');
-          const child = document.createElement('li'); const control = button(label, () => void openConversation(entry, conversation).catch(publishNavigationError)); control.setAttribute('data-topic-control-key', `conversation:${entry.topic.topicId}:${conversation.referenceId}`); child.append(control); conversations.append(child);
+        for (const conversation of entry.conversations.length > 1 ? entry.conversations : []) {
+          const label = conversation.isPrimary ? 'Primary' : conversation.displayName || 'Linked Conversation';
+          const child = document.createElement('li'); const control = catalogButton(label, () => void openConversation(entry, conversation).catch(publishNavigationError)); control.setAttribute('data-topic-control-key', `conversation:${entry.topic.topicId}:${conversation.referenceId}`); child.append(control); conversations.append(child);
           if (selectedSessionIdValue === conversation.sessionId) control.setAttribute('aria-current', 'page');
           control.title = label;
         }
-        const openFiles = button('Open Topic Files', () => void navigation.openPrimaryFiles(entry.topic.topicId).catch(error => { if (!signal.aborted) status.textContent = host.redact(error.message); })); openFiles.setAttribute('data-topic-control-key', `files:${entry.topic.topicId}`);
+        const chat = catalogButton('Chat', () => void openTopic(entry).catch(publishNavigationError));
+        chat.setAttribute('aria-label', `Open Chat for ${entry.topic.name}`); chat.setAttribute('data-topic-control-key', `chat:${entry.topic.topicId}`);
+        const openFiles = catalogButton('Open Topic Files', () => void openTopicFiles(entry).catch(publishNavigationError)); openFiles.setAttribute('data-topic-control-key', `files:${entry.topic.topicId}`);
         openFiles.textContent = 'Files'; openFiles.setAttribute('aria-label', 'Open Topic Files');
-        const create = button('New Conversation', () => host.navigation.openPage({ id: 'topic', params: { topicId: entry.topic.topicId } })); create.setAttribute('aria-label', 'New Topic Conversation');
-        const actions = document.createElement('div'); actions.className = 'topic-tools'; actions.append(openFiles, create); children.append(conversations, actions);
+        const create = catalogButton('New Conversation', () => {
+          if (!current(generation) || !host.connection.canWrite) return;
+          creationDialog?.dispose(); navigation.cancel();
+          creationDialog = mountTopicConversationDialog(dialogContainer, { host, state: creationState, signal, presented: () => presented,
+            topicId: entry.topic.topicId, returnFocusTarget: create });
+        }); create.setAttribute('aria-label', 'New Topic Conversation'); create.disabled = !host.connection.canWrite;
+        const actions = document.createElement('div'); actions.className = 'topic-tools'; actions.append(chat, openFiles, create); children.append(actions);
+        if (conversations.childElementCount) {
+          const alternate = document.createElement('details');
+          const label = document.createElement('summary'); label.textContent = 'Conversations';
+          label.setAttribute('data-topic-control-key', `conversations:${entry.topic.topicId}`);
+          alternate.open = viewState.expandedConversationLists.has(entry.topic.topicId);
+          alternate.addEventListener('toggle', () => {
+            if (!alternate.isConnected || signal.aborted) return;
+            if (alternate.open) viewState.expandedConversationLists.add(entry.topic.topicId); else viewState.expandedConversationLists.delete(entry.topic.topicId);
+          }, { signal });
+          conversations.setAttribute('aria-label', `${entry.topic.name} conversations`);
+          alternate.append(label, conversations); children.append(alternate);
+        }
         if (entry.histories.length) {
           const historyLabel = document.createElement('p'); historyLabel.className = 'topic-history-label'; historyLabel.textContent = 'Imported History · read-only'; children.append(historyLabel);
           const histories = document.createElement('ul'); histories.setAttribute('aria-label', `${entry.topic.name} imported history`);
-          for (const history of entry.histories) { const child = document.createElement('li'); const control = button(history.title, () => host.navigation.openPage({ id: 'histories', params: { topicId: entry.topic.topicId, historyId: history.historyId } })); control.title = history.title; control.setAttribute('aria-label', `${history.title} · Imported History (read-only)`); child.append(control); histories.append(child); }
+          for (const history of entry.histories) { const child = document.createElement('li'); const control = catalogButton(history.title, () => { creationDialog?.cancel(); host.navigation.openPage({ id: 'histories', params: { topicId: entry.topic.topicId, historyId: history.historyId } }); }); control.title = history.title; control.setAttribute('aria-label', `${history.title} · Imported History (read-only)`); child.append(control); histories.append(child); }
           children.append(histories);
         }
         if (entry.historyUnavailable) {
@@ -303,8 +400,16 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
 
   async function load() {
     const generationId = ++generation; navigation.cancel(); assignments = new Map(); assignmentFailures = 0;
-    if (!current(generationId)) { status.textContent = 'Connect with read access to view Topics.'; return; }
+    if (!host.connection.connected || !host.connection.canRead || (viewState.topicProjection && viewState.topicProjection.authority !== authorityRevision())) {
+      viewState.topicProjection = null; topicRows = []; renderedSnapshot = '';
+      for (const picker of assignmentPickers.splice(0)) picker.dispose();
+      projection.replaceChildren(); hasRendered = false;
+    }
+    if (!current(generationId)) { for (const picker of assignmentPickers.splice(0)) picker.dispose(); projection.replaceChildren(); hasRendered = false; status.textContent = 'Connect with read access to view Topics.'; return; }
     status.textContent = 'Loading Topic workspace…';
+    projection.setAttribute('aria-busy', 'true');
+    if (!hasRendered) render();
+    for (const control of projection.querySelectorAll('[data-topic-catalog-action]')) control.setAttribute('aria-disabled', 'true');
     try {
       const listed = unwrap(await host.request('command-center.v1.topics.list', { schemaVersion: 1 }));
       if (!current(generationId) || !listed?.activeGroups) return;
@@ -315,11 +420,14 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
         Promise.all(candidates.map(async row => { try { return [row.key, unwrap(await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey: row.key }))]; } catch { assignmentFailures += 1; return [row.key, { status: 'unavailable' }]; } }))
       ]);
       if (!current(generationId)) return;
-      topicRows = rows.filter(Boolean); assignments = new Map(memberships); render();
+      topicRows = rows.filter(Boolean); assignments = new Map(memberships); verifiedGeneration = generationId;
+      if (viewState.active) viewState.topicProjection = { authority: authorityRevision(), rows: topicRows };
+      render();
       status.textContent = assignmentFailures ? String(assignmentFailures) + ' native Conversation membership check' + (assignmentFailures === 1 ? '' : 's') + ' is unavailable; only verified unassigned Conversations appear in Inbox.' : '';
     } catch (error) { if (current(generationId)) status.textContent = host.redact(error?.message || 'Topics are unavailable.'); }
+    finally { if (generationId === generation) projection.removeAttribute('aria-busy'); }
   }
-  refresh.addEventListener('click', () => void load(), { signal });
+  refresh.addEventListener('click', () => { closeOptions(); creationDialog?.cancel(); void load(); }, { signal });
   defaultView = context.mountDefault(nativeMount);
   const loadMore = button('Load more native Conversations', () => void (async () => {
     if (!activeContext.props.nativeSessionsHaveMore || typeof activeContext.props.loadMoreNativeSessions !== 'function') return;
@@ -329,6 +437,6 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   })());
   native.append(loadMore); loadMore.hidden = !context.props.nativeSessionsHaveMore || typeof context.props.loadMoreNativeSessions !== 'function';
   void load();
-  return { update(next) { const changed = contextRevision(activeContext) !== contextRevision(next); activeContext = next; presented = next.presented; loadMore.hidden = !next.props.nativeSessionsHaveMore || typeof next.props.loadMoreNativeSessions !== 'function'; if (changed) void load(); }, focus() { refresh.focus(); }, dispose() { lifetime.abort(); navigation.cancel(); defaultView?.(); container.replaceChildren(); } };
+  return { update(next) { const authorityChanged = observedAuthority !== authorityRevision(); observedAuthority = authorityRevision(); const changed = contextRevision(activeContext) !== contextRevision(next); if (next.props.sessionKey !== activeContext.props.sessionKey) creationDialog?.cancel(); activeContext = next; presented = next.presented; creationDialog?.sync(); loadMore.hidden = !next.props.nativeSessionsHaveMore || typeof next.props.loadMoreNativeSessions !== 'function'; if (changed || authorityChanged) void load(); }, focus() { optionsToggle.focus(); }, dispose() { creationDialog?.dispose(); for (const picker of assignmentPickers.splice(0)) picker.dispose(); lifetime.abort(); navigation.cancel(); defaultView?.(); container.replaceChildren(); } };
 }
 import { topicSourceAvailable } from './topic-source-availability.mjs';

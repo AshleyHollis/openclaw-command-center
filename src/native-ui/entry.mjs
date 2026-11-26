@@ -38,6 +38,12 @@ export function mountTopics(container, context, state = createNativeState()) {
   container.replaceChildren(heading, status, refresh, ...(creation ? [creation.form] : [scopeNotice]), list);
   let generation = 0;
   let groupSetups = [];
+  let focusTargets = new Map();
+  const activeElement = () => {
+    let active = document.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  };
   const current = (value) => !signal.aborted && presented && host.connection.connected && host.connection.canRead && value === generation;
   const report = (error) => { if (!signal.aborted && error?.name !== 'AbortError') status.textContent = host.redact(error?.message || 'Topics are unavailable.'); };
   async function load() {
@@ -60,6 +66,10 @@ export function mountTopics(container, context, state = createNativeState()) {
       if (!['ready', 'degraded', 'recovery-only'].includes(mode)) throw new Error('The operating mode is unavailable. Refresh Topics before continuing.');
       const destination = response?.result ?? response;
       if (!destination?.activeGroups) throw new Error('The Topic destination is unavailable.');
+      const focused = activeElement();
+      const focusedKey = [...focusTargets].find(([, control]) => control === focused)?.[0];
+      const focusRoot = focusedKey ? focused.getRootNode() : null;
+      const nextFocusTargets = new Map();
       const fragment = document.createDocumentFragment();
       let count = 0;
       for (const category of ['project', 'area', 'resource']) {
@@ -83,6 +93,7 @@ export function mountTopics(container, context, state = createNativeState()) {
               if (!signal.aborted && presented) status.textContent = 'Opened in native Chat.';
             }).catch(report);
           }, { signal });
+          nextFocusTargets.set(JSON.stringify(['chat', topic.topicId]), button);
           row.append(button);
           const notes = document.createElement('button');
           notes.type = 'button'; notes.textContent = `View Notes for ${topic.name}`;
@@ -91,10 +102,12 @@ export function mountTopics(container, context, state = createNativeState()) {
             navigation.cancel();
             host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } });
           }, { signal });
+          nextFocusTargets.set(JSON.stringify(['notes', topic.topicId]), notes);
           row.append(notes);
           if (topicSourceAvailable(topic, 'session') && mode !== 'recovery-only') {
             const setup = createTopicGroupSetup({ host, document, topicId: topic.topicId, signal, presented: () => presented && pending === generation });
             groupSetups.push(setup); row.append(setup.container);
+            nextFocusTargets.set(JSON.stringify(['group', topic.topicId]), setup.container.querySelector('button'));
           }
           if (button.disabled) row.append(document.createTextNode(' — Source Recovery required'));
           group.append(row);
@@ -114,7 +127,13 @@ export function mountTopics(container, context, state = createNativeState()) {
         }
         fragment.append(title, recoveryList);
       }
+      if (!current(pending)) return;
       list.replaceChildren(fragment);
+      focusTargets = nextFocusTargets;
+      const focusUnclaimed = focusedKey && focusRoot?.isConnected && (activeElement() === document.body
+        || focusRoot.host && focusRoot.activeElement === null && activeElement() === focusRoot.host);
+      const replacement = focusedKey && focusTargets.get(focusedKey);
+      if (current(pending) && focusUnclaimed && replacement?.isConnected && !replacement.disabled) replacement.focus({ preventScroll: true });
       const summary = count ? `${count} Topics. Conversations open in native Chat.` : recoveryTopics.length ? `${recoveryTopics.length} Topics require Source Recovery.` : 'No active Topics.';
       status.textContent = mode === 'recovery-only' ? 'Recovery-only · diagnostics and safe reads only. Changes are unavailable until recovery is resolved.'
         : mode === 'degraded' ? `Degraded · some capabilities are unavailable. ${summary}` : summary;
@@ -146,7 +165,7 @@ export function mountTopics(container, context, state = createNativeState()) {
   };
 }
 
-/** @type {import('openclaw/plugin-sdk/control-ui').ControlUiPluginV2} */
+/** @type {import('openclaw/plugin-sdk/control-ui').ControlUiPlugin} */
 export default {
   id: 'command-center',
   activate(host) {
@@ -160,7 +179,7 @@ export default {
       ? host.ui.registerReplacement({ id: 'topic-files', label: 'Topic Files', surface: 'session-files', mount: (container, context) => mountTopicNotesPanel(container, context, state) })
       : () => {};
     const topicSidebar = replacements
-      ? host.ui.registerReplacement({ id: 'topic-sidebar', label: 'Topics', surface: 'session-list', mount: (container, context) => mountTopicSidebar(container, context, sidebarState) })
+      ? host.ui.registerReplacement({ id: 'topic-sidebar', label: 'Topics', surface: 'session-list', mount: (container, context) => mountTopicSidebar(container, context, sidebarState, state) })
       : () => {};
     if (replacements) {
       host.ui.selectReplacement('session-files', 'topic-files');

@@ -26,6 +26,12 @@ export async function reconcileReminderAttention({ topicId, rows, attention, now
       && (row.job.enabled !== false || (deliveredOneShot && !acknowledged));
     if (due) {
       const generation = context && ['Resolved', 'Withdrawn'].includes(context.state) ? context.generation + 1 : context?.generation ?? 1;
+      // Polling is not a new source occurrence. Preserve the existing durable
+      // observation instant for this active revision, including after restart.
+      // Cron's updatedAtMs also changes during delivery and cannot identify it.
+      const occurredAt = context && !['Resolved', 'Withdrawn'].includes(context.state)
+        && context.occurrenceVersion === (occurrenceVersion ? String(occurrenceVersion) : null)
+        ? context.occurredAt ?? observedAt : observedAt;
       await attention.ingest({
         schemaVersion: 1,
         sourceCapabilityId: 'reminders',
@@ -33,7 +39,7 @@ export async function reconcileReminderAttention({ topicId, rows, attention, now
         attentionReason: 'reminder-due',
         occurrenceId: `reminder:${externalId}:generation:${generation}:revision:${occurrenceVersion ?? 'unversioned'}`,
         ...(occurrenceVersion ? { occurrenceVersion: String(occurrenceVersion) } : {}),
-        occurredAt: observedAt,
+        occurredAt,
         topicId,
         sourceReferenceId: row.sourceReference.referenceId,
         evidenceFacts: { reminderDue: true, explicitTimed: schedule?.kind === 'at', dueAt: Number.isFinite(dueAt) ? new Date(dueAt).toISOString() : observedAt },

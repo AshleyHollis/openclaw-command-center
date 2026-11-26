@@ -1,15 +1,15 @@
+import { readPublishedSessionRows } from './sources/service.mjs';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { registerBridgeMethods, registerNativeSessionNavigation } from './bridge/register.mjs';
 import { createRequestScopedConversationRuntime } from './bridge/gateway-method-dispatch.mjs';
 import { pluginConfigSchema } from './plugin-config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
-import { topicContextToolFactory } from './search/tool.mjs';
+import { topicContextToolFactory, currentTopicNoteRecallToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
-import { topicDocumentFileToolFactory } from './documents/tool.mjs';
 import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
@@ -119,11 +119,24 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'billActionsList') return (input, runtime) => service.billActionsList(input, runtime);
+        if (property === 'conversationPlansMessages') return (input, runtime) => service.conversationPlansMessages(input, runtime);
+        if (property === 'conversationPlansTrack') return (input, runtime) => service.conversationPlansTrack(input, runtime);
+        if (property === 'conversationPlansReconcile') return (input, runtime) => service.conversationPlansReconcile(input, runtime);
+        if (property === 'conversationPlansList') return (input, runtime) => service.conversationPlansList(input, runtime);
+        if (property === 'billActionsRead') return (input, runtime) => service.billActionsRead(input, runtime);
+        if (property === 'billActionsAdmit') return (input, runtime) => service.billActionsAdmit(input, runtime);
+        if (property === 'billActionsHandle') return (input, runtime) => service.billActionsHandle(input, runtime);
+        if (property === 'billActionsDefer') return (input, runtime) => service.billActionsDefer(input, runtime);
+        if (property === 'billActionsReconcile') return (input, runtime) => service.billActionsReconcile(input, runtime);
         if (property === 'briefingSetRead') return (input) => service.briefingSetRead(input);
         if (property === 'routineDecide') return (input) => service.routineDecide(input);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
         if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
         if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
+        if (property === 'acceptedChatCaptureAccept') return (input, runtime) => service.acceptedChatCaptureAccept(input, runtime);
+        if (property === 'acceptedChatCaptureLoad') return (input, runtime) => service.acceptedChatCaptureLoad(input, runtime);
+        if (property === 'acceptedChatCaptureReplay') return (input, runtime) => service.acceptedChatCaptureReplay(input, runtime);
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
         if (property === 'openLoopsClarify') return (input) => service.openLoopsClarify(input);
@@ -196,7 +209,7 @@ export default definePluginEntry({
       match: 'exact',
       handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, {
         assertAction: assertFirstLiveTopicAction,
-        createConversationRuntime: () => createRequestScopedConversationRuntime()
+        createConversationRuntime: () => createRequestScopedConversationRuntime({ includeAttachmentAdmission: FIRST_LIVE_FEATURES.topicDocuments })
       }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
@@ -219,16 +232,19 @@ export default definePluginEntry({
     });
     registerBridgeMethods(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
+    if (FIRST_LIVE_FEATURES.topicNoteRecall) api.registerTool(currentTopicNoteRecallToolFactory({ retrieve: input => service.topicNoteRecallRetrieve(input) }), { name: 'command_center_recall_topic_notes', optional: true });
     if (FIRST_LIVE_FEATURES.search) api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
-    if (FIRST_LIVE_FEATURES.topicDocuments) api.registerTool(topicDocumentFileToolFactory({ file: (input) => service.sourceService.documentsFileAttachment(input) }), { name: 'command_center_file_topic_attachment', optional: true });
+    // Original attachment filing is an explicit Files action. The legacy v1
+    // optional tool lacked final accepted-source authority and stays retired;
+    // its source/recovery tests remain for retained historical attempts.
     if (FIRST_LIVE_FEATURES.noteMaintenance) api.registerTool(topicNoteMaintenanceToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_update_working_note', optional: true });
     api.registerTool(commitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_commitment', optional: true });
     api.registerTool(capacityReviewToolFactory({ getOwner: () => service.capacityReview }), { name: 'command_center_open_capacity_review', optional: true });
     api.registerTool(sourceTopicResolverToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_resolve_source_topic', optional: true });
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
-    api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
+    api.registerTool({ contextVersion: 2, create: intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners(), acceptedChatCommands: service }) }, { name: 'command_center_plan_intake_source', optional: true });
     api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
     api.registerTool(pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_pending_clarification', optional: true });
     api.registerTool(interpretClarificationToolFactory({ interpret: (input, authority) => service.openLoopsInterpretClarification(input, { ...authority, deferFollowUp: true }) }), { name: 'command_center_interpret_clarification', optional: true });
@@ -236,11 +252,12 @@ export default definePluginEntry({
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
     api.registerTool(briefingPublishToolFactory({
       getOwner: () => service.dailyWorkspace,
-      resolveSessionKey: context => {
+      resolveSessionKey: async context => {
         if (typeof context?.sessionId !== 'string' || !context.sessionId) return undefined;
-        const list = api.runtime?.agent?.session?.listSessionEntries;
+        const store = api.runtime?.agent?.session;
+        const list = store?.listSessionEntries;
         if (typeof list !== 'function') return undefined;
-        const matches = list({ agentId: context.agentId ?? 'main', readOnly: true })
+        const matches = (await readPublishedSessionRows(store, { agentId: context.agentId ?? 'main', readOnly: true }))
           .filter(row => row?.entry?.sessionId === context.sessionId && typeof row.sessionKey === 'string' && row.sessionKey);
         return matches.length === 1 ? matches[0].sessionKey : undefined;
       }

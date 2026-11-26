@@ -5,13 +5,24 @@ import { randomUUID } from 'node:crypto';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { createTopicService } from '../../src/topics/service.mjs';
 import { setHostDurableFolderStager } from '../../src/sources/note-folder-identity.mjs';
-import { createHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
+import { createHostFileAccessFixture, installHostFilesystemIdentityFixture } from '../support/host-file-access-fixture.mjs';
+
+const releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture();
+process.once('exit', () => { releaseFilesystemIdentityFixture(); });
 
 const [stateDir, role] = process.argv.slice(2);
 const releaseDurableFolderStager = setHostDurableFolderStager(createHostFileAccessFixture().stageDurableFileInDirectory);
 // Resolve the actual SDK before announcing ready; this does not replace its lock.
 await import('openclaw/plugin-sdk/sqlite-runtime');
 const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+function metadataStatusFacts() {
+  const status = metadata.getOperatingStatus();
+  const metadataDiagnostics = status.diagnostics.slice(0, 8).map((item) => ({
+    code: typeof item.code === 'string' ? item.code.slice(0, 128) : '',
+    summary: typeof item.summary === 'string' ? item.summary.slice(0, 512) : '',
+  }));
+  return { metadataMode: status.mode, metadataDiagnosticCodes: metadataDiagnostics.map((item) => item.code).filter(Boolean), metadataDiagnostics };
+}
 const entries = new Map();
 const gateway = { async request(method, input) {
   if (method !== 'sessions.create') throw new Error(`Unexpected external Session request: ${method}`);
@@ -52,11 +63,13 @@ filesystem.open = async (...args) => {
   return handle;
 };
 syncBuiltinESMExports();
-process.send({ type: 'ready' });
+process.send({ type: 'ready', ...metadataStatusFacts() });
 await new Promise((resolve) => process.on('message', (message) => { if (message.type === 'start') resolve(); }));
 try {
   const result = role === 'recovery' ? await topics.recoveryVerify({ topicId: 'fictional-recovery', referenceId: ' folder:fictional ', expectedRevision: metadata.getTopic('fictional-recovery').revision, expectedSourceRevision: 'unbound:folder:fictional', replacementLocator: path.join(stateDir, 'vault/Projects/Shared Folder'), logicalOperationId: randomUUID() })
     : await topics.create({ topicId: `fictional-${role}`, name: 'Shared Folder', paraCategory: 'project', logicalOperationId: randomUUID() });
   process.send({ type: 'outcome', status: 'applied', result });
-} catch (error) { process.send({ type: 'outcome', status: 'error', code: error.code, message: error.message }); }
+} catch (error) {
+  process.send({ type: 'outcome', status: 'error', code: error.code, message: error.message, ...metadataStatusFacts() });
+}
 finally { releaseDurableFolderStager(); metadata.close(); process.disconnect(); }

@@ -8,7 +8,7 @@ const DISPATCH_TIMEOUT_MS = 45_000;
 // Capture the host's admitted identity and request lifetime, never request JSON.
 // The synchronous fence can run inside the owning metadata transaction after
 // native readback. It is not an independent credential reauthentication service.
-export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod, gatewayRequest, requiredGatewayMethods = [] } = {}) {
+export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod, gatewayRequest, requiredGatewayMethods = [], includeAttachmentAdmission = false } = {}) {
   const readScope = getRequestScope ?? (await import('openclaw/plugin-sdk/plugin-runtime')).getPluginRuntimeGatewayRequestScope;
   const refuse = (reason = 'authority-changed') => { throw sourceError('unauthenticated', `The original authenticated Conversation request is no longer available (${reason}).`); };
   if (typeof readScope !== 'function') return refuse();
@@ -59,8 +59,21 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
   // testable fallback, but do not replace a host-owned facade with a caller
   // supplied or synthetic Session result.
   const request = gatewayRequest ?? createRequestScopedGatewayRequest(dispatchGatewayMethod);
+  let admitAttachment;
+  if (includeAttachmentAdmission) {
+    const sdk = await import('openclaw/plugin-sdk/session-transcript-runtime');
+    assertCurrent();
+    if (sdk.ACCEPTED_SESSION_ATTACHMENT_ADMISSION_VERSION === 1 && sdk.ACCEPTED_SESSION_ATTACHMENT_MAX_BYTES === 5 * 1024 * 1024 && typeof sdk.prepareAcceptedSessionAttachmentAdmission === 'function') {
+      admitAttachment = ({ agentId, sessionKey, sessionId, selection, mediaRef }) => {
+        assertCurrent();
+        return sdk.prepareAcceptedSessionAttachmentAdmission({ agentId, sessionKey, sessionId,
+          entryId: selection.entryId, generation: selection.generation, mediaIndex: selection.mediaIndex, mediaRef }, { assertCurrent });
+      };
+    }
+  }
   return Object.freeze({
     creationAuthority: Object.freeze({ principalId, assertCurrent }),
+    ...(admitAttachment ? { admitAttachment } : {}),
     gatewayRequest: async (...args) => {
       assertCurrent();
       const [method, params, options] = args;

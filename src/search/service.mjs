@@ -55,18 +55,21 @@ function boundedUnit(value, max) {
 
 function authoritativeNoteSections(text) {
   const sections = [];
+  const value = String(text ?? '');
   let heading = null;
-  let content = [];
-  const publish = () => {
-    const value = content.join('\n').trim();
-    if (value) sections.push({ heading, text: value });
+  let start = 0;
+  const publish = end => {
+    const raw = value.slice(start, end);
+    const leading = raw.length - raw.trimStart().length;
+    const content = raw.trim();
+    if (content) sections.push({ heading, text: content, start: start + leading });
   };
-  for (const line of String(text ?? '').split(/\r?\n/u)) {
-    const match = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u);
-    if (match) { publish(); heading = match[1].trim() || null; content = [line]; }
-    else content.push(line);
+  for (const match of value.matchAll(/^([ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*)(?:\r?\n|$)/gmu)) {
+    publish(match.index);
+    heading = match[2].trim() || null;
+    start = match.index;
   }
-  publish();
+  publish(value.length);
   return sections;
 }
 
@@ -226,6 +229,7 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
   };
   const queueRebuild = (input = {}) => queueRebuildOperation(rebuild, input);
   const service = {
+    close() { notes?.close?.(); conversations?.close?.(); },
     rebuild: rebuild ? queueRebuild : undefined,
     rebuildPrepared: preparedRebuild ? (input = {}) => queueRebuildOperation(preparedRebuild, input) : undefined,
     async reconcile(input = {}) {
@@ -287,6 +291,27 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
       }
       return disposal;
     },
+    assertRecallAuthority(topicId) {
+      if (!sourceService?.assertNotesRecallAuthority) throw sourceError('capability-unavailable', 'Fresh Note recall is unavailable.');
+      sourceService.assertNotesRecallAuthority(topicId);
+    },
+    async queryNotes(input = {}) {
+      const request = validateSearchRequest(input);
+      topicIdentity(metadata, request.topicId);
+      if (invalidated || hasTopicSearchInvalidationMarker(stateDir)) throw sourceError('projection-unavailable', 'Note recall projection is unavailable.');
+      service.assertRecallAuthority(request.topicId);
+      notes ??= await openProjectionStore({ stateDir, kind: 'note' });
+      const manifest = notes.manifest?.();
+      const checkpoint = manifest && metadata?.getProjectionBookkeeping?.(manifest.projectionId);
+      if (!manifest || !checkpoint || checkpoint.sourceRevision !== manifest.sourceRevision || checkpoint.inputDigest !== manifest.inputDigest
+        || !notes.hasTopic?.(request.topicId)) throw sourceError('projection-unavailable', 'Note recall projection is unavailable.');
+      const scope = currentScope(metadata, request.topicId);
+      const storeRequest = { schemaVersion: 1, topicId: request.topicId, query: request.query, limit: request.limit };
+      const candidates = notes.queryWithOverflow?.(storeRequest) ?? notes.query(storeRequest);
+      const current = candidates.filter(result => isCurrentResult(metadata, request.topicId, scope, result));
+      return Object.freeze({ results: Object.freeze(current.slice(0, request.limit).map(noteResult)),
+        truncated: candidates.length > request.limit, stale: current.length !== candidates.length });
+    },
     async query(input = {}) {
       const request = validateSearchRequest(input);
       topicIdentity(metadata, request.topicId);
@@ -323,6 +348,22 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         conversations: Object.freeze({ results: conversationsGroup })
       });
     },
+    async prepareNoteRecall(descriptor) {
+      const reference = exactReference(metadata, descriptor.topicId, descriptor.referenceId);
+      if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') throw sourceError('source-recovery', 'Recall requires an exact Note reference.');
+      const target = notes?.resolveNoteTarget?.(descriptor);
+      if (!target) throw sourceError('source-recovery', 'The indexed Note section is stale or ambiguous.');
+      if (!sourceService?.prepareNotesRecall) throw sourceError('capability-unavailable', 'Fresh Note recall is unavailable.');
+      const lease = await sourceService.prepareNotesRecall({ schemaVersion: 1, topicId: descriptor.topicId,
+        referenceId: descriptor.referenceId, path: descriptor.path, observedRevision: descriptor.observedRevision });
+      try {
+        lease.assertCurrent();
+        const note = lease.note;
+        const sections = authoritativeNoteSections(note.text).filter(section => section.heading === target.heading && section.text.replace(/\r\n/gu, '\n') === target.text.replace(/\r\n/gu, '\n'));
+        if (note.path !== descriptor.path || note.revision !== descriptor.observedRevision || sections.length !== 1) throw sourceError('source-recovery', 'Fresh Note content does not match the exact indexed section.');
+        return Object.freeze({ ...lease, section: sections[0] });
+      } catch (error) { lease.close(); throw error; }
+    },
     async projectionVersions() {
       const opened = await stores();
       const version = (store) => {
@@ -350,7 +391,7 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         if (!target) throw sourceError('source-recovery', 'The Note navigation target is stale or was not produced by the committed projection.');
         if (!navigationSourceService?.notesRead) throw sourceError('capability-unavailable', 'Authoritative Note navigation is unavailable.', { capability: 'notes' });
         const note = await navigationSourceService.notesRead({ schemaVersion: 1, topicId, path: descriptor.path, referenceId: reference.referenceId, observedRevision: descriptor.observedRevision });
-        const sectionMatches = authoritativeNoteSections(note?.text).some((section) => section.heading === target.heading && section.text === target.text);
+        const sectionMatches = authoritativeNoteSections(note?.text).some((section) => section.heading === target.heading && section.text.replace(/\r\n/gu, '\n') === target.text.replace(/\r\n/gu, '\n'));
         if (note?.path !== descriptor.path || note?.sourceReference?.topicId !== topicId || note?.sourceReference?.referenceId !== reference.referenceId || note?.sourceReference?.externalSourceId !== reference.externalSourceId || note?.revision !== descriptor.observedRevision || !sectionMatches) throw sourceError('source-recovery', 'Authoritative Note navigation did not preserve the exact result identity.');
         return Object.freeze({ ...note, heading: descriptor.heading });
       }

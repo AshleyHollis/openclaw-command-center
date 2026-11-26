@@ -6,6 +6,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { captureAcceptedChatFixture } from './support/accepted-chat-capture-fixture.mjs';
 
 const base = overrides => ({ schemaVersion: 1, logicalOperationId: '10000000-0000-4000-8000-000000000001', sourceKind: 'chat', sourceExternalId: 'agent:main:fictional', sourceVersion: 'session-1', topicId: 'topic-home', title: 'Research laundry storage', obligationId: 'laundry-storage-research', provenance: 'explicit', occurredAt: '2026-09-20T01:00:00Z', observedAt: '2026-09-20T01:00:01Z', historicalBaseline: false, ...overrides });
 
@@ -21,7 +22,7 @@ test('explicit capture becomes one quiet confirmed commitment and an idea stays 
 
 test('an explicitly typed bill is a payment loop that can record a paid assertion', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bill-capture-'));
-  const metadata = openCommandCenterMetadataService({ stateDir });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const capture = createCommitmentCaptureService({ metadata });
@@ -61,13 +62,13 @@ test('reprocessing appends evidence while user planning and importance win', () 
 
 test('the same Topic obligation reconciles evidence from email, Chat and Note into one item', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-cross-source-'));
-  const metadata = openCommandCenterMetadataService({ stateDir });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const service = createCommitmentCaptureService({ metadata });
     const correlation = { correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' };
     const email = await service.capture(base({ ...correlation, sourceKind: 'email', sourceExternalId: 'email:fictional', sourceVersion: '1' }));
-    const chat = await service.capture(base({ ...correlation, logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceKind: 'chat', sourceExternalId: 'chat:fictional', sourceVersion: '2' }));
+    const chat = await captureAcceptedChatFixture(metadata, base({ ...correlation, logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceKind: 'chat', sourceExternalId: 'chat:fictional', sourceVersion: '2' }));
     const note = await service.capture(base({ ...correlation, logicalOperationId: '30000000-0000-4000-8000-000000000003', sourceKind: 'note', sourceExternalId: 'note:fictional', sourceVersion: '3' }));
     assert.equal(chat.loop.loopId, email.loop.loopId);
     assert.equal(note.loop.loopId, email.loop.loopId);
@@ -78,7 +79,7 @@ test('the same Topic obligation reconciles evidence from email, Chat and Note in
 
 test('a new source adopts one pre-upgrade source-scoped commitment by Topic and obligation', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-legacy-source-'));
-  const metadata = openCommandCenterMetadataService({ stateDir });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const legacy = planCommitmentCapture(base({ sourceKind: 'email', sourceExternalId: 'email:legacy', sourceVersion: '1' }));
@@ -95,19 +96,19 @@ test('a new source adopts one pre-upgrade source-scoped commitment by Topic and 
 
 test('matching generic obligation labels do not merge without exact shared correlation', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-no-guessed-correlation-'));
-  const metadata = openCommandCenterMetadataService({ stateDir });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const service = createCommitmentCaptureService({ metadata });
     await service.capture(base({ sourceKind: 'email', sourceExternalId: 'email:one', sourceVersion: '1', obligationId: 'reply' }));
-    await service.capture(base({ logicalOperationId: '60000000-0000-4000-8000-000000000006', sourceKind: 'chat', sourceExternalId: 'chat:two', sourceVersion: '1', obligationId: 'reply' }));
+    await captureAcceptedChatFixture(metadata, base({ logicalOperationId: '60000000-0000-4000-8000-000000000006', sourceKind: 'chat', sourceExternalId: 'chat:two', sourceVersion: '1', obligationId: 'reply' }));
     assert.equal(metadata.listOpenLoops().length, 2);
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
 test('a cross-source correlation does not silently adopt unnamespaced legacy evidence', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-legacy-ambiguity-'));
-  const metadata = openCommandCenterMetadataService({ stateDir });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const legacy = planCommitmentCapture(base({ sourceKind: 'email', sourceExternalId: 'email:legacy-ambiguous', sourceVersion: '1' }));
@@ -115,7 +116,7 @@ test('a cross-source correlation does not silently adopt unnamespaced legacy evi
       expectedRevision: 0, observation: legacy.observation, loop: { ...legacy.loop, loopId: 'open-loop:legacy-ambiguous', stableSubjectId: 'commitment:legacy-ambiguous' },
       evidenceRoles: { [legacy.observation.observationId]: 'origin' }, updatedAt: legacy.value.observedAt });
     const service = createCommitmentCaptureService({ metadata });
-    await assert.rejects(() => service.capture(base({ logicalOperationId: '80000000-0000-4000-8000-000000000008', sourceKind: 'chat', sourceExternalId: 'chat:new', sourceVersion: '2', correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' })), /explicit duplicate review/u);
+    await assert.rejects(() => captureAcceptedChatFixture(metadata, base({ logicalOperationId: '80000000-0000-4000-8000-000000000008', sourceKind: 'chat', sourceExternalId: 'chat:new', sourceVersion: '2', correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' })), /explicit duplicate review/u);
     assert.equal(metadata.listOpenLoops().length, 1);
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
@@ -136,28 +137,25 @@ test('capture owner atomically replays and verifies exact Note references', asyn
   await assert.rejects(() => service.capture({ ...input, logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceReferenceId: 'missing' }), /not exactly owned/);
 });
 
-test('native tool resolves Topic from the exact active Session and never accepts caller Topic authority', async () => {
+test('native Chat tool without a supported accepted-plan authority refuses effects', async () => {
   let captured;
   const metadata = { findOpenLoopBySubject: () => null, applyOpenLoopChange(input) { captured = input; return { disposition: 'created', loop: input.loop }; } };
   const sourceService = { sessionTopicContext: async () => ({ status: 'bound', sessionId: 'session-1', topicId: 'topic-home' }) };
   const tool = commitmentCaptureToolFactory({ getOwners: () => ({ metadata, sourceService }) })({ sessionKey: 'agent:main:fictional', sessionId: 'session-1' });
-  const result = await tool.execute('tool-call-1', { title: 'Research laundry storage', obligationId: 'laundry-storage-research', provenance: 'explicit' });
-  assert.equal(captured.loop.topicId, 'topic-home');
-  assert.match(captured.observation.source.version, /^commitment:[0-9a-f]{32}$/u);
-  assert.match(captured.observation.facts.sourceVersion, /^tool:[0-9a-f-]{36}$/u);
-  assert.equal(result.details.loop.state, 'confirmed');
+  await assert.rejects(() => tool.execute('tool-call-1', { title: 'Research laundry storage', obligationId: 'laundry-storage-research', provenance: 'explicit' }), { code: 'source-recovery' });
+  assert.equal(captured, undefined);
 });
 
 test('real SQLite owner survives restart and deduplicates an unchanged capture', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-capture-'));
-  let metadata = openCommandCenterMetadataService({ stateDir });
+  let metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const service = createCommitmentCaptureService({ metadata });
-    const first = await service.capture(base({}));
+    const first = await captureAcceptedChatFixture(metadata, base({}));
     assert.equal(first.disposition, 'created');
-    assert.equal((await service.capture(base({}))).loop.loopId, first.loop.loopId);
-    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir });
+    assert.equal((await captureAcceptedChatFixture(metadata, base({}))).loop.loopId, first.loop.loopId);
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     assert.equal(metadata.listOpenLoops().length, 1);
     assert.equal(metadata.getOpenLoop(first.loop.loopId).evidenceObservationIds.length, 1);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }

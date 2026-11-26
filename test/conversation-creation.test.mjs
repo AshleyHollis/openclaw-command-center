@@ -95,7 +95,7 @@ test('owned durable creation receipt can be inspected, reconciled and explicitly
   try {
     const reopened = new AuthoritativeSourceService({ metadata: second, sessionStore, capabilities: { sessions: true, notes: false, scheduler: false } });
     const inspection = await reopened.sessionsCreationInspect({ topicId: input.topicId }, runtime);
-    assert.deepEqual(inspection, { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, expectedTopicRevision: 0, label: 'Planning', referenceId: original.value.sourceReference.referenceId });
+    assert.deepEqual(inspection, { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, expectedTopicRevision: 0, label: 'Planning', referenceId: original.value.sourceReference.referenceId, sessionId: original.value.sessionId });
     assert.deepEqual(await reopened.sessionsCreationReconcile({ topicId: input.topicId, logicalOperationId: input.logicalOperationId }, runtime), original);
     const ack = { topicId: input.topicId, logicalOperationId: input.logicalOperationId, referenceId: inspection.referenceId };
     assert.deepEqual(await reopened.sessionsCreationAcknowledge(ack, runtime), { schemaVersion: 1, status: 'acknowledged', logicalOperationId: input.logicalOperationId, referenceId: inspection.referenceId });
@@ -164,6 +164,7 @@ test('acknowledgement rechecks its local binding and rolls back when authority r
   assert.equal(metadata.getTopicOperation(input.logicalOperationId).currentStep, 'complete');
   runtime.creationAuthority.assertCurrent = () => {};
   metadata.setSessionState({ referenceId: ack.referenceId, sessionId: 'rebound-id', status: 'open', isPrimary: false, displayName: 'Rebound' });
+  assert.equal((await service.sessionsCreationInspect({ topicId: input.topicId }, runtime)).sessionId, result.value.sessionId, 'inspection exposes the immutable created incarnation rather than the rebound current state');
   await assert.rejects(service.sessionsCreationAcknowledge(ack, runtime), { code: 'source-recovery' });
   assert.equal(metadata.getTopicOperation(input.logicalOperationId).currentStep, 'complete');
 }));

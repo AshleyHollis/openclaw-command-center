@@ -74,6 +74,44 @@ test('a popup may close back to its trigger, but a repeated unchanged focus path
   } finally { await browser.close(); }
 });
 
+for (const clearExpanded of [false, true]) test(`a lazy controlled popup may return once with expanded ${clearExpanded ? 'removed' : 'false'}; reopening cannot hide a cycle`, async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<style>:focus-visible { outline: 3px solid blue; }</style><button id="before">Before</button><button id="trigger" aria-expanded="false">Preview</button><button id="after">After</button>');
+    await page.evaluate(clearExpanded => {
+      const trigger = document.querySelector('#trigger');
+      let opened = false;
+      window.focusTrace = [];
+      document.addEventListener('focusin', event => { if (event.target.matches('button')) window.focusTrace.push(event.target.textContent); });
+      trigger.addEventListener('keydown', event => {
+        if (event.key !== 'Tab' || event.shiftKey || opened && !window.reopenPopup) return;
+        event.preventDefault(); opened = true;
+        const popup = document.createElement('div'); popup.id = 'preview'; popup.role = 'dialog';
+        const action = document.createElement('button'); action.textContent = 'Preview action';
+        popup.append(action); document.body.append(popup);
+        trigger.setAttribute('aria-controls', popup.id); trigger.setAttribute('aria-expanded', 'true');
+        action.addEventListener('keydown', close => {
+          if (close.key !== 'Tab') return;
+          close.preventDefault(); popup.remove(); trigger.removeAttribute('aria-controls');
+          if (clearExpanded) trigger.removeAttribute('aria-expanded');
+          else trigger.setAttribute('aria-expanded', 'false');
+          trigger.focus();
+        });
+        action.focus();
+      });
+    }, clearExpanded);
+    await tabTo(page.locator('#before'));
+    await tabTo(page.locator('#after'));
+    assert.deepEqual(await page.evaluate(() => window.focusTrace), ['Before', 'Preview', 'Preview action', 'Preview', 'After']);
+    await page.evaluate(() => { window.reopenPopup = true; });
+    await page.locator('#before').focus();
+    await assert.rejects(tabTo(page.locator('#after')), /cycled/);
+    // The bounded return never defers focus visibility, accessible names or
+    // modal safety: those invariants run before the cycle exception.
+  } finally { await browser.close(); }
+});
+
 test('already-focused shadow target cannot pass after focus moves during its paint wait', async () => {
   const browser = await chromium.launch({ headless: true });
   try {

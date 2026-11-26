@@ -22,6 +22,10 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     let downloadCount = 0;
     page.on('download', () => { downloadCount++; });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
+    if (['Evidence deep link', 'Note evidence deep link'].includes(scenario)) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.addStyleTag({ content: '#mount { width: 100%; }' });
+    }
     await page.evaluate(async (scenario) => {
       const plugin = (await import('/entry.mjs')).default;
       const lifetime = new AbortController();
@@ -80,12 +84,12 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             if (scenario === 'Note selection during pagination') {
               const next = params.offset === 50;
               if (next) { const delayed = Promise.withResolvers(); window.resolveRemainingNotes = delayed.resolve; await delayed.promise; }
-              return { result: { notes: (next ? ['last.md'] : Array.from({ length: 50 }, (_, index) => `note-${index}.md`)).map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 51, offset: next ? 50 : 0, nextOffset: next ? null : 50, hasMore: !next, cursor: 'fictional-cursor' } };
+              return { result: { notes: (next ? ['zz-last.md'] : Array.from({ length: 50 }, (_, index) => `note-${index}.md`)).map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 51, offset: next ? 50 : 0, nextOffset: next ? null : 50, hasMore: !next, cursor: 'fictional-cursor' } };
             }
             if (scenario === 'Note pagination') {
               const next = params.offset === 50;
               if (next && params.cursor !== 'fictional-cursor') throw new Error('Pagination lost the authoritative snapshot.');
-              return { result: { notes: (next ? ['last.md'] : Array.from({ length: 50 }, (_, index) => `note-${index}.md`)).map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 51, offset: next ? 50 : 0, nextOffset: next ? null : 50, hasMore: !next, cursor: 'fictional-cursor' } };
+              return { result: { notes: (next ? ['zz-last.md'] : Array.from({ length: 50 }, (_, index) => `note-${index}.md`)).map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 51, offset: next ? 50 : 0, nextOffset: next ? null : 50, hasMore: !next, cursor: 'fictional-cursor' } };
             }
             if (scenario === 'Note snapshot mismatch') {
               const next = params.offset === 50;
@@ -294,12 +298,12 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     if (scenario === 'Note pagination') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
       await page.getByRole('button', { name: 'Read note-0.md' }).waitFor();
-      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
-      await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
-      await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
-      await page.getByRole('button', { name: 'Read last.md' }).waitFor({ timeout: 2000 });
+      await page.getByText('Files 1–50 of 51.', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Next files', exact: true }).click();
+      await page.getByText('Files 51–51 of 51.', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Read zz-last.md' }).waitFor({ timeout: 2000 });
       assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 1);
-      assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
+      assert.equal(await page.getByRole('button', { name: /Previous files|Next files/ }).count(), 2);
       await page.evaluate(() => window.disposeNative());
       return;
     }
@@ -309,7 +313,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'Fictional Note note-0.md' }).waitFor();
       assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1);
       await page.evaluate(() => window.resolveRemainingNotes());
-      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+      await page.getByText('Files 1–50 of 51.', { exact: true }).waitFor();
       await page.waitForTimeout(50);
       assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1,
         'completing the catalog must not reopen an already selected Note');
@@ -320,8 +324,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
       await page.getByText('The Note catalogue is unavailable; refresh Notes.', { exact: true }).waitFor();
       assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 0, 'a changed snapshot is never made actionable');
-      assert.equal(await page.getByRole('button', { name: 'Previous Notes', exact: true }).isDisabled(), true);
-      assert.equal(await page.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole('navigation', { name: 'Root file pages', exact: true }).count(), 0);
       await page.evaluate(() => window.disposeNative());
       return;
     }
@@ -330,7 +333,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.getByText('planning', { exact: true }).waitFor();
       const filter = page.getByLabel('Filter filenames');
       await filter.fill('invoice');
-      await page.getByText('1 of 3 Topic files match “invoice”.', { exact: true }).waitFor();
+      await page.getByText('1 matching Topic file.', { exact: true }).waitFor();
       assert.equal(await page.getByRole('button', { name: 'Read planning/invoice.md' }).count(), 1);
       assert.equal(await page.getByRole('button', { name: 'Read planning/brief.md' }).count(), 0);
       await page.getByRole('button', { name: 'Read planning/invoice.md' }).focus();

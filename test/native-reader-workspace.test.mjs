@@ -67,6 +67,15 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
         }
       };
       window.view = mountTopicPage(document.querySelector('#mount'), { host, signal, props: { topicId: 'fixture' }, presented: true, panel: { showInMain: () => window.promoted++ } }, window.readerState, { panel: true });
+      window.mountCompactReader = () => {
+        window.view.dispose();
+        const mount = document.querySelector('#mount');
+        mount.style.width = '400px';
+        window.view = mountTopicPage(mount, { host, signal, props: { topicId: 'compact-fixture' }, presented: true, panel: { showInMain() {} } }, window.readerState, { panel: true });
+      };
+      window.addLargeCatalog = () => {
+        paths.push(...Array.from({ length: 600 }, (_, i) => `archive/renovation/reference-${i}.md`));
+      };
       window.setReaderAccess = (canRead) => { host.connection.canRead = canRead; host.connection.connected = canRead; for (const callback of subscribers) callback(); };
       window.mountNativeExplorer = () => {
         window.view.dispose();
@@ -78,10 +87,14 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
               const explorer = document.createElement('div'); explorer.className = 'control-ui-file-explorer';
               let props = initial;
               window.nativeExplorerProps = props;
+              // Native keeps its search input mounted across prop updates.
+              // Replacing it during fill() can discard the clear input event.
+              const search = document.createElement('input'); search.type = 'search'; search.setAttribute('aria-label', 'Filter files by name or path');
+              search.addEventListener('input', () => props.onQueryChange(search.value));
+              const rows = document.createElement('div'); explorer.append(search, rows);
               const render = () => {
                 window.nativeExplorerUpdates.push({ query: props.query, expandedPaths: [...props.expandedPaths] });
-                const search = document.createElement('input'); search.type = 'search'; search.setAttribute('aria-label', 'Filter files by name or path'); search.value = props.query;
-                search.addEventListener('input', () => props.onQueryChange(search.value));
+                search.value = props.query;
                 const folder = document.createElement('details');
                 const folderToggle = document.createElement('summary'); folderToggle.className = 'chat-workspace-rail__file'; folderToggle.textContent = 'projects';
                 folder.append(folderToggle);
@@ -89,7 +102,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
                   const button = document.createElement('button'); button.type = 'button'; button.className = 'chat-workspace-rail__file'; button.textContent = entry.name;
                   button.addEventListener('click', () => props.onSelect(entry.path)); return button;
                 });
-                explorer.replaceChildren(search, folder, ...files);
+                rows.replaceChildren(folder, ...files);
               };
               container.replaceChildren(explorer); render();
               return { update(next) { props = next; window.nativeExplorerProps = props; render(); }, dispose() { explorer.remove(); } };
@@ -101,6 +114,9 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     });
     const filter = page.getByRole('searchbox', { name: /Filter/ });
     await filter.waitFor();
+    await filter.fill('receipt-109');
+    await page.getByRole('button', { name: 'Read archive/receipts/receipt-109.md', exact: true }).waitFor();
+    await filter.fill('');
     const assertTargets = async (selector) => {
       const sizes = await page.locator(selector).evaluateAll(elements => elements.filter(el => el.getClientRects().length).map(el => {
         const box = el.getBoundingClientRect(); return { width: box.width, height: box.height };
@@ -195,6 +211,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     const nativeExplorer = page.locator('.control-ui-file-explorer');
     await nativeExplorer.waitFor({ state: 'visible' });
     const nativeFilter = nativeExplorer.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
+    const initialNativeFilter = await nativeFilter.elementHandle();
     await assertTargets('[data-native-topic-files] .chat-workspace-rail__file');
     await assertTargets('[data-native-topic-files] summary.chat-workspace-rail__file');
     await assertTargets('[data-native-topic-files] input[type="search"]');
@@ -205,6 +222,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.waitForFunction(() => JSON.stringify(window.nativeExplorerUpdates.at(-1)?.expandedPaths) === JSON.stringify(['projects', 'projects/renovation']));
     await page.evaluate(() => window.nativeExplorerProps.onExpandedPathsChange(['projects', 'projects/renovation', 'projects/renovation/invoices']));
     await page.waitForFunction(() => JSON.stringify(window.nativeExplorerUpdates.at(-1)?.expandedPaths) === JSON.stringify(['projects', 'projects/renovation', 'projects/renovation/invoices']));
+    assert.equal(await initialNativeFilter.evaluate(el => el.isConnected && el === document.querySelector('.control-ui-file-explorer input')), true, 'native fixture retains its search input across prop updates');
     await nativeFilter.fill('invoice-0');
     await page.waitForFunction(() => window.nativeExplorerUpdates.at(-1)?.query === 'invoice-0');
     assert.deepEqual(await page.evaluate(() => window.nativeExplorerUpdates.at(-1).expandedPaths), ['projects', 'projects/renovation', 'projects/renovation/invoices']);
@@ -227,7 +245,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await laterPageFile.click();
     await page.getByRole('heading', { name: 'receipt-109.md', exact: true }).waitFor();
     await nativeFilter.fill('');
-    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120).catch(async error => { error.message += JSON.stringify(await page.evaluate(() => ({ query: window.nativeExplorerProps.query, entries: window.nativeExplorerProps.entries.length }))); throw error; });
     assert.equal(await page.evaluate(() => window.nativeExplorerProps.entries.length), 120, 'native Files receives the complete bounded cursor catalog');
     const promotionsBeforeRestore = await page.evaluate(() => window.promoted);
     await page.evaluate(() => window.mountNativeExplorer());
@@ -237,18 +255,44 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.evaluate(() => { window.folderId = 'replaced-folder'; });
     assert.equal(await page.getByRole('button', { name: 'Refresh Notes', exact: true }).count(), 0, 'native Files owns the single refresh control');
     await page.evaluate(() => window.nativeExplorerProps.onRefresh());
-    await page.waitForFunction(() => document.querySelector('[aria-label="Topic files"] summary') && !document.querySelector('.note-tree-item[aria-current]'));
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120 && window.nativeExplorerProps.selectedPath === null);
     assert.equal(await page.getByRole('region', { name: 'Note content', exact: true }).textContent(), '', 'replaced binding must not restore old content');
     await page.evaluate(() => window.setReaderAccess(false));
     await page.getByText('Connect with read access to view Notes.', { exact: true }).waitFor();
     await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 0);
     assert.equal(await nativeExplorer.getByRole('button').count(), 0, 'disconnect must clear the prior native Files catalog');
     await page.evaluate(() => window.setReaderAccess(true));
-    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120).catch(async error => { error.message += JSON.stringify(await page.evaluate(() => ({ query: window.nativeExplorerProps.query, entries: window.nativeExplorerProps.entries.length }))); throw error; });
+    await page.evaluate(() => { window.addLargeCatalog(); window.nativeExplorerProps.onRefresh(); });
+    await nativeFilter.fill('reference-599.md');
+    await nativeExplorer.getByRole('button', { name: 'reference-599.md', exact: true }).waitFor();
+    await nativeFilter.fill('');
     await page.evaluate(() => { window.duplicateCatalog = true; });
     await page.evaluate(() => window.nativeExplorerProps.onRefresh());
     await page.getByText('The exact Note catalogue is unavailable.', { exact: true }).waitFor();
     await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 0 && window.nativeExplorerProps.error === 'The exact Note catalogue is unavailable.');
     assert.equal(await nativeExplorer.getByRole('button').count(), 0, 'an ambiguous path catalog must not permit first-match native selection');
+    await page.evaluate(() => { window.duplicateCatalog = false; window.mountCompactReader(); });
+    await page.locator('[data-topic-notes-workspace][data-compact]').waitFor();
+    assert.equal(await filter.isVisible(), true, 'a fresh compact Files pane starts in the browser');
+    assert.equal(await page.locator('[data-native-topic-files]').isVisible(), false, 'the unavailable native explorer reserves no space in the fallback');
+    await filter.fill('archive/renovation/reference');
+    await page.getByText('600 matching Topic files.', { exact: true }).waitFor();
+    await page.getByText('Matches 1–50 of 600.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
+    await page.getByText('Matches 51–100 of 600.', { exact: true }).waitFor();
+    await filter.fill('reference-599.md');
+    await page.getByRole('button', { name: 'Read archive/renovation/reference-599.md', exact: true }).press('Enter');
+    await page.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { level: 1 }).waitFor();
+    await page.getByRole('button', { name: 'Go to Files', exact: true }).press('Enter');
+    assert.equal(await filter.inputValue(), 'reference-599.md');
+    await page.evaluate(() => window.mountCompactReader());
+    await page.locator('[data-topic-notes-workspace][data-compact]').waitFor();
+    await page.waitForFunction(() => document.querySelector('.note-tree-item[aria-current]')?.dataset.path === 'archive/renovation/reference-599.md');
+    assert.equal(await filter.isVisible(), true, 'restoring the last file must not close an explicitly opened compact Files pane');
+    await page.getByRole('button', { name: 'Go to reader', exact: true }).press('Enter');
+    const restored = page.getByRole('region', { name: 'Note content', exact: true });
+    assert.equal(await restored.isVisible(), true, 'the reader shortcut opens the restored file from compact Files');
+    assert.equal(await restored.evaluate(element => element === document.activeElement), true);
   } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
 });

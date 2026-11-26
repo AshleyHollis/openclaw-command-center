@@ -747,8 +747,12 @@ test('started plugin keeps authenticated Topic reads alive across Session delete
 
 test('native manifest uses the supported asset declaration while routes stay registered through the authenticated plugin API', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry']);
+  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry', 'httpRoutes']);
   assert.equal(manifest.controlUi.entry, 'dist/native-ui/entry.mjs');
+  assert.deepEqual(manifest.controlUi.httpRoutes, [
+    '/plugins/command-center/api/topics/actions',
+    '/plugins/command-center/api/topic/actions'
+  ]);
   assert.deepEqual(manifest.contracts.gatewayMethodDispatch, ['authenticated-request']);
   const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-native-registration'));
   delete host.api.session;
@@ -759,6 +763,12 @@ test('native manifest uses the supported asset declaration while routes stay reg
     assert.equal(route.match, 'exact');
   }
   assert.ok(host.routes.some((route) => route.path === '/plugins/command-center/api/topic/actions'));
+  for (const path of manifest.controlUi.httpRoutes) {
+    const registered = host.routes.filter(route => route.path === path);
+    assert.equal(registered.length, 1, `the declared native HTTP capability must have exactly one registered owner: ${path}`);
+    assert.equal(registered[0].auth, 'gateway');
+    assert.equal(registered[0].match, 'exact');
+  }
 });
 
 test('new Topic Conversations use the configured model while retaining the production default', () => {
@@ -1060,7 +1070,23 @@ test('built package processes a mixed email through registered Note-save, captur
     builtPlugin.register(host.api); const service = host.services[0]; await service.start();
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built-19' };
     const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
-    const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
+    const invokeTool = async (name, params) => {
+      const registration = host.tools.get(name);
+      assert.ok(registration, `Missing registered tool ${name}`);
+      let tool;
+      if (name === 'command_center_plan_intake_source') {
+        assert.deepEqual(Object.keys(registration).sort(), ['contextVersion', 'create']);
+        assert.equal(registration.contextVersion, 2);
+        assert.equal(typeof registration.create, 'function');
+        // Email accounting does not acquire Native Chat invocation authority.
+        tool = registration.create({});
+      } else {
+        assert.equal(typeof registration, 'function');
+        tool = registration();
+      }
+      assert.equal(tool.name, name);
+      return tool.execute(randomUUID(), params);
+    };
     const resolved = await invokeTool('command_center_resolve_source_topic', { topicName: extraction.proposedTopic });
     await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-built-processor-v1', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
     const saved = await invokeTool('command_center_save_source_note', { topicId: resolved.details.topicId, noteFolderReferenceId: resolved.details.noteFolderReferenceId, ...source, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });

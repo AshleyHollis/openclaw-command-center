@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
 import { readNativeNote, readNativeDocument } from '../src/native-ui/note-read.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
+import { createAuthoritativeSourceService, readPublishedSessionRows } from '../src/sources/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
@@ -557,4 +557,132 @@ test('a disabled migration service leaves unrelated active Topics on normal capa
   });
 
   assert.doesNotThrow(() => service.requireTopicService({ topicId: 'fictional-unrelated-topic' }));
+});
+
+
+test('native Session readback prefers awaited public workers and preserves exact identity', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-async-session-read-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    const topicId = 'fictional-async-topic', referenceId = 'session:fictional-async';
+    const sessionKey = 'agent:main:command-center:fictional-async', sessionId = 'fictional-async-incarnation';
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: null });
+    metadata.setSessionState({ referenceId, sessionId, status: 'open', isPrimary: true });
+    let reads = 0;
+    const storePath = path.join(stateDir, 'agents', 'main', 'sessions', 'sessions.json');
+    const store = {
+      resolveStorePath(input, options) {
+        assert.equal(input, undefined);
+        assert.deepEqual(options, { agentId: 'main' });
+        return storePath;
+      },
+      listSessionEntries() { throw new Error('Deprecated synchronous Session read used'); },
+      getSessionEntry() { throw new Error('Deprecated synchronous exact Session read used'); },
+      async createSessionEntryListReader(params) {
+        assert.deepEqual(params, { agentId: 'main', storePath });
+        await Promise.resolve(); reads += 1;
+        return async () => ({ entries: [{ sessionKey, entry: { sessionId, updatedAt: 1 } }], assertCurrent() {} });
+      },
+      async getSessionEntryAsync(params) { assert.equal(params.sessionKey, sessionKey); return { sessionId, updatedAt: 1 }; }
+    };
+    const service = createAuthoritativeSourceService({ metadata, api: { runtime: { agent: { session: store } } }, capabilities: { sessions: true } });
+    const sessions = service.forTopic(topicId).sessions;
+    assert.equal((await sessions.resolveExact({ referenceId })).sessionId, sessionId);
+    assert.equal((await sessions.request('sessions.list', {})).sessions[0].sessionId, sessionId);
+    assert.equal((await sessions.sessionStore.getSessionEntryAsync({ agentId: 'main', sessionKey, readConsistency: 'latest' })).sessionId, sessionId);
+    assert.throws(() => sessions.sessionStore.getSessionEntry({ agentId: 'main', sessionKey, readConsistency: 'latest' }), /Deprecated synchronous exact Session read used/u);
+    assert.equal(reads, 2);
+    store.createSessionEntryListReader = async () => async () => ({ entries: [{ sessionKey, entry: { sessionId: 'fictional-replaced-incarnation' } }], assertCurrent() {} });
+    // A fresh contextual adapter reads the current public worker; it must not
+    // manufacture the previously persisted Session incarnation.
+    const replacement = service.forTopic(topicId, { sessionStore: store }).sessions;
+    await assert.rejects(replacement.resolveExact({ referenceId }), error => error.code === 'source-recovery');
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+
+test('beta.3 worker lists prefer an explicit locator and preserve the physical-source fence', async () => {
+  const env = { OPENCLAW_STATE_DIR: '/fictional/explicit-state' };
+  const storePath = '/fictional/explicit-state/agents/verification/sessions/sessions.json';
+  const entries = [{ sessionKey: 'agent:verification:fictional', entry: { sessionId: 'fictional-explicit' } }];
+  const events = [];
+  const store = {
+    resolveStorePath() { throw new Error('Explicit Session locator was replaced'); },
+    listSessionEntries() { throw new Error('Synchronous Session read used'); },
+    async createSessionEntryListReader(params) {
+      assert.deepEqual(params, { agentId: 'verification', env, storePath });
+      assert.equal(params.env, env);
+      events.push('prepare');
+      return async () => {
+        events.push('read');
+        return { entries, assertCurrent() { events.push('fence'); } };
+      };
+    }
+  };
+  assert.equal(await readPublishedSessionRows(store, { agentId: 'verification', storePath, env, readOnly: true }), entries);
+  assert.deepEqual(events, ['prepare', 'read', 'fence']);
+});
+
+test('beta.3 worker lists resolve the public locator with the exact agent and environment', async () => {
+  const env = { OPENCLAW_STATE_DIR: '/fictional/resolved-state' };
+  const storePath = '/fictional/resolved-state/agents/verification/sessions/sessions.json';
+  const calls = [];
+  const store = {
+    resolveStorePath(input, options) {
+      assert.equal(input, undefined);
+      assert.deepEqual(options, { agentId: 'verification', env });
+      assert.equal(options.env, env);
+      calls.push('resolve');
+      return storePath;
+    },
+    listSessionEntries() { throw new Error('Synchronous Session read used'); },
+    async createSessionEntryListReader(params) {
+      assert.deepEqual(params, { agentId: 'verification', env, storePath });
+      calls.push('prepare');
+      return async () => ({ entries: [], assertCurrent() { calls.push('fence'); } });
+    }
+  };
+  assert.deepEqual(await readPublishedSessionRows(store, { agentId: 'verification', env }), []);
+  assert.deepEqual(calls, ['resolve', 'prepare', 'fence']);
+});
+
+test('beta.3 worker lists refuse missing or invalid public locators before preparation', async () => {
+  for (const resolveStorePath of [undefined, () => undefined, () => null, () => '', () => '   ', () => 42]) {
+    let prepared = 0, synchronous = 0;
+    const store = {
+      ...(resolveStorePath ? { resolveStorePath } : {}),
+      listSessionEntries() { synchronous++; },
+      async createSessionEntryListReader() { prepared++; }
+    };
+    await assert.rejects(readPublishedSessionRows(store, { agentId: 'main' }), error => error.code === 'capability-unavailable');
+    assert.equal(prepared, 0);
+    assert.equal(synchronous, 0);
+  }
+});
+
+test('beta.3 worker list failure and source replacement never fall back to synchronous reads', async () => {
+  for (const phase of ['resolve', 'prepare', 'read', 'fence']) {
+    const failure = new Error(`Fictional ${phase} failure`);
+    const storePath = '/fictional/state/agents/main/sessions/sessions.json';
+    const store = {
+      resolveStorePath(input, options) {
+        assert.equal(input, undefined);
+        assert.deepEqual(options, { agentId: 'main' });
+        if (phase === 'resolve') throw failure;
+        return storePath;
+      },
+      listSessionEntries() { throw new Error('Synchronous fallback hid worker failure'); },
+      async createSessionEntryListReader(params) {
+        assert.deepEqual(params, { agentId: 'main', storePath });
+        if (phase === 'prepare') throw failure;
+        return async () => {
+          if (phase === 'read') throw failure;
+          return { entries: [], assertCurrent() { throw failure; } };
+        };
+      }
+    };
+    await assert.rejects(readPublishedSessionRows(store, { agentId: 'main', readOnly: true }), error => error === failure);
+  }
 });

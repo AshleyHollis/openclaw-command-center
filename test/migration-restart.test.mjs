@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 
@@ -249,3 +250,9 @@ test('a checkpoint ahead of its append is reconciled from the authoritative tran
     assert.equal(transcripts.sessions.get(reference.externalSourceId).length, 2);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

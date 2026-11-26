@@ -29,8 +29,13 @@ test('recovery-only startup preserves refused storage and serves safe status wit
     assert.throws(() => service.topicAnalysisRead(), (error) => error.code === 'recovery-only');
     for (const unavailable of ['attentionService', 'searchService', 'searchRebuildService', 'notificationService', 'topicAnalysisRunner', 'maintenanceService']) assert.equal(service[unavailable], undefined);
     const methods = new Map();
-    registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, { status: () => service.sourceService.status(), topics: service.topicService, dashboardGet: (input) => service.dashboardGet(input), attentionAct: (input) => service.sourceService.attentionAct(input) });
-    const invoke = async (method, params) => { let reply; await methods.get(method)({ req: { id: 'fictional-read' }, params, client: { authenticatedOperatorId: 'fictional-operator' }, context: { authenticated: true }, respond: (...args) => { reply = args; } }); return reply; };
+    registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, { status: () => service.sourceService.status(), topics: service.topicService, dashboardGet: (input, runtime) => service.dashboardGet(input, runtime), attentionAct: (input, runtime) => service.sourceService.attentionAct(input, runtime) });
+    let connectionCurrent = true;
+    const client = { connId: 'fictional-recovery-connection', authenticatedOperatorId: 'fictional-operator',
+      connect: { role: 'operator', scopes: ['operator.read'] } };
+    const context = { authenticated: true,
+      getClientConnIds: predicate => new Set(connectionCurrent && predicate(client) ? [client.connId] : []) };
+    const invoke = async (method, params) => { let reply; await methods.get(method)({ req: { id: 'fictional-read' }, params, client, context, respond: (...args) => { reply = args; } }); return reply; };
     assert.equal((await invoke('command-center.v1.sources.status', { schemaVersion: 1 }))[1].result.mode, 'recovery-only');
     const dashboard = await invoke('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
     assert.equal(dashboard[0], false, JSON.stringify(dashboard));
@@ -38,6 +43,11 @@ test('recovery-only startup preserves refused storage and serves safe status wit
     const blocked = await invoke('command-center.v1.attention.act', { schemaVersion: 1, logicalOperationId: '11111111-1111-4111-8111-111111111111', episodeId: 'fictional-episode', expectedEpisodeRevision: 1, expectedSourceRevision: '1', topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', actionId: 'reminder.complete', input: { expectedConfigRevision: '1' } });
     assert.equal(blocked[0], false);
     assert.equal(blocked[2].code, 'recovery-only');
+    connectionCurrent = false;
+    const revoked = await invoke('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
+    assert.equal(revoked[0], false);
+    assert.equal(revoked[1], null, 'revoked authority must not publish a Dashboard projection');
+    assert.equal(revoked[2].code, 'unauthenticated');
     for (const operation of [() => service.topicService.create({}), () => service.sourceService.notesCreate({}), () => service.dashboardUpdateSettings({}), () => service.topicAnalysisRun({})]) assert.throws(operation, (error) => error.code === 'recovery-only');
     await assert.rejects(service.searchRebuild({}), (error) => error.code === 'recovery-only');
     assert.equal(gatewayCalls, 0);

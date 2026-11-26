@@ -1,6 +1,10 @@
+import { installHostFilesystemIdentityFixture } from '../support/host-file-access-fixture.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { TopicProvisioningService } from '../../src/topics/provisioning.mjs';
+
+const releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture();
+process.once('exit', () => { releaseFilesystemIdentityFixture(); });
 
 const [stateDir, vault, fault = 'before-commit'] = process.argv.slice(2);
 const prepare = DatabaseSync.prototype.prepare;

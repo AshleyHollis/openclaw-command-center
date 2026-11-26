@@ -17,7 +17,10 @@ export async function createTopicConversation(adapter, input, runtime, { existin
   if (typeof metadata?.claimTopicConversationCreation !== 'function' || typeof adapter.sessionStore?.getSessionEntry !== 'function') throw sourceError('capability-unavailable', 'Durable Conversation ownership and exact native readback are required.');
   const unknown = () => ({ schemaVersion: 1, status: 'unknown', logicalOperationId });
   const readExact = async (key, sessionId) => {
-    const entry = await adapter.sessionStore.getSessionEntry({ agentId: 'main', sessionKey: key, readConsistency: 'latest' });
+    const params = { agentId: 'main', sessionKey: key, readConsistency: 'latest' };
+    const entry = typeof adapter.sessionStore.getSessionEntryAsync === 'function'
+      ? await adapter.sessionStore.getSessionEntryAsync(params)
+      : await adapter.sessionStore.getSessionEntry(params);
     assertCurrent();
     if (!entry || entry.sessionId !== sessionId) throw sourceError('source-recovery', 'The exact Conversation generation is unavailable; no replacement was attached.');
     return entry;

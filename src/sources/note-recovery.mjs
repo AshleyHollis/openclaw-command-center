@@ -1,10 +1,11 @@
-import { constants } from 'node:fs';
+import { constants, lstatSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from './note-filesystem-owner.mjs';
 import { revisionForBytes } from './reference.mjs';
 import { sourceError } from './errors.mjs';
+import { withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { persistentFilesystemIdentity as identity, samePersistentFilesystemIdentity as sameIdentity } from './filesystem-object-identity.mjs';
 
 const KIND = 'notes.filesystem-effect';
@@ -70,7 +71,7 @@ export class NoteRecovery {
     const { intent, result } = record;
     const sourcePath = input.path ?? input.sourcePath ?? input.notePath;
     const destinationPath = ['create', 'edit'].includes(operation) ? sourcePath : input.destinationPath ?? input.newPath;
-    const desiredRevision = ['create', 'edit'].includes(operation) ? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision;
+    const desiredRevision = ['create', 'edit'].includes(operation) ? input.contentRevision ?? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision;
     if (record.topicId !== this.adapter.topicId || intent.operation !== operation || intent.sourcePath !== sourcePath || intent.destinationPath !== destinationPath || (intent.sourceKind ?? 'note') !== (input.sourceKind ?? 'note') || intent.expectedRevision !== input.expectedRevision || intent.desiredRevision !== desiredRevision) throw sourceError('intent-mismatch', 'Note filesystem operation ID was reused with a different intent.');
     await this.adapter.resolveRoot();
     if (!this.matchesBinding(result)) return { outcome: 'conflict' };
@@ -100,6 +101,44 @@ export class NoteRecovery {
       await this.adapter.assertChainStable(parent.chain);
       return { outcome: 'applied', value: { schemaVersion: 1, status: 'reconciled', note, logicalOperationId: input.logicalOperationId, ...(['create', 'edit'].includes(operation) ? {} : { previousPath: intent.sourcePath }) } };
     } finally { await parent.handle.close(); }
+  }
+
+  async captureCreateCompletionFence(input) {
+    if (!this.owned) throw sourceError('conflict', 'Note completion requires retained filesystem exclusion.');
+    const record = this.metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`);
+    if (record?.state !== 'applied' || record.intent.operation !== 'create' || record.intent.destinationPath !== input.path || record.intent.desiredRevision !== input.contentRevision) throw sourceError('conflict', 'The original create proof is unavailable.');
+    const parent = await this.adapter.openParent(record.result.root, input.path, { operation: 'recovery', sourceKind: input.sourceKind });
+    let active = true;
+    return { assertCurrent: () => {
+      if (!active || !this.owned || !this.matchesBinding(record.result)) throw sourceError('conflict', 'The original create completion scope changed.');
+      this.adapter.assertCurrentRoot(record.result.root);
+      const savedChain = record.result.chains[1];
+      if (savedChain.length !== parent.chain.length || parent.chain.some((part, index) => !sameIdentity(identity(lstatSync(part.namedPath)), savedChain[index].identity))) throw sourceError('conflict', 'The original document directory changed.');
+      const before = lstatSync(parent.target);
+      if (!before.isFile() || before.isSymbolicLink() || before.size > 100 * 1024 * 1024 || !sameIdentity(identity(before), record.result.publishedIdentity)) throw sourceError('conflict', 'The original document inode changed.');
+      const fd = openSync(parent.target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!sameIdentity(identity(fstatSync(fd)), record.result.publishedIdentity)) throw sourceError('conflict', 'The original document descriptor changed.');
+        const hash = createHash('sha256'); const buffer = Buffer.alloc(65536); let total = 0; let count;
+        while ((count = readSync(fd, buffer, 0, Math.min(buffer.length, 100 * 1024 * 1024 + 1 - total), null)) > 0) {
+          total += count;
+          if (total > 100 * 1024 * 1024) throw sourceError('response-too-large', 'The original document exceeds its completion bound.');
+          hash.update(buffer.subarray(0, count));
+        }
+        const after = fstatSync(fd); const named = lstatSync(parent.target);
+        if (!sameIdentity(identity(named), record.result.publishedIdentity) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || `sha256:${hash.digest('hex')}` !== record.intent.desiredRevision) throw sourceError('conflict', 'The original document bytes changed.');
+      } finally { closeSync(fd); }
+    }, async close() { active = false; await parent.handle.close(); } };
+  }
+
+  async withCreateCompletionFence(input, action) {
+    const record = this.metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`);
+    if (!record?.result?.folderBinding?.observedRevision) throw sourceError('conflict', 'The retained original Folder witness is unavailable.');
+    return withVerifiedNoteFolderIdentity(record.result.root, record.result.folderBinding.observedRevision, async folder => {
+      const file = await this.captureCreateCompletionFence(input);
+      try { return await action(() => { folder.assertCurrent(); file.assertCurrent(); }); }
+      finally { await file.close(); }
+    });
   }
 
   async prepareCreate({ input, root, parent, bytes, sourceReference }) {

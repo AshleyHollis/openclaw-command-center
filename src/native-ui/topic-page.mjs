@@ -3,10 +3,14 @@ import { readNativeNote, readNativeDocument } from './note-read.mjs';
 import { encodeNoteText, beginNativeNoteOperation, settleNativeNoteOperation, createNativeState, subscribeNativeState } from './mutations.mjs';
 import { createNativeCreationForm, createNativeNoteCreationForm } from './creation-form.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountConversationPlanWorkspace } from './conversation-plan-workspace.mjs';
 import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
+import { createTopicFileTree } from './topic-file-tree.mjs';
 import { topicSourceAvailable } from './topic-source-availability.mjs';
 import { renderGroupedSearchResults } from './search-results.mjs';
+import { createNoteSuggestionActions } from './note-proposals.mjs';
+import { renderFilesSyncStatus } from './files-sync-status.mjs';
 
 export const nativeExplorerCompleteCatalogLimit = 500;
 
@@ -16,7 +20,7 @@ export function nativeExplorerCatalogEntries(allNotes, pageNotes, limit = native
 }
 
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
-export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
+export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext, proposalPanel } = {}) {
   const host = context.host;
   let activeContext = context;
   const lifetime = new AbortController();
@@ -28,10 +32,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let reading = new AbortController();
   let writing = new AbortController();
   let topic;
+  let planWorkspace;
+  const planHost = container.ownerDocument.createElement('div');
   let selected;
   let catalogAllNotes = [];
   let catalogNotes = [];
   let catalogOffset = 0;
+  let filterOffset = 0;
   let catalogTotal = 0;
   let catalogNextOffset = null;
   let pendingCatalogOffset = null;
@@ -89,6 +96,11 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   filter.setAttribute('aria-describedby', filterStatus.id);
   const tree = element('section'); tree.id = `native-topic-notes-tree-${crypto.randomUUID()}`; tree.dataset.topicNotes = ''; tree.setAttribute('aria-labelledby', notesLabel.id);
   tree.style.maxInlineSize = '100%';
+  const fileTree = createTopicFileTree(tree, { sourceKindFor, filterControl: filter, signal, onSelect: note => {
+    if (!presented || !readable() || signal.aborted) return;
+    if (sourceKindFor(note) === 'document') void openDocument(note, { userInitiated: true });
+    else void openNote(note, { userInitiated: true });
+  } });
   const notePageStatus = element('p'); notePageStatus.setAttribute('role', 'status');
   const previousNotes = element('button', 'Previous Notes'); previousNotes.type = 'button'; previousNotes.disabled = true;
   const nextNotes = element('button', 'Next Notes'); nextNotes.type = 'button'; nextNotes.disabled = true;
@@ -116,10 +128,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const notesWorkspace = element('section'); notesWorkspace.dataset.topicNotesWorkspace = ''; notesWorkspace.setAttribute('aria-labelledby', notesLabel.id);
   notesWorkspace.style.minInlineSize = '0';
   const files = element('section'); files.className = 'reader-files'; files.setAttribute('aria-label', 'Files');
+  const filesSyncStatus = element('p'); filesSyncStatus.className = 'reader-sync-status';
+  renderFilesSyncStatus(filesSyncStatus);
   const nativeExplorerHost = element('section'); nativeExplorerHost.dataset.nativeTopicFiles = '';
+  nativeExplorerHost.hidden = !canUseNativeExplorer;
   tree.removeAttribute('aria-labelledby'); tree.setAttribute('aria-label', 'Topic files');
   notesWorkspace.removeAttribute('aria-labelledby'); notesWorkspace.setAttribute('aria-label', 'Topic Notes workspace');
-  files.append(nativeExplorerHost, filterLabel, filter, filterStatus, tree, notePageStatus, notePagination);
+  files.append(filesSyncStatus, nativeExplorerHost, filterLabel, filter, filterStatus, tree, notePageStatus, notePagination);
   if (canUseNativeExplorer) {
     // The selected replacement is still an ordinary native Files panel. The
     // host rail supplies its own search and keyboard semantics, so avoid
@@ -136,6 +151,11 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const readerBody = element('div'); readerBody.className = 'reader-body'; readerBody.append(content, source);
   const documentHeader = element('div'); documentHeader.className = 'reader-document-header'; documentHeader.append(noteTitle, noteModes, documentAction);
   reader.append(breadcrumb, documentHeader, readerBody);
+  const suggestion = FIRST_LIVE_FEATURES.noteProposals ? createNoteSuggestionActions(document, signal) : undefined;
+  if (suggestion) {
+    documentHeader.append(suggestion.menu);
+    reader.append(suggestion.dialog);
+  }
   notesWorkspace.append(files, reader);
   const toggleFiles = element('button', 'Hide Files'); toggleFiles.type = 'button'; toggleFiles.setAttribute('aria-expanded', 'true'); toggleFiles.setAttribute('aria-controls', tree.id);
   const focusReader = element('button', 'Go to reader'); focusReader.type = 'button';
@@ -163,6 +183,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   container.replaceChildren(readerStyles(document), toolbar, ...(panel ? [] : [back, chat, history]), status, announcement, paneHelp, ...(panel ? [] : [creationActions, conversationsLabel, conversationStatus, conversations, historiesLabel, historyStatus, histories]), notesWorkspace, ...(FIRST_LIVE_FEATURES.search && !panel ? [searchPane] : []),
     ...(FIRST_LIVE_FEATURES.noteWrite ? [editing] : [footer]));
   const readable = () => host.connection.connected && host.connection.canRead;
+  if (FIRST_LIVE_FEATURES.conversationPlans && !panel) container.append(planHost);
   function showPanelInMain() {
     if (!panel) return true;
     if (typeof activeContext.panel?.showInMain !== 'function') {
@@ -179,7 +200,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const currentCatalog = (pending) => !signal.aborted && presented && readable() && pending === catalogGeneration;
   const report = (error) => { if (!signal.aborted && presented && error?.name !== 'AbortError') { status.textContent = host.redact(error?.message || 'Topic is unavailable.'); renderNativeExplorer(); } };
   let searchGeneration = 0;
-  function cancel() { generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
+  function cancel() { planWorkspace?.dispose(); planWorkspace = undefined; suggestion?.reset(); generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
   function clearDocumentUrls() { for (const url of documentUrls) URL.revokeObjectURL(url); documentUrls.clear(); }
   const draftKey = (descriptor) => JSON.stringify([descriptor.topicId, descriptor.referenceId]);
   const sameDocumentSelection = (candidate, descriptor) => candidate?.sourceKind === 'document' && candidate.topicId === descriptor.topicId && candidate.referenceId === descriptor.referenceId && candidate.path === descriptor.path && candidate.observedRevision === descriptor.observedRevision;
@@ -192,7 +213,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     for (const part of parts.slice(0, -1)) items.append(element('li', part));
     const list = element('ol'); list.append(items); breadcrumb.replaceChildren(list);
   }
-  function rememberSelection() {
+  function rememberSelection(userInitiated) {
     if (viewState) viewState.selected = selected && { ...selected };
     for (const button of tree.querySelectorAll('button[data-path]')) {
       if (button.dataset.path === selected?.path && button.dataset.referenceId === selected?.referenceId) button.setAttribute('aria-current', 'true');
@@ -200,7 +221,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     }
     readerBody.scrollTop = 0;
     renderNativeExplorer();
-    if (compact) { setFilesVisible(false); toggleFiles.focus({ preventScroll: true }); }
+    if (compact && userInitiated) { setFilesVisible(false); toggleFiles.focus({ preventScroll: true }); }
   }
   async function renderNoteView() {
     const pending = ++renderGeneration;
@@ -231,78 +252,38 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       renderReadOnlyMarkdown(content, noteText);
     } catch (error) { if (!signal.aborted && presented && noteView === 'reading' && pending === renderGeneration) report(error); }
   }
-  const sourceKindFor = (item) => item.sourceKind ?? item.sourceReference?.sourceKind ?? (item.path.toLocaleLowerCase().endsWith('.md') ? 'note' : 'document');
-  function buildNoteTree(notes) {
-    const root = { folders: new Map(), notes: [] };
-    for (const note of notes) {
-      const parts = note.path.split('/').filter(Boolean);
-      let branch = root;
-      for (const part of parts.slice(0, -1)) {
-        if (!branch.folders.has(part)) branch.folders.set(part, { folders: new Map(), notes: [] });
-        branch = branch.folders.get(part);
-      }
-      branch.notes.push(note);
-    }
-    return root;
+  function sourceKindFor(item) {
+    return item.sourceKind ?? item.sourceReference?.sourceKind ?? (item.path.toLocaleLowerCase().endsWith('.md') ? 'note' : 'document');
   }
-  function renderNoteTree() {
+  function catalogMatches() {
     const query = filter.value.trim().toLocaleLowerCase();
-    const visibleNotes = catalogNotes.filter((note) => note.path.toLocaleLowerCase().includes(query));
-    const root = buildNoteTree(visibleNotes);
-    const renderBranch = (branch, depth = 0, parent = '') => {
-      const list = element('ul'); list.style.listStyle = 'none'; list.style.paddingInlineStart = depth ? '1rem' : '0'; list.style.marginBlock = '0';
-      for (const [name, folder] of [...branch.folders].sort(([left], [right]) => left.localeCompare(right))) {
-        const row = element('li');
-        const path = parent ? `${parent}/${name}` : name;
-        const details = element('details'); details.open = query.length > 0 || (viewState?.folders.get(path) ?? false);
-        const summary = element('summary', name); summary.title = path;
-        details.addEventListener('toggle', () => { if (!filter.value.trim() && details.isConnected && viewState) viewState.folders.set(path, details.open); }, { signal });
-        details.append(summary, renderBranch(folder, depth + 1, path)); row.append(details); list.append(row);
-      }
-      for (const note of [...branch.notes].sort((left, right) => left.path.localeCompare(right.path))) {
-        const row = element('li'); row.style.marginBlock = '2px'; const sourceKind = sourceKindFor(note);
-        const button = element('button', `${fileName(note.path)}${sourceKind === 'document' ? ' · original attachment' : ''}`); button.type = 'button'; button.classList.add('note-tree-item'); button.dataset.path = note.path;
-        button.dataset.referenceId = note.sourceReference.referenceId;
-        button.setAttribute('aria-label', `${sourceKind === 'document' ? 'View attachment information for' : 'Read'} ${note.path}`); button.title = note.path;
-        if (selected?.referenceId === note.sourceReference.referenceId && selected?.path === note.path) button.setAttribute('aria-current', 'true');
-        button.addEventListener('click', () => sourceKind === 'document' ? void openDocument(note, { userInitiated: true }) : void openNote(note, { userInitiated: true }), { signal }); row.append(button); list.append(row);
-      }
-      return list;
-    };
-    tree.replaceChildren(renderBranch(root));
-    tree.scrollTop = query ? 0 : (viewState?.scroll ?? 0);
-    filterStatus.textContent = query ? `${visibleNotes.length} of ${catalogNotes.length} Topic files match “${filter.value.trim()}”.` : `${catalogNotes.length} Topic files available.`;
-    renderNativeExplorer();
+    return query ? catalogAllNotes.filter(note => note.path.toLocaleLowerCase().includes(query)) : null;
   }
-  function nativeEntries() {
-    const query = filter.value.trim().toLocaleLowerCase();
-    const path = viewState?.browserPath ?? '';
-    const prefix = path ? `${path}/` : '';
-    const entries = new Map();
-    const notes = catalogNotes.filter((note) => note.path.toLocaleLowerCase().includes(query));
-    for (const note of notes) {
-      if (query) {
-        entries.set(`file:${note.path}`, { path: note.path, name: note.path, kind: 'file' });
-        continue;
-      }
-      if (!note.path.startsWith(prefix)) continue;
-      const remainder = note.path.slice(prefix.length);
-      if (!remainder) continue;
-      const [name, ...rest] = remainder.split('/');
-      if (rest.length) entries.set(`directory:${prefix}${name}`, { path: `${prefix}${name}`, name, kind: 'directory' });
-      else entries.set(`file:${note.path}`, { path: note.path, name, kind: 'file' });
-    }
-    return [...entries.values()].sort((left, right) => left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name));
+  function changeCatalogQuery(query) {
+    filter.value = query;
+    if (viewState) viewState.filter = query;
+    filterOffset = 0;
+    renderNoteTree(catalogMatches(), { resetPosition: true });
   }
-  function nativeTreeEntries() {
-    const query = filter.value.trim().toLocaleLowerCase();
-    return nativeExplorerCatalogEntries(catalogAllNotes, catalogNotes)
-      .filter((note) => note.path.toLocaleLowerCase().includes(query))
-      .map((note) => ({ path: note.path, name: fileName(note.path), kind: 'file' }));
+  function renderNoteTree(matches = catalogMatches(), { resetPosition = false } = {}) {
+    // The host uses its own Files presentation. Only the fallback needs the
+    // full hierarchy and per-folder pages; filtered results keep one pager.
+    const remaining = catalogAllNotes.length < catalogTotal;
+    if (!canUseNativeExplorer) fileTree.render(
+      matches ? matches.slice(filterOffset, filterOffset + topicCatalogPageSize) : catalogAllNotes,
+      { viewState, searching: matches !== null, selection: selected, complete: !remaining, resetPosition }
+    );
+    filterStatus.textContent = matches
+      ? `${matches.length} matching Topic file${matches.length === 1 ? '' : 's'}.${remaining ? ' Checking more files…' : ''}`
+      : `${catalogTotal} Topic files available.`;
+    renderCatalogPagination(matches);
+    renderNativeExplorer(matches);
   }
-  function renderNativeExplorer() {
+  function renderNativeExplorer(matches = catalogMatches()) {
     if (!canUseNativeExplorer || !viewState) return;
-    const entries = nativeTreeEntries();
+    const page = matches ? matches.slice(filterOffset, filterOffset + topicCatalogPageSize) : catalogNotes;
+    const entries = nativeExplorerCatalogEntries(matches ?? catalogAllNotes, page)
+      .map(note => ({ path: note.path, name: fileName(note.path), kind: 'file' }));
     const persistedExpandedPaths = [...(viewState.folders ?? new Map()).entries()].filter(([, open]) => open).map(([path]) => path);
     // A quick filename/path filter must reveal its nested matches. Keep this
     // derived expansion separate from the user's persistent tree preference,
@@ -356,11 +337,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         const note = catalogAllNotes.find((candidate) => candidate.path === path);
         if (note) void (sourceKindFor(note) === 'document' ? openDocument(note, { userInitiated: true }) : openNote(note, { userInitiated: true }));
       },
-      onQueryChange: (query) => {
-        filter.value = query;
-        if (viewState) viewState.filter = query;
-        renderNoteTree();
-      },
+      onQueryChange: changeCatalogQuery,
       onRefresh: () => void load()
     };
     if (nativeExplorer) nativeExplorer.update(props);
@@ -382,6 +359,15 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         void navigation.open({ topicId, referenceId: conversation.referenceId, expectedSessionId: conversation.sessionId }).catch((error) => { if (current(pending)) report(error); });
       }, { signal });
       row.append(button, element('span', conversation.isPrimary ? ' · Primary' : ' · Linked'));
+      if (FIRST_LIVE_FEATURES.conversationPlans && !panel) {
+        const plan = element('button', 'Review agreed plan'); plan.type = 'button';
+        plan.addEventListener('click', () => {
+          if (!presented || !readable()) return;
+          planWorkspace?.dispose();
+          const originalTopic = topicId;
+          planWorkspace = mountConversationPlanWorkspace(planHost, { host, signal, topicId, referenceId: conversation.referenceId, current: () => presented && readable() && topicId === originalTopic });
+        }, { signal }); row.append(plan);
+      }
       fragment.append(row);
     }
     conversations.replaceChildren(fragment);
@@ -439,14 +425,25 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     });
   }
   function presentCatalogPage(offset = 0) {
+    // Completing the same immutable catalogue must not detach a first-page
+    // control that the user is already reading or navigating by keyboard.
     catalogOffset = offset;
     catalogNotes = catalogAllNotes.slice(offset, offset + topicCatalogPageSize);
     catalogNextOffset = offset + catalogNotes.length < catalogTotal ? offset + catalogNotes.length : null;
     renderNoteTree();
-    const first = catalogTotal === 0 ? 0 : catalogOffset + 1;
-    notePageStatus.textContent = catalogTotal === 0 ? 'No Notes.' : `Notes ${first}–${catalogOffset + catalogNotes.length} of ${catalogTotal}.`;
-    previousNotes.disabled = catalogOffset === 0;
-    nextNotes.disabled = catalogNextOffset === null;
+  }
+  function renderCatalogPagination(matches) {
+    const total = matches?.length ?? catalogTotal;
+    const offset = matches ? filterOffset : catalogOffset;
+    const end = matches ? Math.min(offset + topicCatalogPageSize, total) : offset + catalogNotes.length;
+    const limit = canUseNativeExplorer ? nativeExplorerCompleteCatalogLimit : topicCatalogPageSize;
+    notePagination.hidden = matches === null ? !canUseNativeExplorer || total <= limit : total <= limit;
+    notePageStatus.hidden = notePagination.hidden;
+    notePageStatus.textContent = matches
+      ? total ? `Matches ${offset + 1}–${end} of ${total}.` : ''
+      : total ? `Notes ${offset + 1}–${end} of ${total}.` : 'No Notes.';
+    previousNotes.disabled = offset === 0;
+    nextNotes.disabled = matches ? end >= total : catalogNextOffset === null;
   }
   async function loadCatalogPage(offset) {
     if (!presented || !readable() || offset < 0 || offset >= catalogTotal) return;
@@ -474,11 +471,12 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     noteState.textContent = `${draft.baseRevision} · ${draft.text === draft.baseText ? 'saved' : 'unsaved draft'}${draft.operation ? draft.operation.checking ? ' · checking save outcome…' : draft.operation.unknown ? ` · outcome unknown (${draft.operation.input.logicalOperationId}); check save outcome` : ' · saving…' : ''}${save.disabled && !draft.operation ? ' · writing unavailable' : ''}${draft.error ? ` · ${draft.error}` : ''}`;
   }
   async function openDocument(documentEntry, { userInitiated = false } = {}) {
+    suggestion?.reset();
     if (!presented || !readable() || signal.aborted) return;
     navigation.cancel(); reading.abort(); preview?.dispose(); preview = undefined; reading = new AbortController(); const pending = ++generation;
     const readSignal = AbortSignal.any([signal, reading.signal]);
     const descriptor = { topicId, referenceId: documentEntry.sourceReference.referenceId, path: documentEntry.path, observedRevision: documentEntry.revision, sourceKind: 'document' };
-    selected = descriptor; rememberSelection();
+    selected = descriptor; rememberSelection(userInitiated);
     noteText = ''; renderGeneration += 1; showReaderPath(documentEntry.path);
     content.hidden = false; source.hidden = true; source.textContent = ''; documentAction.hidden = false; documentAction.disabled = false;
     readingMode.hidden = true; sourceMode.hidden = true;
@@ -527,6 +525,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     finally { if (!documentSignal.aborted && current(pending)) documentAction.disabled = false; }
   })(), { signal });
   async function openNote(note, { discardDraft = false, userInitiated = false } = {}) {
+    suggestion?.reset();
     if (!presented || !readable() || signal.aborted) return;
     navigation.cancel();
     reading.abort(); reading = new AbortController();
@@ -538,7 +537,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     const existing = drafts.get(key); const version = existing?.version;
     selected = descriptor; noteText = ''; documentAction.hidden = true; content.replaceChildren(); source.textContent = ''; showReaderPath(note.path); showDraft();
     readingMode.hidden = false; sourceMode.hidden = false;
-    rememberSelection();
+    rememberSelection(userInitiated);
     status.textContent = 'Opening authoritative Note…';
     try {
       await verifyContext?.();
@@ -551,6 +550,15 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       if (readSignal.aborted || !current(pending)) return;
       noteText = result.text; await renderNoteView();
       if (readSignal.aborted || !current(pending)) return;
+      if (suggestion) {
+        const target = { referenceId: descriptor.referenceId, path: descriptor.path, revision: result.revision };
+        suggestion.offer(() => ({
+          host, signal: readSignal, current: () => current(pending) && selected?.referenceId === target.referenceId,
+          verifyContext, topic, target, panel: proposalPanel, pointers: state.noteProposalPointers ??= new Map(),
+          sources: catalogAllNotes.filter(row => row.sourceReference?.referenceId && row.revision && row.sourceReference.sourceKind !== 'document')
+            .map(row => ({ referenceId: row.sourceReference.referenceId, path: row.path, revision: row.revision }))
+        }));
+      }
       // Read-only browsing must not create a local authoring/operation owner.
       if (!FIRST_LIVE_FEATURES.noteWrite) {
         announce(`Note opened · ${result.revision}`); status.title = result.revision;
@@ -572,13 +580,17 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     } catch (error) { if (!readSignal.aborted && current(pending)) report(error); }
   }
   async function load() {
+    planWorkspace?.dispose(); planWorkspace = undefined;
     cancel(); const pending = catalogGeneration;
+    const readerAtLoad = generation;
+    filterOffset = 0;
     searchResults.replaceChildren(); searchStatus.textContent = ''; searchInput.value = '';
     pendingCatalogOffset = null;
     showReaderPath(); status.title = '';
     creation?.dispose(); creation?.form.remove(); creation = undefined;
     noteCreation?.dispose(); noteCreation?.form.remove(); noteCreation = undefined;
-    tree.replaceChildren(); conversations.replaceChildren(); histories.replaceChildren(); noteText = ''; renderGeneration += 1; content.replaceChildren(); source.textContent = ''; selected = undefined; editing.hidden = true; topic = undefined; chat.disabled = true; catalogAllNotes = []; catalogNotes = []; catalogConversations = []; catalogHistories = [];
+    fileTree.clear(); conversations.replaceChildren(); histories.replaceChildren(); noteText = ''; renderGeneration += 1; content.replaceChildren(); source.textContent = ''; selected = undefined; editing.hidden = true; topic = undefined; chat.disabled = true; catalogAllNotes = []; catalogNotes = []; catalogConversations = []; catalogHistories = [];
+    renderFilesSyncStatus(filesSyncStatus);
     if (signal.aborted || !presented) return;
     if (!readable()) { status.textContent = 'Connect with read access to view Notes.'; renderNativeExplorer(); return; }
     if (typeof topicId !== 'string' || !topicId.trim()) { status.textContent = 'Select a Topic from All Topics.'; renderNativeExplorer(); return; }
@@ -589,10 +601,11 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       const verifiedTopic = (topicResponse?.result ?? topicResponse)?.topic;
       if (verifiedTopic?.topicId !== topicId) throw new Error('The exact Topic is unavailable.');
       topic = verifiedTopic;
+      renderFilesSyncStatus(filesSyncStatus, topic.filesSyncStatus);
       // View preferences grant no authority. Every restored selection must also
       // match the newly read catalogue before the ordinary exact reader runs.
       const viewKey = JSON.stringify([topicId, topic.noteFolderReferenceId ?? null]);
-      if (!views.has(viewKey)) views.set(viewKey, { folders: new Map(), filter: '', scroll: 0, selected: undefined, browserPath: '' });
+      if (!views.has(viewKey)) views.set(viewKey, { folders: new Map(), filePages: new Map(), filter: '', scroll: 0, selected: undefined, browserPath: '' });
       viewState = views.get(viewKey);
       viewState.browserPath ??= '';
       filter.value = viewState.filter;
@@ -646,7 +659,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           const requestedOffset = pendingCatalogOffset;
           pendingCatalogOffset = null;
           presentCatalogPage(requestedOffset);
-        }
+        } else if (!canUseNativeExplorer || filter.value.trim()) renderNoteTree();
       });
       if (!currentCatalog(pending)) return;
       if (!catalog) return;
@@ -656,6 +669,9 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       pendingCatalogOffset = null;
       const retainedOffset = Number.isSafeInteger(requestedOffset) ? requestedOffset : catalogOffset;
       presentCatalogPage(retainedOffset >= 0 && retainedOffset < catalogTotal ? retainedOffset : 0);
+      // A delayed catalog may populate Files, but cannot take back navigation
+      // from a newer reader selection or an explicit native Chat handoff.
+      if (!current(readerAtLoad)) return;
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
       status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
@@ -688,8 +704,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           }
           return;
         }
-        if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0]);
-        else await openDocument(matches[0]);
+        if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0], { userInitiated: true });
+        else await openDocument(matches[0], { userInitiated: true });
         return;
       }
       const prior = viewState.selected;
@@ -704,7 +720,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       } else if (prior) { viewState.selected = undefined; }
     } catch (error) {
       if (currentCatalog(pending)) {
-        catalogAllNotes = []; catalogTotal = 0; presentCatalogPage(0);
+        catalogAllNotes = []; catalogTotal = 0; fileTree.clear(); presentCatalogPage(0);
         report(error);
       }
     }
@@ -768,7 +784,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   reconcile.addEventListener('click', () => void saveNote({ reconcileOnly: true }), { signal });
   reload.addEventListener('click', () => void reloadNote(), { signal });
   discard.addEventListener('click', () => void reloadNote(true), { signal });
-  filter.addEventListener('input', () => { if (viewState) viewState.filter = filter.value; renderNoteTree(); }, { signal });
+  filter.addEventListener('input', () => changeCatalogQuery(filter.value), { signal });
   searchForm.addEventListener('submit', (event) => {
     event.preventDefault();
     if (!FIRST_LIVE_FEATURES.search || !presented || !readable() || !topic || !searchInput.value.trim()) return;
@@ -790,23 +806,41 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       searchStatus.textContent = `${grouped.notes.results.length} Notes · ${grouped.conversations.results.length} Conversations`;
     }).catch((error) => { if (pending === searchGeneration) searchStatus.textContent = host.redact(error?.message || 'Search is unavailable.'); });
   }, { signal });
-  previousNotes.addEventListener('click', () => void loadCatalogPage(Math.max(0, catalogOffset - 50)), { signal });
-  nextNotes.addEventListener('click', () => { if (catalogNextOffset !== null) void loadCatalogPage(catalogNextOffset); }, { signal });
-  tree.addEventListener('scroll', () => { if (viewState && tree.childNodes.length && !filter.value.trim()) viewState.scroll = tree.scrollTop; }, { signal });
+  function changeCatalogPage(direction) {
+    const matches = catalogMatches();
+    if (matches) {
+      const offset = filterOffset + direction * topicCatalogPageSize;
+      if (offset >= 0 && offset < matches.length) {
+        filterOffset = offset;
+        renderNoteTree(matches, { resetPosition: true });
+      }
+    } else {
+      const offset = direction < 0 ? Math.max(0, catalogOffset - topicCatalogPageSize) : catalogNextOffset;
+      if (offset !== null) void loadCatalogPage(offset);
+    }
+  }
+  previousNotes.addEventListener('click', () => changeCatalogPage(-1), { signal });
+  nextNotes.addEventListener('click', () => changeCatalogPage(1), { signal });
   function setFilesVisible(visible) {
     files.hidden = !visible; notesWorkspace.toggleAttribute('data-files-hidden', !visible);
     reader.hidden = compact && visible;
     toggleFiles.textContent = visible ? 'Hide Files' : 'Show Files'; toggleFiles.setAttribute('aria-expanded', String(visible));
   }
+  let measuredLayout = false;
   const resize = new ResizeObserver(entries => {
     // Native Files is a retained host pane: its default width is narrower
     // than the legacy page breakpoint, but it must remain available beside
     // the selected document. Compact swapping is only for the legacy tree.
     const next = !canUseNativeExplorer && entries[0].contentRect.width < 480;
+    const initialLayout = !measuredLayout;
+    measuredLayout = true;
     if (next === compact) return;
     compact = next; notesWorkspace.toggleAttribute('data-compact', compact);
     const movingFocus = files.contains(document.activeElement) || reader.contains(document.activeElement);
-    setFilesVisible(!compact);
+    const requested = sourceRequest(activeContext.props);
+    const selectedEvidence = selected && requested?.path === selected.path &&
+      requested.referenceId === selected.referenceId && requested.evidenceSourceVersion === selected.observedRevision;
+    setFilesVisible(!compact || !selected || (initialLayout && !selectedEvidence));
     if (movingFocus) toggleFiles.focus({ preventScroll: true });
   });
   resize.observe(notesWorkspace);
@@ -816,7 +850,10 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     const nativeSearch = nativeExplorerHost.querySelector('input[type="search"]');
     (nativeSearch ?? filter).focus({ preventScroll: true });
   }, { signal });
-  focusReader.addEventListener('click', () => (noteView === 'reading' ? content : source).focus({ preventScroll: true }), { signal });
+  focusReader.addEventListener('click', () => {
+    if (reader.hidden) setFilesVisible(false);
+    (source.hidden ? content : source).focus({ preventScroll: true });
+  }, { signal });
   readingMode.addEventListener('click', () => { noteView = 'reading'; renderNoteView(); }, { signal });
   sourceMode.addEventListener('click', () => { noteView = 'source'; renderNoteView(); }, { signal });
   back.addEventListener('click', () => { cancel(); host.navigation.openPage({ id: 'topics' }); }, { signal });
@@ -826,6 +863,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let connected = readable();
   const unsubscribeDraft = subscribeNativeState(state, () => { if (!signal.aborted && presented && selected) showDraft(); });
   const unsubscribe = host.subscribe(() => {
+    suggestion?.sync();
     creation?.sync();
     noteCreation?.sync();
     if (!host.connection.canWrite) { writing.abort(); writing = new AbortController(); }
@@ -833,6 +871,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   });
   void load();
   return {
+    async openFiledDocument(document) {
+      if (!document || typeof document.referenceId !== 'string' || typeof document.path !== 'string' || typeof document.revision !== 'string') throw new Error('The exact filed document is unavailable.');
+      await load();
+      const entry = { path: document.path, revision: document.revision, sourceKind: 'document', sourceReference: { topicId, referenceId: document.referenceId, sourceKind: 'document' } };
+      validateCatalogNote(entry);
+      await openDocument(entry, { userInitiated: true });
+    },
     update(next) {
       const sourceChanged = sourceRequestKey(activeContext.props) !== sourceRequestKey(next.props);
       activeContext = next;

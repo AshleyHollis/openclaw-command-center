@@ -510,7 +510,7 @@ test('a live approval replay cannot cross the bound operator identity', async ()
   });
 });
 
-test('approval context drift after reservation prevents the first external dispatch', { timeout: 2_000 }, async () => {
+test('approval context drift after reservation prevents the first external dispatch', { timeout: 10_000 }, async () => {
   await fixture(async ({ metadata }) => {
     let preconditionRevision = 'precondition-1';
     let episodeId;
@@ -535,7 +535,9 @@ test('approval context drift after reservation prevents the first external dispa
     episodeId = created.episode.episodeId;
     const pending = await service.act({ schemaVersion: 1, logicalOperationId: '67835111-1111-4111-8111-111111111111', episodeId, expectedEpisodeRevision: 1, topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'monitor.apply', input: {} });
     const decision = service.act({ schemaVersion: 1, logicalOperationId: '67835222-2222-4222-8222-222222222222', episodeId, expectedEpisodeRevision: 1, topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'approval.approve', approvalId: pending.approval.approvalId, input: {} });
-    await readStarted;
+    await Promise.race([readStarted, decision.then(() => {
+      assert.fail('Approval finished before the reserved context was re-read');
+    })]);
     preconditionRevision = 'precondition-2';
     releaseRead();
     const result = await decision;

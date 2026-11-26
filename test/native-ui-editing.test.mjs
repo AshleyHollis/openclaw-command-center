@@ -70,6 +70,10 @@ async function fixture(run) {
           }
           if (method.endsWith('sessions.browse')) return { result: { topicId: topic.topicId, conversations: [{ referenceId: 'session:primary', sessionId: 'primary-session', status: 'open', isPrimary: true }, { referenceId: 'session:new', sessionId: 'new-session', status: 'open', isPrimary: false }] } };
           if (method.endsWith('sessions.navigate') || method.endsWith('sessions.resolve-native')) {
+            if (method.endsWith('sessions.resolve-native') && window.delayNativeResolve) {
+              window.delayNativeResolve = false;
+              await new Promise(resolve => { window.finishNativeResolve = resolve; });
+            }
             if (window.navigationFailure) throw new Error('Native Chat is temporarily unavailable.');
             const sessionKey = params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new';
             if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey } };
@@ -122,7 +126,7 @@ async function fixture(run) {
       };
       window.stop = plugin.activate(host);
       window.replaceActivation = () => { scope?.abort(); view?.dispose(); window.stop(); window.stop = plugin.activate(host); window.navigate('topic'); };
-      window.navigate = (id) => host.navigation.openPage({ id, params: { topicId: topic.topicId } });
+      window.navigate = (id, props = {}) => host.navigation.openPage({ id, params: { topicId: topic.topicId, ...props } });
       window.setPresented = (presented) => view.update({ ...context, presented });
       window.updateTopic = (topicId) => { context = { ...context, props: { topicId } }; view.update(context); };
       window.changeTopicPolicy = (patch) => { Object.assign(topic, patch); window.navigate('topic'); };
@@ -375,6 +379,59 @@ test('failed native Chat navigation does not strand a pending Notes catalog', { 
   await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.textContent === 'Authoritative brief');
   assert.equal(await page.getByRole('region', { name: 'Note content', exact: true }).innerText(), 'Authoritative brief');
   assert.equal(await page.getByRole('textbox', { name: 'Note draft' }).count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.opened), []);
+}));
+
+for (const automaticRead of ['remembered selection', 'evidence link']) {
+  test(`automatic ${automaticRead} cannot cancel an explicit native Chat handoff`, { timeout: 30000 }, () => fixture(async (page) => {
+    await page.getByRole('button', { name: 'Read brief.md', exact: true }).click();
+    await page.getByRole('region', { name: 'Note content', exact: true }).getByText('Authoritative brief', { exact: true }).waitFor();
+    await page.evaluate(read => {
+      window.delayBrowse = true;
+      window.delayNativeResolve = true;
+      const props = read === 'evidence link'
+        ? { sourceReferenceId: 'note:brief', sourcePath: 'brief.md', evidenceSourceVersion: 'r1' }
+        : {};
+      window.navigate('topic', props);
+    }, automaticRead);
+    await page.waitForFunction(() => window.finishBrowse);
+    await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
+    await page.waitForFunction(() => window.finishNativeResolve);
+
+    // Let the catalog's synthetic response and promise continuations settle
+    // before the explicitly requested Chat target finishes resolving.
+    await page.evaluate(async () => {
+      window.finishBrowse();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await page.getByRole('button', { name: 'Read brief.md', exact: true }).waitFor();
+    await page.evaluate(async () => {
+      window.finishNativeResolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    assert.deepEqual(await page.evaluate(() => window.opened), [
+      { sessionKey: 'agent:fictional:primary', agentId: 'fictional' }
+    ]);
+  }));
+}
+
+test('ordinary Note restoration and later explicit Note selection still work', { timeout: 30000 }, () => fixture(async (page) => {
+  const reader = page.getByRole('region', { name: 'Note content', exact: true });
+  await page.getByRole('button', { name: 'Read brief.md', exact: true }).click();
+  await reader.getByText('Authoritative brief', { exact: true }).waitFor();
+  await page.evaluate(() => window.navigate('topic'));
+  await reader.getByText('Authoritative brief', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('notes.read') && request.params.path === 'brief.md').length), 2);
+
+  await page.evaluate(() => { window.delayNativeResolve = true; });
+  await page.getByRole('button', { name: 'Open Topic in Chat', exact: true }).click();
+  await page.waitForFunction(() => window.finishNativeResolve);
+  await page.getByRole('button', { name: 'Read other.md', exact: true }).click();
+  await reader.getByText('Other Note', { exact: true }).waitFor();
+  await page.evaluate(async () => {
+    window.finishNativeResolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
   assert.deepEqual(await page.evaluate(() => window.opened), []);
 }));
 

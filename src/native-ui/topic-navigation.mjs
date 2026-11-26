@@ -52,6 +52,16 @@ export function createNativeTopicNavigation(host) {
     const match = preferred && candidates.find((item) => item.referenceId === preferred.referenceId && item.sessionId === preferred.sessionId);
     return match ?? primary[0];
   }
+  async function openPreferredFiles(topicId, preferred) {
+    requireIdentity(topicId);
+    assertCurrentConnection();
+    const current = ++generation;
+    const chosen = await selectOpenConversation(topicId, preferred, current);
+    const target = await resolve({ topicId, referenceId: chosen.referenceId, expectedSessionId: chosen.sessionId }, current);
+    if (typeof host.sessions.openFiles !== 'function') throw new Error('This OpenClaw host cannot open the native Files pane.');
+    host.sessions.openFiles({ sessionKey: target.sessionKey, agentId: target.agentId });
+    return Object.freeze({ referenceId: chosen.referenceId, sessionId: chosen.sessionId });
+  }
   return Object.freeze({
     cancel() { generation += 1; },
     open: (input) => open(input),
@@ -64,18 +74,12 @@ export function createNativeTopicNavigation(host) {
     },
     async openPreferred(topicId, preferred) {
       requireIdentity(topicId);
+      assertCurrentConnection();
       const current = ++generation;
       const chosen = await selectOpenConversation(topicId, preferred, current);
       return open({ topicId, referenceId: chosen.referenceId, expectedSessionId: chosen.sessionId }, current);
     },
-    async openPrimaryFiles(topicId) {
-      requireIdentity(topicId);
-      assertCurrentConnection();
-      const current = ++generation;
-      const primary = await selectOpenConversation(topicId, null, current);
-      const target = await resolve({ topicId, referenceId: primary.referenceId, expectedSessionId: primary.sessionId }, current);
-      if (typeof host.sessions.openFiles !== 'function') throw new Error('This OpenClaw host cannot open the native Files pane.');
-      host.sessions.openFiles({ sessionKey: target.sessionKey, agentId: target.agentId });
-    }
+    openPreferredFiles,
+    openPrimaryFiles: (topicId) => openPreferredFiles(topicId, null)
   });
 }

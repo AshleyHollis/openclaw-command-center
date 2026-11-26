@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { assertAcceptedChatEffect } from '../open-loops/accepted-chat-scope.mjs';
 import { normalizeLoop, normalizeObservation } from '../open-loops/contracts.mjs';
 import { openLoopReminderOperationId, openLoopReminderReferenceId, planOpenLoopReminder } from '../open-loops/reminder-coordinator.mjs';
 import { selectSupportingNoteTarget } from '../open-loops/supporting-note-target.mjs';
@@ -262,6 +263,10 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const updatedAt = now(value.updatedAt ?? observation.observedAt);
     return mutate(null, db => {
       const replay = operation(db, logicalOperationId, CHANGE_OPERATION, intentDigest);
+      if (value.intent?.sourceKind === 'chat' || observation.source.system === 'command-center-capture' && observation.source.kind === 'chat') {
+        if (operationKind !== 'commitment.capture.v1') fail('open-loop-intent-invalid');
+        assertAcceptedChatEffect(service, value.intent, 'capture');
+      }
       if (replay) return replay;
       if (value.interpretationFence) enforceInterpretationFence(db, value.interpretationFence, loop.loopId, value.expectedRevision, observation);
       const stored = storeObservation(db, observation);

@@ -1,5 +1,7 @@
 import { gzipSync } from 'node:zlib';
+import { FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { assertAcceptedChatNote } from '../open-loops/accepted-chat-scope.mjs';
 import { lstat, realpath } from 'node:fs/promises';
 import { createActivityService } from '../activity/service.mjs';
 import { createAnalysisAdapter } from './analysis.mjs';
@@ -17,6 +19,7 @@ import { createSessionAdapter } from './sessions.mjs';
 import { createSchedulerAdapter } from './scheduler.mjs';
 import { createTopicDocumentFilingService } from '../documents/filing.mjs';
 import { createTopicMaintenanceSchedule } from '../maintenance/schedule.mjs';
+import { NoteProposalService } from '../maintenance/proposals.mjs';
 import { getSessionEntry as readPublishedSessionEntry } from 'openclaw/plugin-sdk/session-store-runtime';
 
 function adapterInput(input = {}) {
@@ -24,16 +27,37 @@ function adapterInput(input = {}) {
   return rest;
 }
 
+// Each call owns one descriptive worker read. The host reader releases its
+// worker before returning; it retains only a physical-source fence, not a
+// disposable handle or authority to replace Topic/Session identity checks.
+export async function readPublishedSessionRows(store, params) {
+  const usesReader = typeof store?.createSessionEntryListReader === 'function';
+  if (!usesReader && params.storePath === undefined && typeof store.resolveStorePath !== 'function') return store.listSessionEntries(params);
+  const scope = { agentId: params.agentId, ...(params.env ? { env: params.env } : {}) };
+  if (params.storePath === undefined && typeof store.resolveStorePath !== 'function') {
+    throw sourceError('capability-unavailable', 'The host Session store locator is unavailable.', { capability: 'sessions' });
+  }
+  const storePath = params.storePath !== undefined ? params.storePath : store.resolveStorePath(undefined, scope);
+  if (typeof storePath !== 'string' || storePath.trim() === '') {
+    throw sourceError('capability-unavailable', 'The host Session store locator is unavailable.', { capability: 'sessions' });
+  }
+  if (!usesReader) return store.listSessionEntries({ ...params, storePath });
+  const reader = await store.createSessionEntryListReader({ ...scope, storePath });
+  const result = await reader();
+  result.assertCurrent();
+  return result.entries;
+}
+
 function sessionStoreWithPublishedReadback(api, store) {
-  if (!store || typeof store.listSessionEntries !== 'function' || typeof store.getSessionEntry === 'function' || api?.runtime?.agent?.session !== store) return store;
-  // OpenClaw's published runtime surface keeps the row-list helper available
-  // on every compatible host, while some host wrappers omit the exact-row
-  // convenience method. Use the published SDK read owner for the missing
-  // operation; do not inspect host-private storage or synthesize a row.
+  if (!store || typeof store.listSessionEntries !== 'function' || api?.runtime?.agent?.session !== store) return store;
   const storePath = typeof store.resolveStorePath === 'function' ? store.resolveStorePath(undefined, { agentId: 'main' }) : undefined;
-  return Object.freeze({ ...store, getSessionEntry(params) {
-    return readPublishedSessionEntry({ ...params, ...(storePath ? { storePath } : {}) });
-  } });
+  return Object.freeze({ ...store,
+    listSessionEntries: params => readPublishedSessionRows(store, params),
+    // Publication and mutation fences require the SDK's synchronous exact reader.
+    // Keep getSessionEntryAsync separate under its published name from ...store.
+    getSessionEntry: params => typeof store.getSessionEntry === 'function' ? store.getSessionEntry(params)
+      : readPublishedSessionEntry({ ...params, ...(storePath ? { storePath } : {}) })
+  });
 }
 
 export class AuthoritativeSourceService {
@@ -202,12 +226,41 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] }); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  notesProposalPrepare(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).prepare(input, runtime); }
+  notesProposalContext(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).context(input, runtime); }
+  notesProposalPublish(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).publish(input, runtime); }
+  notesProposalInspect(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).inspect(input, runtime); }
+  notesProposalDiscard(input, runtime) { return new NoteProposalService({ sourceService: this, metadata: this.metadata }).discard(input, runtime); }
+  assertDocumentReviewConversation(binding) {
+    this.requireTopicService({ topicId: binding.topicId }, { write: true, requiredSourceKinds: ['note_folder', 'session'] });
+    const store = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
+    if (typeof store?.getSessionEntry !== 'function') throw sourceError('capability-unavailable', 'The synchronous native Conversation read owner is unavailable.');
+    const entry = store.getSessionEntry({ agentId: binding.sessionKey.split(':')[1], sessionKey: binding.sessionKey, readConsistency: 'latest' });
+    if (entry?.then) throw sourceError('capability-unavailable', 'The native Conversation review fence requires synchronous readback.');
+    if (entry?.sessionId !== binding.sessionId) throw sourceError('source-recovery', 'The Conversation was replaced before attachment review delivery.');
+  }
+  async documentsListAttachments(input = {}, runtime) {
+    const { schemaVersion: _version, topicId, ...selection } = input;
+    const result = await this.documents.listAttachments({ topicId, ...selection }, runtime);
+    if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment selection requires the exact linked Topic.');
+    return result;
+  }
+  async documentsReviewAttachment(input = {}, runtime) {
+    const { schemaVersion: _version, topicId, ...selection } = input;
+    const result = await this.documents.reviewAttachment({ topicId, ...selection }, runtime);
+    if (result.topicId !== topicId) throw sourceError('cross-topic', 'Attachment review requires the exact linked Topic.');
+    return result;
+  }
+  async documentsPrepareAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.prepareAttachment(input, runtime); }
+  async documentsPublishAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.filePreparedAttachment(input, runtime); }
+  async documentsCheckAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.checkPreparedAttachment(input, runtime, true); }
+  async documentsReopenAttachment({ schemaVersion: _version, ...input }, runtime) { return this.documents.reopenPreparedAttachment(input, runtime); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled
     // result may make a native maintenance turn pending; a retry reaches this
     // point after the filing owner has recovered its exact receipt.
-    if (this.maintenanceSchedule && ['applied', 'reconciled'].includes(result?.status)) {
+    if (FIRST_LIVE_FEATURES.noteMaintenance && this.maintenanceSchedule && ['applied', 'reconciled'].includes(result?.status)) {
       await this.maintenanceSchedule.schedule({ sessionKey: input.sessionKey, reason: 'a permanently filed attachment' });
     }
     return result;
@@ -240,14 +293,33 @@ export class AuthoritativeSourceService {
   historiesList(input, runtime) { return this.readImportedHistory('list', input, runtime); }
   historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
   historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
-  async notesRead(input = {}) {
+  assertNotesRecallAuthority(topicId) {
+    if (this.closed) throw sourceError('capability-unavailable', 'The Note source activation ended.');
+    requireCapability(this.capabilities, 'notes');
+    this.requireTopicService({ topicId }, { requiredSourceKinds: ['note_folder'] });
+  }
+  async prepareNotesRecall(input = {}) {
+    const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
+    requireCapability(this.capabilities, 'notes');
+    this.assertExactNoteReference(input, { read: true });
+    const lease = await service.notes.prepareRecallRead(adapterInput(input));
+    return Object.freeze({ note: lease.note, close: lease.close, assertCurrent: () => {
+      if (this.closed) throw sourceError('capability-unavailable', 'The Note source activation ended.');
+      requireCapability(this.capabilities, 'notes');
+      this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
+      this.assertExactNoteReference(input, { read: true });
+      lease.assertCurrent();
+    } });
+  }
+  async notesRead(input = {}, originalReadOwned = false) {
+    if (input.sourceKind === 'document' && !originalReadOwned) return this.documents.readOriginalDocument(input, owned => this.notesRead(input, owned || 'legacy'));
     const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     this.assertExactNoteReference(input, { read: true });
     const { offset: _offset, ...noteInput } = adapterInput(input);
     // Original attachments are opaque bytes, not UTF-8 Notes. This internal
     // option never crosses the public bridge boundary.
-    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}) });
+    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}), ...(originalReadOwned === true ? { observe: false } : {}) });
     if (input.offset === undefined) return note;
     if (!Number.isInteger(input.offset) || input.offset < 0) throw sourceError('invalid-request', 'A non-negative byte offset is required.');
     if (input.offset > 0 && (typeof input.observedRevision !== 'string' || input.observedRevision !== note.revision)) throw sourceError('conflict', 'The Note changed during chunk retrieval.');
@@ -274,6 +346,7 @@ export class AuthoritativeSourceService {
     };
   }
   async guardedNoteMutation(input, operationKind, method, { reconcileOnly = false, recoveryChecked = false } = {}) {
+    if (method === 'create') assertAcceptedChatNote(this.metadata, input);
     const service = this.requireTopicService(input, { write: !reconcileOnly, requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     // Re-enter policy validation after obtaining cross-process ownership, and
@@ -285,7 +358,7 @@ export class AuthoritativeSourceService {
     }
     if (service.notes.recovery && !service.notes.recovery.owned) return service.notes.recovery.run(() => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly, recoveryChecked }));
     this.assertExactNoteReference(input, { create: method === 'create' });
-    const execute = () => service.notes[method](adapterInput(input));
+    const execute = () => { if (method === 'create') assertAcceptedChatNote(this.metadata, input); return service.notes[method](adapterInput(input)); };
     if (!this.coordinator) {
       if (reconcileOnly) throw sourceError('unknown', 'The durable mutation coordinator is unavailable.');
       return execute();
@@ -299,8 +372,10 @@ export class AuthoritativeSourceService {
       intent: intentInput,
       execute,
       reconcile: async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
+        if (method === 'create') assertAcceptedChatNote(this.metadata, input);
         if (service.notes.recovery?.enabled) {
           const recovered = await service.notes.recovery.reconcile(adapterInput(input), method);
+          if (method === 'create') assertAcceptedChatNote(this.metadata, input);
           if (recovered) return recovered;
           if (method === 'create') return { outcome: 'unknown' };
           // Without an inode-proven effect receipt, equal bytes are not evidence
@@ -431,6 +506,40 @@ export class AuthoritativeSourceService {
     this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
     return navigation;
   }
+  assertAcceptedChatBinding(binding) {
+    if (this.closed || !binding || binding.version !== 1) throw sourceError('source-recovery', 'Accepted Chat source ownership is unavailable.');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    this.requireTopicService({ topicId: binding.topicId }, { write: true, requiredSourceKinds: ['session'] });
+    const reference = this.metadata.getSourceReference(binding.referenceId);
+    const topic = this.metadata.getTopic(binding.topicId);
+    const matches = this.metadata.listSourceReferences().filter(item => item.sourceSystem === 'openclaw' && item.sourceKind === 'session' && effectiveSourceLocator(this.metadata, item) === binding.sessionKey);
+    if (matches.length !== 1 || matches[0].referenceId !== binding.referenceId || !same(reference, binding.sessionReference) || !same(this.metadata.getSessionState(binding.referenceId), binding.sessionState) || !same(this.metadata.getSourceLocator(binding.referenceId), binding.sessionLocator) || topic?.revision !== binding.topicRevision) throw sourceError('conflict', 'The accepted Chat Conversation or Topic binding changed.');
+    const store = this.defaults.sessionStore ?? this.api?.runtime?.agent?.session;
+    let exact;
+    if (store && this.api?.runtime?.agent?.session === store) {
+      // This final mutation fence cannot await a descriptive worker list. Read
+      // the exact current incarnation through the public synchronous SDK owner
+      // and the host's locator; never infer a private storage path.
+      const storePath = store.resolveStorePath?.(undefined, { agentId: 'main' });
+      if (typeof storePath !== 'string' || storePath.trim() === '') throw sourceError('capability-unavailable', 'The host Session store locator is unavailable.', { capability: 'sessions' });
+      const entry = readPublishedSessionEntry({ agentId: 'main', sessionKey: binding.sessionKey, storePath, readConsistency: 'latest' });
+      exact = !entry?.then && entry?.sessionId === binding.sessionId;
+    } else {
+      const rows = store?.listSessionEntries?.({ agentId: 'main', readOnly: true });
+      exact = Array.isArray(rows) && rows.filter(row => row.sessionKey === binding.sessionKey && (row.entry?.sessionId ?? row.sessionId) === binding.sessionId).length === 1;
+    }
+    if (!exact) throw sourceError('source-recovery', 'The exact accepted native Conversation is unavailable.');
+    if (binding.noteFolderReferenceId && (!same(this.metadata.getSourceReference(binding.noteFolderReferenceId), binding.noteFolderReference) || !same(this.metadata.getSourceLocator(binding.noteFolderReferenceId), binding.noteFolderLocator))) throw sourceError('conflict', 'The accepted Chat Note Folder binding changed.');
+  }
+  async verifyAcceptedChatBinding(binding) {
+    this.assertAcceptedChatBinding(binding);
+    if (binding.noteFolderReferenceId) {
+      const service = this.requireTopicService({ topicId: binding.topicId }, { requiredSourceKinds: ['note_folder'] });
+      if (!service.notes) throw sourceError('capability-unavailable', 'The accepted Chat Note owner is unavailable.');
+      await service.notes.resolveRoot();
+      this.assertAcceptedChatBinding(binding);
+    }
+  }
   async sessionTopicContext(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'sessionKey', 'requestId'], 'Session Topic context request');
     if (typeof input.sessionKey !== 'string' || !/^agent:[^:]+:.+$/u.test(input.sessionKey)) throw sourceError('invalid-request', 'An exact native Session key is required.');
@@ -454,7 +563,7 @@ export class AuthoritativeSourceService {
       const target = history.target;
       const sessionStore = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
       const rows = sessionStore?.listSessionEntries
-        ? sessionStore.listSessionEntries({ agentId: 'main', readOnly: true })
+        ? await sessionStore.listSessionEntries({ agentId: 'main', readOnly: true })
         : [];
       const exact = Array.isArray(rows) && target?.agentId === 'main' && typeof target.sessionId === 'string'
         && target.sessionKey === input.sessionKey && input.sessionKey.startsWith('agent:main:')

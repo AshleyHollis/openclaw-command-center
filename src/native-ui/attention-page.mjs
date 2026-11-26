@@ -1,9 +1,11 @@
 import { attentionStyles } from './attention-styles.mjs';
 import { validatedOutlookWebLink } from './outlook-web-link.mjs';
+import { renderBillActionCards } from './bill-action-cards.mjs';
 
 const text = (value) => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const nonBlank = (value) => typeof value === 'string' && value.trim().length > 0;
 const unwrap = (response) => response?.result ?? response;
+const privateAlertRecord = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 /** One exact notification destination, using the existing authenticated Attention owner. */
 export function mountAttentionPage(container, context, operations = new Map(), pageMode = 'dashboard') {
@@ -19,9 +21,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let presented = context.presented;
   let recordId = context.props.notificationRecord;
   let attentionRecordId = context.props.attentionRecord;
+  let billActionLoopId = context.props.billAction;
+  const billTarget = () => billActionLoopId !== undefined ||
+    (typeof recordId === 'string' && privateAlertRecord.test(recordId));
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  let planWorkspace;
   // The host retires context.signal on view/connection replacement. This map
   // belongs only to that verified mount lifetime; it is never handed to a remount.
   const drafts = new Map();
@@ -185,6 +191,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else for (const item of Object.values(value)) visit(item);
     };
     visit(dashboard.openLoops);
+    visit((dashboard.billActions?.rows ?? []).filter(row => row.native?.status === 'todo').map(row => ({ ...row, revision: row.native.updatedAt })));
     for (const page of inventoryPages) visit(page.loops);
     for (const slot of draftNotices) { const card = loops.get(JSON.parse(slot)[1]); if (!card || !draftAuthorized(card)) draftNotices.delete(slot); }
     for (const [key, draft] of drafts) {
@@ -879,6 +886,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const primary = targets.primary ?? content;
     const secondary = targets.secondary ?? primary;
     const planner = targets.planner === true;
+    const focusCards = cards => openLoopsArray(cards).filter(card => !targets.boundBillLoops?.has(card?.loopId));
     const afterAttention = [];
     const workspace = openLoops.workspace;
     if (workspace && typeof workspace === 'object') {
@@ -914,8 +922,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         else row.append(form);
         parent.append(row);
       };
-      const todayMandatory = Array.isArray(workspace.today?.mandatory) ? workspace.today.mandatory : [];
-      const todayPlanned = Array.isArray(workspace.today?.planned) ? workspace.today.planned : [];
+      const todayMandatory = focusCards(workspace.today?.mandatory);
+      const todayPlanned = focusCards(workspace.today?.planned);
       if (planner || todayMandatory.length || todayPlanned.length || openLoops.attentionTotal === 0) primary.append(element('h2', 'Today / Needs you'));
       if (!todayMandatory.length && !todayPlanned.length && openLoops.attentionTotal === 0) { const empty = element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'); empty.className = 'cc-empty'; primary.append(empty); }
       const grouped = workspace.today?.groups ?? {};
@@ -926,15 +934,18 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         ['decisions', 'Decisions and changes', card => card.whyNow ?? (card.reason ? `Needs consideration: ${card.reason}` : 'Needs a decision without an invented deadline')],
         ['reviews', 'Accepted reviews', card => card.reviewAt ? `Review due ${formatInstant(card.reviewAt)}` : 'Accepted review is due']
       ]) {
-        const cards = openLoopsArray(grouped[key]); if (!cards.length) continue;
+        const cards = focusCards(grouped[key]); if (!cards.length) continue;
         primary.append(element('h3', `${label} (${cards.length})`));
         for (const card of cards) { renderedMandatory.add(card.loopId); renderPlanningCard(primary, card, reason(card)); }
       }
       for (const card of todayMandatory) if (!renderedMandatory.has(card.loopId)) renderPlanningCard(primary, card, card.reason ? `Required: ${card.reason}` : 'Required today');
       for (const card of todayPlanned) renderPlanningCard(primary, card, 'Optional planned work');
+      const originalCapacity = openLoopsArray(workspace.capacity);
+      const capacityCards = focusCards(originalCapacity);
+      const capacityTotal = (workspace.capacityTotal ?? originalCapacity.length) - (originalCapacity.length - capacityCards.length);
       const sections = [
         ['Planned / Upcoming', workspace.upcoming, card => formatDue(card) ? `Deadline ${formatDue(card)}` : card.planning?.plannedAt ? `Planned ${formatInstant(card.planning.plannedAt)}` : `Review ${formatInstant(card.reviewAt)}`],
-        [`When I have capacity (${workspace.capacityTotal ?? workspace.capacity?.length ?? 0} total)`, workspace.capacity, () => 'Ready when capacity allows'],
+        [`When I have capacity (${capacityTotal} total)`, capacityCards, () => 'Ready when capacity allows'],
         ['Waiting', workspace.waiting, () => 'Waiting or blocked'],
         [`Review (${workspace.review?.eligibleTotal ?? 0}; ${workspace.review?.remaining ?? 0} after this batch)`, workspace.review?.batch, () => 'Backlog review'],
         ['Someday', workspace.someday, () => 'Parked without urgency']
@@ -1017,10 +1028,11 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     const stageGroups = Array.isArray(openLoops.stageReviews) ? openLoops.stageReviews.map(group => [`Active renovation stage: ${group.stage?.id ?? 'stage'}`, group.items]) : [];
     const groups = [['Needs attention', openLoops.highlighted], ...stageGroups, ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
-    for (const [label, cards] of groups) {
-      if (!Array.isArray(cards) || cards.length === 0) continue;
-      const quiet = ['Waiting', 'Suggestions', 'Deferred', 'Needs reconciliation'].includes(label);
+    for (const [label, projected] of groups) {
       const destination = planner || ['Needs attention'].includes(label) || label.startsWith('Active renovation') ? primary : secondary;
+      const cards = destination === primary ? focusCards(projected) : openLoopsArray(projected);
+      if (cards.length === 0) continue;
+      const quiet = ['Waiting', 'Suggestions', 'Deferred', 'Needs reconciliation'].includes(label);
       const group = quiet ? element('details') : destination;
       if (quiet) { group.dataset.openLoopGroup = label; group.append(element('summary', `${label} (${cards.length} shown)`)); destination.append(group); }
       else destination.append(element('h3', label));
@@ -1264,9 +1276,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function load(message = '', removedLoopId, capture = true) {
+    planWorkspace?.dispose(); planWorkspace = undefined;
     if (capture && content.childElementCount) captureTransientUiState();
     const pending = ++generation; retireResponseWaiters(); selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
-    intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
+    const focusedBill = billTarget();
+    intake.hidden = Boolean(recordId || attentionRecordId || focusedBill) || pageMode === 'planner';
+    switchView.textContent = pageMode === 'planner' || focusedBill ? 'Open Dashboard' : 'Open Planner';
+    refresh.textContent = focusedBill ? 'Refresh bill action' : pageMode === 'planner' ? 'Refresh Planner' : 'Refresh Dashboard';
+    eyebrow.hidden = subtitle.hidden = topics.hidden = focusedBill;
     if (signal.aborted || !presented) return;
     if (!readable()) {
       clearDrafts();
@@ -1276,6 +1293,29 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     setBusy(true); report('Loading Attention…');
     try {
+      if (focusedBill) {
+        const loopId = billActionLoopId;
+        const unavailable = 'This bill action is unavailable. Open Dashboard to see current items.';
+        if (attentionRecordId || loopId !== undefined && (recordId || !nonBlank(loopId) || loopId.length > 300)) {
+          report(unavailable); return;
+        }
+        const target = loopId === undefined ? { notificationRecord: recordId } : { loopId };
+        let row;
+        try { row = unwrap(await host.request('command-center.v1.bill-actions.read', { schemaVersion: 1, ...target })); }
+        catch { if (current(pending)) report(unavailable); return; }
+        if (!current(pending)) return;
+        if (row?.schemaVersion !== 1 || (loopId !== undefined && row.loopId !== loopId) || row.availability !== 'available') {
+          report(unavailable); return;
+        }
+        if (row.native?.status === 'done') {
+          report('This bill action has already been handled. Open Dashboard to see current items.'); return;
+        }
+        renderBillActionCards(content, { rows: [row] }, {
+          host, signal, operations, current: () => current(pending), writable, reload: load, report, focused: true
+        });
+        report(message || 'Bill action ready.');
+        return;
+      }
       const response = await host.request('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 20 });
       if (!current(pending)) return;
       const dashboard = unwrap(response);
@@ -1387,6 +1427,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         }
         workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
         if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
+        if (pageMode === 'dashboard' && FIRST_LIVE_FEATURES.conversationPlans) planWorkspace = mountConversationPlanWorkspace(dashboards, { host, signal, attentionContainer: focus, current: () => current(pending) });
+        const boundBillLoops = pageMode === 'dashboard' ? renderBillActionCards(focus, dashboard.billActions, { host, signal, operations, current: () => current(pending), writable, reload: load, report, bindDraft: (form, row, fields, update) => bindDraft(form, { ...row, revision: row.native.updatedAt }, 'bill-later', fields, pending, update) }) : undefined;
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
           const internalRecordId = card.attentionRecordId ?? card.notificationRecordId;
@@ -1394,11 +1436,11 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { attentionRecord: internalRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics, inventoryPages });
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics, inventoryPages, boundBillLoops });
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
-        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]')) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
+        if (!content.querySelector('[data-open-loop-id],[data-workspace-loop-id]') && dashboard.billActions === undefined) { const empty = element('h2', 'No actionable items remain'); empty.dataset.attentionEmpty = 'true'; empty.tabIndex = -1; focus.append(empty); }
         restoreTransientUiState(removedLoopId);
         report([message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.'), inventoryWarning].filter(Boolean).join(' ')); return;
       }
@@ -1416,16 +1458,22 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
   refresh.addEventListener('click', () => void load(), { signal });
   topics.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: 'topics' }); } }, { signal });
-  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: pageMode === 'planner' ? 'attention' : 'planner' }); } }, { signal });
+  switchView.addEventListener('click', () => { if (!signal.aborted && presented) { generation++; retireResponseWaiters(); host.navigation.openPage({ id: pageMode === 'planner' || billTarget() ? 'attention' : 'planner' }); } }, { signal });
   let access = `${readable()}:${host.connection.canWrite}`;
   const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; clearDrafts(); void load('', undefined, false); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; planWorkspace?.dispose(); generation++; retireResponseWaiters(); clearDrafts(); unsubscribe(); container.inert = false; mountRoot.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
   return {
-    update(next) { if (recordId === next.props.notificationRecord && attentionRecordId === next.props.attentionRecord && topicFilter === next.props.topicId && presented === next.presented) return; recordId = next.props.notificationRecord; attentionRecordId = next.props.attentionRecord; topicFilter = next.props.topicId; presented = next.presented; void load(); },
+    update(next) {
+      if (recordId === next.props.notificationRecord && attentionRecordId === next.props.attentionRecord &&
+          billActionLoopId === next.props.billAction && topicFilter === next.props.topicId && presented === next.presented) return;
+      recordId = next.props.notificationRecord; attentionRecordId = next.props.attentionRecord;
+      billActionLoopId = next.props.billAction; topicFilter = next.props.topicId; presented = next.presented;
+      void load();
+    },
     focus() { refresh.focus(); },
     dispose() { lifetime.abort(); cleanup(); }
   };
@@ -1436,3 +1484,5 @@ const openLoopsArray = value => Array.isArray(value) ? value : [];
 export function mountPlannerPage(container, context, operations = new Map()) {
   return mountAttentionPage(container, context, operations, 'planner');
 }
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountConversationPlanWorkspace } from './conversation-plan-workspace.mjs';

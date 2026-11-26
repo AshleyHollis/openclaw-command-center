@@ -88,7 +88,7 @@ export async function checkMutationArchitecture(root) {
   const catalogue = JSON.parse(await readFile(path.join(directory, 'docs/architecture/mutation-owners.json'), 'utf8'));
   if (catalogue.schemaVersion !== 1 || !Array.isArray(catalogue.owners)) throw new Error('Invalid mutation owner catalogue.');
   const manifest = JSON.parse(await readFile(path.join(directory, 'openclaw.plugin.json'), 'utf8'));
-  const nativeWriteRoutes = (manifest.controlUi.httpRoutes ?? []).filter((route) => route.method !== 'GET').map((route) => route.path);
+  const nativeWriteRoutes = nativeWriteRoutesFromManifest(manifest);
   const moduleAt = (relative) => import(pathToFileURL(path.join(directory, relative)).href);
   const [topics, page, analysis, dashboard, search, releaseScope] = await Promise.all([
     moduleAt('src/topics/http.mjs'), moduleAt('src/topics/page-http.mjs'), moduleAt('src/topics/analysis-http.mjs'),
@@ -114,4 +114,13 @@ export async function checkMutationArchitecture(root) {
   const errors = auditMutationArchitecture({ files, writeMethods: WRITE_METHODS, owners: catalogue.owners, httpSurfaces, nativeWriteRoutes, httpCommands, nativeTools: manifest.contracts?.tools ?? [], deferredNativeTools });
   if (errors.length) throw new AggregateError(errors.map((error) => new Error(error)), errors.join('\n'));
   return { commands: WRITE_METHODS.length, owners: catalogue.owners.length, httpRoutes: httpSurfaces.length, httpActions: httpSurfaces.reduce((count, surface) => count + surface.actions.length, 0) };
+}
+
+export function nativeWriteRoutesFromManifest(manifest) {
+  // Native admission declares exact POST paths, not method/limit objects.
+  // Keep every declaration in the ownership audit so unknown routes fail closed.
+  const routes = manifest.controlUi.httpRoutes ?? [];
+  if (!Array.isArray(routes) || routes.some((route) => typeof route !== 'string' || !route.length)
+    || new Set(routes).size !== routes.length) throw new Error('Invalid native HTTP path declarations.');
+  return routes;
 }

@@ -175,6 +175,17 @@ test('Dashboard coverage reports healthy, stale, pending, failed and never-conne
   assert.equal(result.intakeCoverage[0].lastSuccessfulAt, undefined, 'another bound account cannot supply this account’s success');
 });
 
+test('a successful Chat capture receipt leaves unsubmitted-message coverage unknown', async () => {
+  const metadata = { listUsableTopics: () => [], listOpenLoops: () => [], projectActiveRenovationStagePrerequisites: () => [],
+    getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }),
+    listOperations: () => [{ operationKind: 'intake-receipt.chat.v1', state: 'applied', createdAt: '2026-10-01T00:00:00.000Z',
+      resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'chat', runId: 'fictional-submitted-run', checkpoint: 'fictional-submitted-work', status: 'healthy-processed', observedAt: '2026-10-01T00:00:00.000Z', lastSuccessfulAt: '2026-10-01T00:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 0 }) }] };
+  const row = (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-10-01T00:01:00.000Z' })).intakeCoverage.find(item => item.sourceKind === 'chat');
+  assert.equal(row.receiptStatus, 'receipt-current');
+  assert.match(row.explanation, /submitted capture work.*unsubmitted Chat messages is unknown/);
+  assert.equal(row.discovery.scope, 'unknown');
+});
+
 test('Dashboard reports an admitted retry without presenting it as a new source scan', async () => {
   const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
   const receipt = value => ({ operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', checkpoint: 'fictional-message', processedCount: 1, actionableCount: 1, noteCount: 0, ...value }) });

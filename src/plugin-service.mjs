@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { createTopicSearchService } from './search/service.mjs';
+import { createCurrentTopicNoteRecallPolicy } from './search/context.mjs';
 import { extractSelectedDocumentText } from './open-loops/selected-document-text.mjs';
 import { createAttentionService } from './attention/service.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
@@ -16,12 +18,21 @@ import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from '
 import { createReminderServiceCronTransport } from './open-loops/service-cron-transport.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
+import { createAcceptedChatReplayService } from './open-loops/accepted-chat-replay.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
 import { createClarificationWorker } from './open-loops/clarification-worker.mjs';
 import { clarificationInterpretationStatus } from './open-loops/clarification-status.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
+import { createBillActionAdapter } from './open-loops/bill-actions.mjs';
+import { createConversationPlanOwner } from './conversation-plans/owner.mjs';
+import { createConversationPlanSource } from './conversation-plans/source.mjs';
+import { readPlanHumanRequests, verifyPlanHumanRequest } from './conversation-plans/human-requests.mjs';
+import { createPlanRequestEpisodeOwner } from './conversation-plans/request-episodes.mjs';
+import { createNativePlanTranscriptAdapter, nativePlanSourceSelection } from './conversation-plans/native-source.mjs';
+import { createNativePlanGatewayAdapter } from './conversation-plans/native-gateway.mjs';
+import { readBillActionEvidence } from './open-loops/bill-action-source.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
 
@@ -142,6 +153,87 @@ export function createMetadataService(api) {
   };
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
+  function billAdapter(runtime) {
+    requireOperational();
+    const metadata = metadataService;
+    const sources = sourceService;
+    const assertCurrent = () => {
+      requireOperational();
+      if (stopPromise || metadataService !== metadata || sourceService !== sources || typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then)
+        throw new SourceServiceError('unauthenticated', 'Current bill-action owner authority is required.');
+    };
+    assertCurrent();
+    const authorize = ({ loopId, write, observation }) => {
+      assertCurrent();
+      if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Current Workboard write authority is required.');
+      const loop = metadata.getOpenLoop(loopId);
+      if (!loop) throw new SourceServiceError('unavailable', 'The exact accepted action is unavailable.');
+      sources.requireTopicService({ topicId: loop.topicId }, { write });
+      if (observation) {
+        const facts = observation.facts ?? {};
+        sources.assertExactNoteReference({ topicId: loop.topicId, referenceId: facts.sourceReferenceId,
+          path: facts.sourcePath, observedRevision: facts.sourceReferenceVersion }, { read: true });
+      }
+      return { principalId: runtime.principalId };
+    };
+    return createBillActionAdapter({ metadata, nativeRequest: runtime.nativeRequest, authorize, sendPrivateWebPush: runtime.sendPrivateWebPush, logger: api.logger,
+      readEvidence: ({ loop, observation }) => readBillActionEvidence({ metadata, sourceService: sources, loop, observation, assertCurrent }) });
+  }
+  const billInput = input => {
+    const { requestId: _requestId, authenticatedOperatorId: _operatorId, ...command } = input;
+    return command;
+  };
+  async function conversationPlans(runtime) {
+    requireOperational();
+    const metadata = metadataService, sources = sourceService;
+    const assertCurrent = () => {
+      requireOperational();
+      if (stopPromise || metadataService !== metadata || sourceService !== sources || typeof runtime.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw new SourceServiceError('unauthenticated', 'Current Conversation plan authority is required.');
+    };
+    assertCurrent();
+    const transcripts = await import('openclaw/plugin-sdk/session-transcript-runtime'); assertCurrent();
+    const gatewaySdk = await import('openclaw/plugin-sdk/gateway-runtime'); assertCurrent();
+    const { dispatchGatewayMethod } = await import('openclaw/plugin-sdk/gateway-method-runtime'); assertCurrent();
+    const nativeGateway = createNativePlanGatewayAdapter({ sdk: gatewaySdk, gateway: runtime.sourceBoundGateway, dispatchGatewayMethod, assertCurrent });
+    const nativeTranscript = createNativePlanTranscriptAdapter(transcripts);
+    const source = createConversationPlanSource({ metadata, sources, assertCurrent,
+      readEntries: nativeTranscript.readEntries, readRecentEntries: nativeTranscript.readRecentEntries,
+      assertCreateAdmissionAvailable(origin) {
+        nativePlanSourceSelection(origin);
+        nativeGateway.assertAvailable();
+      },
+      withTranscriptLock: transcripts.withSessionTranscriptWriteLock });
+    const requestEpisodes = attentionService ? createPlanRequestEpisodeOwner({ metadata, attention: attentionService,
+      verifyRequest: ({ card, request, known, requestLink, assertCurrent }) => verifyPlanHumanRequest({ card, request, known, requestLink, nativeRequest: runtime.nativeRequest, assertCurrent }) }) : null;
+    const owner = createConversationPlanOwner({ metadata, nativeRequest: (method, params, options) => method === 'workboard.cards.create' ? nativeGateway.create(params, options) : runtime.nativeRequest(method, params, options),
+      projectHumanRequests: requestEpisodes ? requestEpisodes.project : async () => ({ availability: 'unavailable', eligible: false, requests: [], unavailableCount: 0, resultReviewAvailability: 'unqualified' }),
+      readHumanRequests: (card, assertCurrent) => readPlanHumanRequests({ card, nativeRequest: runtime.nativeRequest, assertCurrent }),
+      // Native retains transcript identity under its writer lock. This closure
+      // checks CC ownership only and must never query the paused source worker.
+      readSource: source.readSource, assertSourceCurrent: origin => source.inspect(origin, false, { nativeIdentity: false }),
+      authorize: ({ source: origin, write }) => { assertCurrent(); if (write && runtime.canWrite !== true) throw new SourceServiceError('read-only', 'Workboard write access is required.'); source.inspect(origin, write, { nativeIdentity: false }); return { principalId: runtime.principalId }; } });
+    const command = input => { if (input.input?.logicalOperationId !== input.logicalOperationId) throw new SourceServiceError('intent-mismatch', 'The plan must retain its original logical operation ID.'); return input.input; };
+    return { messages: input => source.messages(input),
+      track: input => source.withSource(command(input).source, () => owner.track(command(input))),
+      reconcile: input => source.withSource(command(input).source, () => owner.reconcile(command(input)), { write: false }),
+      async list(input) {
+        const rows = []; let unavailableCount = 0;
+        for (const binding of metadata.listConversationPlans()) {
+          if (binding.principalId !== runtime.principalId) continue;
+          if (input.topicId && input.topicId !== binding.input.source.topicId) continue;
+          try { rows.push(await owner.reconcile(binding.input)); } catch { unavailableCount++; }
+        }
+        assertCurrent();
+        const currentRows = rows.filter(row => { try { if (!row.input) { unavailableCount++; return false; } source.inspect(row.input.source); return true; } catch { unavailableCount++; return false; } });
+        return { rows: currentRows, coverage: unavailableCount ? 'partial' : 'tracked-plans-only', unavailableCount };
+      } };
+  }
+  const billRow = (row, runtime) => {
+    let canWrite = runtime.canWrite === true;
+    try { sourceService.requireTopicService({ topicId: row.topicId }, { write: true }); }
+    catch { canWrite = false; }
+    return Object.freeze({ ...row, canWrite });
+  };
   const refuseDeferred = feature => { requireOperational(); return unavailable(feature); };
   const requireOperator = (input, action) => {
     const operatorId = typeof input?.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
@@ -521,6 +613,21 @@ export function createMetadataService(api) {
     getTopicMaintenanceOwners() {
       return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
     },
+    acceptedChatCaptureAccept(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).accept(input, runtime);
+    },
+    acceptedChatCaptureLoad(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).load(input, runtime);
+    },
+    acceptedChatCaptureReplay(input, runtime) {
+      if (!FIRST_LIVE_FEATURES.acceptedChatCapture) unavailable('acceptedChatCapture');
+      requireOperational();
+      return createAcceptedChatReplayService({ metadata: metadataService, sourceService }).replay(input, runtime);
+    },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     async runClarificationWorkerOnce(input = {}) {
@@ -550,14 +657,38 @@ export function createMetadataService(api) {
     topicReviewSnooze() { return refuseDeferred('analysis'); },
     topicReviewCheckpoint() { return refuseDeferred('analysis'); },
     topicReviewApply() { return refuseDeferred('analysis'); },
-    async dashboardGet(input = {}) {
+    async dashboardGet(input = {}, runtime = {}) {
       requireOperational();
       if (!dashboardService) return unavailable('dashboard');
       try { await sourceService?.refreshReminderAttention?.(); } catch { /* unavailable scheduler rows are omitted */ }
       const request = { ...input };
       delete request.requestId;
-      return dashboardService.get(request);
+      const dashboard = await dashboardService.get(request);
+      if (!FIRST_LIVE_FEATURES.billActions) return dashboard;
+      const billActions = await service.billActionsList({ schemaVersion: 1 }, runtime);
+      runtime.assertCurrent();
+      return Object.freeze({ ...dashboard, billActions });
     },
+    async billActionsList(input = {}, runtime = {}) {
+      const rows = await billAdapter(runtime).list(billInput(input));
+      runtime.assertCurrent();
+      const userTimeZone = api.config?.agents?.defaults?.userTimezone;
+      return Object.freeze({ ...rows, rows: rows.rows.map(row => billRow(row, runtime)),
+        ...(typeof userTimeZone === 'string' && userTimeZone.trim() ? { userTimeZone } : {}) });
+    },
+    async billActionsRead(input = {}, runtime = {}) {
+      const row = await billAdapter(runtime).read(billInput(input));
+      runtime.assertCurrent();
+      return billRow(row, runtime);
+    },
+    billActionsAdmit(input = {}, runtime = {}) { return billAdapter(runtime).admit(billInput(input)); },
+    billActionsHandle(input = {}, runtime = {}) { return billAdapter(runtime).handle(billInput(input)); },
+    billActionsDefer(input = {}, runtime = {}) { return billAdapter(runtime).defer(billInput(input)); },
+    billActionsReconcile(input = {}, runtime = {}) { return billAdapter(runtime).reconcile(billInput(input)); },
+    async conversationPlansMessages(input, runtime) { return { messages: await (await conversationPlans(runtime)).messages(billInput(input)) }; },
+    async conversationPlansTrack(input, runtime) { return (await conversationPlans(runtime)).track(billInput(input)); },
+    async conversationPlansReconcile(input, runtime) { return (await conversationPlans(runtime)).reconcile(billInput(input)); },
+    async conversationPlansList(input, runtime) { return (await conversationPlans(runtime)).list(billInput(input)); },
     briefingSetRead(input = {}) { requireOperational(); return dailyWorkspace.setBriefingRead(input); },
     routineDecide(input = {}) { requireOperational(); return dailyWorkspace.decideRoutine(input); },
     openLoopsList(input = {}) {
@@ -870,6 +1001,20 @@ export function createMetadataService(api) {
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },
     notificationCaptureBinding() { return refuseDeferred('notifications'); },
+    async topicNoteRecallRetrieve(input) {
+      if (!FIRST_LIVE_FEATURES.topicNoteRecall) return refuseDeferred('topicNoteRecall');
+      const metadata = metadataService;
+      const sources = sourceService;
+      if (!metadata || !sources || recoveryOnly) return refuseDeferred('topicNoteRecall');
+      const assertActive = () => {
+        if (stopPromise || metadataService !== metadata || sourceService !== sources || !FIRST_LIVE_FEATURES.topicNoteRecall) unavailable('topicNoteRecall');
+      };
+      const search = createTopicSearchService({ stateDir: api.runtime.state.resolveStateDir(process.env), metadata, sourceService: sources });
+      try {
+        const publication = await createCurrentTopicNoteRecallPolicy({ metadata, searchService: search, assertActive }).retrieve(input);
+        return Object.freeze({ ...publication, close() { publication.close(); search.close(); } });
+      } catch (error) { search.close(); throw error; }
+    },
     topicContextRetrieve() { return refuseDeferred('search'); },
     async searchRebuild() { return refuseDeferred('search'); },
     async searchPrepareRebuild() { return refuseDeferred('search'); }

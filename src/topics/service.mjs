@@ -1,4 +1,5 @@
 import { sourceError } from '../sources/errors.mjs';
+import { readFilesSyncStatus } from '../sources/files-sync-status.mjs';
 import { createTopicProvisioningService } from './provisioning.mjs';
 import { createTopicLifecycleService } from './lifecycle.mjs';
 import { createTopicRecoveryService } from './recovery.mjs';
@@ -160,8 +161,26 @@ export class TopicService {
     return Object.freeze({ ...result, nextCursor: cursor + page.length < entries.length ? String(cursor + page.length) : null });
   }
 
-  async getVerified(topicId) { return this.verifiedView(this.lifecycle.topic(topicId)); }
-  async getDestinationVerified(topicId) { return destinationTopic(await this.getVerified(topicId)); }
+  async getVerified(topicId) {
+    const view = await this.verifiedView(this.lifecycle.topic(topicId));
+    if (view.lifecycle !== 'active' || view.recovery.some(item => item.sourceKind === 'note_folder' && item.state === 'required')) return view;
+    const folders = view.sourceReferences.filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+    if (folders.length !== 1) return view;
+    const { referenceId } = folders[0];
+    const binding = view.locators.find(locator => locator.referenceId === referenceId);
+    if (!binding?.observedRevision) return view;
+
+    const filesSyncStatus = await readFilesSyncStatus(binding);
+    if (!filesSyncStatus) return view;
+    const currentTopic = this.metadata.getTopic(topicId);
+    const currentBinding = this.metadata.getSourceLocator(referenceId);
+    const reference = this.metadata.getSourceReference(referenceId);
+    if (currentTopic?.revision !== view.revision || reference?.topicId !== topicId ||
+        !currentBinding || currentBinding.locatorVersion !== binding.locatorVersion || currentBinding.locator !== binding.locator ||
+        currentBinding.observedRevision !== binding.observedRevision) return view;
+    return Object.freeze({ ...view, filesSyncStatus });
+  }
+  async getDestinationVerified(topicId) { return destinationTopic(await this.verifiedView(this.lifecycle.topic(topicId))); }
 
   list(options = {}) { return this.listGrouped(options); }
   grouped(options = {}) { return this.listGrouped(options); }

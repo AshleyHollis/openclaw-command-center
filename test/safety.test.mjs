@@ -31,7 +31,13 @@ test('runtime evidence scanning rejects sensitive values without echoing the mat
   assert.deepEqual(scanPublicEvidence(['status=passed', '{"rows":9}', ['to', 'ken=[redacted]'].join('')]), []);
 });
 
-async function assertUnsafeFixture(label, content) {
+async function safetyFixture(t) {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-'));
+  t.after(() => rm(fixtureRoot, { recursive: true, force: true }));
+  return fixtureRoot;
+}
+
+async function assertUnsafeFixture(root, label, content) {
   const fixture = path.join(root, `.fictional-safety-${label}.txt`);
   try {
     await writeFile(fixture, content);
@@ -41,7 +47,9 @@ async function assertUnsafeFixture(label, content) {
   }
 }
 
-test('scans non-ignored untracked repository content without echoing secrets', async () => {
+test('scans non-ignored untracked repository content without echoing secrets', async (t) => {
+  const root = await safetyFixture(t);
+  await execute('git', ['init', '--quiet', root]);
   const fixture = path.join(root, '.fictional-safety-fixture.txt');
   try {
     await writeFile(fixture, fictionalBearer);
@@ -69,7 +77,8 @@ test('keeps the authenticated historical commit parseable without a raw token-sh
   assert.equal(acceptanceSource.includes(historicalCommit), false);
 });
 
-test('detects credential prefixes and populated assignments of every length', async () => {
+test('detects credential prefixes and populated assignments of every length', async (t) => {
+  const root = await safetyFixture(t);
   const fixture = path.join(root, '.fictional-credential-fixture.txt');
   try {
     await writeFile(fixture, `${fictionalPrefixedCredential}\n${fictionalShortAssignment}`);
@@ -80,7 +89,8 @@ test('detects credential prefixes and populated assignments of every length', as
   await scanRepositorySafety(root);
 });
 
-test('allows an identifier-valued bare key field without weakening credential-name or prefix checks', async () => {
+test('allows an identifier-valued bare key field without weakening credential-name or prefix checks', async (t) => {
+  const root = await safetyFixture(t);
   const fixture = path.join(root, '.fictional-key-fixture.txt');
   try {
     await writeFile(fixture, fictionalIdentifierKeyField);
@@ -91,7 +101,8 @@ test('allows an identifier-valued bare key field without weakening credential-na
   await scanRepositorySafety(root);
 });
 
-test('detects quoted JSON credentials, private-key headers, and personal paths', async () => {
+test('detects quoted JSON credentials, private-key headers, and personal paths', async (t) => {
+  const root = await safetyFixture(t);
   for (const [label, content] of [
     ['json-password', fictionalJsonPassword],
     ['json-cookie', fictionalJsonCookie],
@@ -100,12 +111,13 @@ test('detects quoted JSON credentials, private-key headers, and personal paths',
     ['root-path', fictionalRootPath],
     ['windows-home-path', fictionalWindowsHomePath]
   ]) {
-    await assertUnsafeFixture(label, content);
+    await assertUnsafeFixture(root, label, content);
   }
   await scanRepositorySafety(root);
 });
 
-test('scans generated and cached artifacts while excluding paths outside the candidate', async () => {
+test('scans generated and cached artifacts while excluding paths outside the candidate', async (t) => {
+  const root = await safetyFixture(t);
   const generated = path.join(root, 'dist', '.fictional-generated-artifact.txt');
   const controllerTempRoot = path.join(root, '.controller-test-tmp');
   await mkdir(controllerTempRoot, { recursive: true });
@@ -142,7 +154,8 @@ test('scans generated and cached artifacts while excluding paths outside the can
   }
 });
 
-test('only exact declared vendored artifacts may bypass heuristic content scanning', async () => {
+test('only exact declared vendored artifacts may bypass heuristic content scanning', async (t) => {
+  const root = await safetyFixture(t);
   const vendor = path.join(root, 'dist', '.fictional-vendored-artifact.mjs');
   const adjacent = path.join(root, 'dist', '.fictional-adjacent-artifact.mjs');
   try {
@@ -157,7 +170,8 @@ test('only exact declared vendored artifacts may bypass heuristic content scanni
   }
 });
 
-test('fails closed when candidate content cannot be read', async () => {
+test('fails closed when candidate content cannot be read', async (t) => {
+  const root = await safetyFixture(t);
   const fixture = path.join(root, '.fictional-unreadable-fixture.txt');
   try {
     await writeFile(fixture, 'safe fixture');

@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fetchJsonWithDeadline, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse } from '../../src/browser-evidence.mjs';
 import { assertKeyboardFocus, tabTo } from './keyboard-navigation.mjs';
-import { assertNativeFormattedNote } from './native-topic-workspace.mjs';
+import { assertNativeFormattedNote, resolveNativeManageTopicsLink, selectNativeSidebarView } from './native-topic-workspace.mjs';
 import { requestAuthenticatedGateway } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
@@ -167,9 +167,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await button(`Read ${fixture.notePath}`).waitFor();
   };
   const returnFromChat = async () => {
-    const returnLink = page
-      .locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]')
-      .getByRole('link', { name: 'Manage Topics', exact: true });
+    const returnLink = await resolveNativeManageTopicsLink(page, press);
     await press(returnLink);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
     // Native sidebar navigation retains its invoker; it does not call the
@@ -261,16 +259,18 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const created = await exactConversation(first.receipt.result.referenceId, 2);
   assert.notEqual(created.sessionId, fixture.sessionId);
   await verifyChat(created);
-  await returnFromChat();
-  await announced(creation, first.input.logicalOperationId);
-  assert.equal(await createButton().isDisabled(), true);
   // Creation is authoritative before the host roster necessarily finishes
-  // reconciling its new native row. Wait for that exact row so a sidebar
-  // replacement cannot discard focus during the composed Tab traversal.
-  await ready(() => page.locator('openclaw-app-sidebar [data-session-key]').evaluateAll(
+  // reconciling its new native row. Verify it before returning through Pages,
+  // which owns a different sidebar view and may unmount the roster.
+  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  await selectNativeSidebarView(sidebar, 'sessions', press);
+  await ready(() => sidebar.locator('[data-session-key]').evaluateAll(
     (rows, sessionKey) => rows.some(row => row.getAttribute('data-session-key') === sessionKey),
     created.sessionKey
   ));
+  await returnFromChat();
+  await announced(creation, first.input.logicalOperationId);
+  assert.equal(await createButton().isDisabled(), true);
   await tabTo(creation.getByRole('button', { name: 'Open created Conversation', exact: true }));
   await complete('conversation-create');
   // Release only the exact owned applied receipt before a second deliberate ID.

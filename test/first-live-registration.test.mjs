@@ -22,14 +22,14 @@ async function http(h, routePath, body) {
 }
 
 function host({ flatAgentEvents = false, nativeWorkflow = false } = {}) {
-  const routes = []; const methods = new Map(); const services = []; const tools = []; const agentEventSubscriptions = [];
+  const routes = []; const methods = new Map(); const services = []; const tools = []; const toolFactories = new Map(); const agentEventSubscriptions = [];
   const api = {
     pluginConfig: {},
     get notifications() { throw new Error('Optional notifications must not be acquired.'); },
     registerHttpRoute: value => routes.push(value),
     registerGatewayMethod: (name, handler) => methods.set(name, handler),
     registerService: value => services.push(value),
-    registerTool: (_factory, declaration) => tools.push(declaration.name),
+    registerTool: (factory, declaration) => { tools.push(declaration.name); toolFactories.set(declaration.name, factory); },
     ...(nativeWorkflow ? {
       session: {
         workflow: {
@@ -42,8 +42,16 @@ function host({ flatAgentEvents = false, nativeWorkflow = false } = {}) {
       ? { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) }
       : { agent: { events: { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) } } })
   };
-  return { api, routes, methods, services, tools, agentEventSubscriptions };
+  return { api, routes, methods, services, tools, toolFactories, agentEventSubscriptions };
 }
+
+test('native plan registration uses V2 but cannot mint a canonical operator binding', async () => {
+  const h = host(); plugin.register(h.api);
+  const factory = h.toolFactories.get('command_center_plan_intake_source');
+  assert.equal(factory.contextVersion, 2);
+  const tool = factory.create({ sessionKey: 'fictional', sessionId: 'fictional', senderIsOwner: true, requesterSenderId: 'fictional-client', assertInvocationCurrent() {} });
+  await assert.rejects(() => tool.execute('fictional', { sourceKind: 'chat', chatCommand: 'load', planId: 'fictional-plan' }), error => error.code === 'unauthenticated' && /canonical operator profile/u.test(error.message));
+});
 
 test('first-live registration needs no notification authority and preserves core native entry points', () => {
   const h = host();
@@ -59,6 +67,10 @@ test('first-live registration needs no notification authority and preserves core
 test('registered commands outside the build-owned admission set are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
   const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
+  if (FIRST_LIVE_FEATURES.noteProposals) for (const action of ['prepare', 'context', 'publish', 'inspect', 'discard']) retained.add(`command-center.v1.notes.proposals.${action}`);
+  if (FIRST_LIVE_FEATURES.acceptedChatCapture) {
+    for (const action of ['accept', 'load', 'replay']) retained.add(`command-center.v1.chat-capture.${action}`);
+  }
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -127,7 +139,9 @@ test('Dashboard transport identity stays outside the closed read projection', as
     }
   });
   let response;
-  await methods.get('command-center.v1.dashboard.get')({ req: { id: 'fictional-dashboard-transport' }, params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+  const client = { connId: 'fictional-dashboard-connection', authenticatedOperatorId: 'fictional-dashboard-operator', connect: { role: 'operator', scopes: ['operator.read'] } };
+  const context = { authenticated: true, getClientConnIds: predicate => new Set(predicate(client) ? [client.connId] : []) };
+  await methods.get('command-center.v1.dashboard.get')({ req: { id: 'fictional-dashboard-transport' }, params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, client, context, respond: (ok, result, error) => { response = { ok, result, error }; } });
   assert.equal(response.ok, true, JSON.stringify(response));
   assert.deepEqual(dashboardInput, { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
   assert.equal(response.result.requestId, 'fictional-dashboard-transport');
@@ -204,10 +218,10 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
 
 test('the milestone manifest admits scoped capture and capacity review while keeping filing/maintenance triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(manifest.contracts.tools, ['command_center_recall_topic_notes', 'command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(h.tools, ['command_center_recall_topic_notes', 'command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
@@ -236,7 +250,7 @@ test('host workflow primitives admit capture and configured review without activ
   plugin.register(h.api);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.analysis, false);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(h.tools, ['command_center_recall_topic_notes', 'command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 

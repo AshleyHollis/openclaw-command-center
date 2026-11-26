@@ -139,3 +139,70 @@ for (const field of ['topicId', 'referenceId', 'expectedSessionId']) test(`nativ
   assert.equal(requests, 0);
   assert.deepEqual(f.opened, []);
 });
+
+const linked = { referenceId: 'fictional-linked', sessionId: 'fictional-linked-session', status: 'open', isPrimary: false };
+const primary = { referenceId: input.referenceId, sessionId: input.expectedSessionId, status: 'open', isPrimary: true };
+function filesFixture(conversations = [primary, linked], resolve = async params => ({ result: { sessionKey: `agent:fictional-agent:${params.expectedSessionId}` } })) {
+  const files = [];
+  const requests = [];
+  const f = fixture(async (method, params) => {
+    requests.push({ method, params });
+    return method.endsWith('sessions.browse')
+      ? { result: { topicId: input.topicId, conversations } }
+      : resolve(params);
+  });
+  f.host.sessions.openFiles = value => files.push(value);
+  return { ...f, files, requests };
+}
+
+test('Files prefers the exact eligible linked Conversation without selecting Chat or touching its draft', async () => {
+  const f = filesFixture();
+  const draft = { text: 'Fictional unsent draft', selectedSession: 'another-conversation' };
+  const before = structuredClone(draft);
+  f.host.sessions.openChat = value => { f.opened.push(value); draft.selectedSession = value.sessionKey; draft.text = ''; };
+  assert.deepEqual(await f.navigation.openPreferredFiles(input.topicId, linked), { referenceId: linked.referenceId, sessionId: linked.sessionId });
+  assert.deepEqual(f.files, [{ sessionKey: `agent:fictional-agent:${linked.sessionId}`, agentId: 'fictional-agent' }]);
+  assert.deepEqual(f.opened, []);
+  assert.deepEqual(draft, before);
+  assert.equal(f.requests[1].params.referenceId, linked.referenceId);
+});
+
+for (const stale of [
+  { ...linked, status: 'closed' },
+  { ...linked, sessionId: 'replacement' },
+  null
+]) test(`Files falls back to Primary when the remembered exact membership is unavailable: ${JSON.stringify(stale)}`, async () => {
+  const f = filesFixture(stale ? [primary, stale] : [primary]);
+  await f.navigation.openPreferredFiles(input.topicId, linked);
+  assert.equal(f.files[0].sessionKey, `agent:fictional-agent:${primary.sessionId}`);
+  assert.deepEqual(f.opened, []);
+});
+
+for (const reason of ['membership changed', 'Source Recovery required']) test(`Files refuses a late authoritative resolver refusal: ${reason}`, async () => {
+  const f = filesFixture(undefined, async () => { throw new Error(reason); });
+  await assert.rejects(f.navigation.openPreferredFiles(input.topicId, linked), new RegExp(reason));
+  assert.deepEqual(f.files, []);
+  assert.deepEqual(f.opened, []);
+});
+
+for (const change of ['abort', 'cancel', 'permission', 'newer']) test(`Files never opens a stale target after ${change}`, async () => {
+  const pending = Promise.withResolvers();
+  const f = filesFixture(undefined, () => pending.promise);
+  const opening = f.navigation.openPreferredFiles(input.topicId, linked);
+  // Wait until the resolver owns the asynchronous boundary.
+  while (f.requests.length < 2) await Promise.resolve();
+  if (change === 'abort') f.controller.abort();
+  if (change === 'cancel') f.navigation.cancel();
+  if (change === 'permission') f.host.connection.canRead = false;
+  if (change === 'newer') { f.host.request = async () => ({ result: resolverTarget() }); await f.navigation.open(input); }
+  pending.resolve({ result: resolverTarget() });
+  await assert.rejects(opening, change === 'permission' ? /authenticated/ : { name: 'AbortError' });
+  assert.deepEqual(f.files, []);
+});
+
+test('Files rejects unreadable admission before any host request', async () => {
+  const f = filesFixture();
+  f.host.connection.canRead = false;
+  await assert.rejects(f.navigation.openPreferredFiles(input.topicId, linked), /authenticated/);
+  assert.deepEqual(f.requests, []);
+});

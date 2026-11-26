@@ -2,12 +2,19 @@ import path from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 import { sourceError } from './errors.mjs';
 
+export const FILES_SYNC_STATUS_NAME = '.command-center-sync-status.json';
+
+export function isFilesSyncStatusName(name) {
+  return name === FILES_SYNC_STATUS_NAME || name.startsWith('.command-center-sync-status-');
+}
+
 export function normalizeTopicFilePath(value, { sourceKind = 'note' } = {}) {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0') || value.includes('\\') || path.isAbsolute(value)) {
     throw sourceError('invalid-path', 'Topic file paths must be non-empty, relative, NUL-free POSIX paths.');
   }
   const segments = value.split('/');
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) throw sourceError('invalid-path', 'Topic file paths cannot contain empty, dot, or dot-dot segments.');
+  if (isFilesSyncStatusName(segments[0])) throw sourceError('invalid-path', 'The reserved sync status is not a Topic file.');
   if (sourceKind === 'note' && !/\.md$/iu.test(value)) throw sourceError('invalid-path', 'Only Markdown Note paths are supported.');
   if (sourceKind !== 'note' && sourceKind !== 'document') throw sourceError('invalid-request', 'Topic file source kind is unsupported.');
   return segments.join('/');

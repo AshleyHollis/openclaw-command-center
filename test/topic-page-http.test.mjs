@@ -10,6 +10,7 @@ import { createTopicPageActionsHandler, topicPageActionRoute } from '../src/topi
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 const folderId = 'note-folder:fictional-topic';
@@ -80,7 +81,9 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const applied = await invoke(service, { body: conversationCreate() });
   assert.equal(applied.statusCode, 200);
   assert.equal(applied.body.result.referenceId, 'session:new');
-  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main|session-new/u);
+  assert.deepEqual(Object.keys(applied.body.result).sort(), ['action', 'referenceId', 'sessionId', 'status', 'topicId']);
+  assert.equal(applied.body.result.sessionId, 'session-new');
+  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main/u);
   assert.equal(service.calls[0][1].isPrimary, false);
 
   service.sessionsCreate = async () => ({ status: 'applied', note: { path: 'x'.repeat(33 * 1024), revision: 'revision' } });
@@ -132,7 +135,8 @@ test('Conversation creation adopts only the authenticated external-tab Session e
   assert.deepEqual(receivedRuntime, { authoritativeSession: { key: `agent:main:dashboard:${logicalOperationId}`, sessionId: `session-${logicalOperationId}`, revision: '1', idempotencyKey: logicalOperationId, label: 'Authenticated Conversation' } });
 });
 
-test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {
+test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', { skip: process.platform !== 'linux' }, async t => {
+  t.after(installHostFileAccessFixture());
   const scaleTopicId = '22222222-2222-4222-8222-222222222222';
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migrated-scale-route-'));
   let migratedMetadata;
@@ -317,4 +321,60 @@ test('production proxy delegates Note identity validation to the authoritative s
   const result = await invoke(service, { body: base('notes.edit', { referenceId: noteId, path: 'brief.md', contentBase64: Buffer.from('updated').toString('base64'), expectedRevision: 'note-revision', expectedTopicRevision: 4 }) });
   assert.equal(result.statusCode, 200);
   assert.deepEqual(calls, [['validate', noteId, { create: false }], ['edit', noteId]]);
+});
+
+test('enabled attachment review actions require captured native authority', async () => {
+  let calls = 0;
+  const authority = { principalId: 'fictional-operator', assertCurrent() {} };
+  const service = { documentsListAttachments(input, runtime) { calls++; assert.equal(runtime.principalId, authority.principalId); runtime.assertCurrent(); assert.equal(input.sessionId, 'fictional-incarnation'); return { schemaVersion: 1, topicId, topicName: 'Fictional project', sessionKey: input.sessionKey, sessionId: input.sessionId, generation: 'g', offset: 0, nextOffset: null, attachments: [] }; } };
+  const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
+  const options = { createConversationRuntime: async () => ({ creationAuthority: authority }) };
+  const result = await invoke(service, { body, handlerOptions: options });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.result.attachments, []);
+  assert.equal(calls, 1);
+  const { assertFirstLiveTopicAction } = await import('../src/release-scope.mjs');
+  const enabled = await invoke(service, { body, handlerOptions: { ...options, assertAction: assertFirstLiveTopicAction } });
+  assert.equal(enabled.statusCode, 200);
+  assert.deepEqual(enabled.body.result.attachments, []);
+  assert.equal(calls, 2);
+  assert.equal((await invoke(service, { body })).statusCode, 422);
+});
+
+test('attachment review actions fence native authority immediately before private response delivery', async () => {
+  let current = true;
+  const authority = { principalId: 'fictional-operator', assertCurrent() { if (!current) throw Object.assign(new Error('Retired authority'), { code: 'unauthenticated' }); } };
+  const service = { async documentsListAttachments() { await Promise.resolve(); current = false; return { schemaVersion: 1, topicId, attachments: [{ fileName: 'private-fictional-original.pdf' }] }; } };
+  const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
+  const response = await invoke(service, { body, handlerOptions: { createConversationRuntime: async () => ({ creationAuthority: authority }) } });
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
+});
+
+test('attachment review actions refuse an asynchronous authority contract before private response delivery', async () => {
+  const service = { async documentsListAttachments() { return { schemaVersion: 1, topicId, attachments: [{ fileName: 'private-fictional-original.pdf' }] }; } };
+  const authority = { assertCurrent: () => Promise.resolve() };
+  const body = { schemaVersion: 1, action: 'documents.attachments.list', topicId, sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' };
+  const response = await invoke(service, { body, handlerOptions: { createConversationRuntime: async () => ({ creationAuthority: authority }) } });
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.stringify(response.body).includes('private-fictional-original.pdf'), false);
+});
+
+test('attachment review actions deliver causal result synchronously inside the owning exclusion and do not send twice after release', async () => {
+  let held = false; let deliveredWhileHeld = false;
+  const service = { async documentsReopenAttachment(input, runtime) {
+    held = true;
+    runtime.deliverResult({ schemaVersion: 2, status: 'filed', logicalOperationId: input.logicalOperationId, topicId, source: { entryId: 'fictional-message' }, document: { path: 'Documents/fictional.pdf' } });
+    await Promise.resolve(); held = false;
+    throw new Error('Fictional cleanup failure after completed response');
+  } };
+  const req = Readable.from([JSON.stringify(base('documents.attachment.reopen', { sessionKey: 'agent:main:fictional', sessionId: 'fictional-incarnation' }))]);
+  req.method = 'POST'; req.headers = { 'content-type': 'application/json' };
+  let sends = 0;
+  const res = { setHeader() {}, end(body) { sends++; deliveredWhileHeld = held; this.body = JSON.parse(body); } };
+  const handler = createTopicPageActionsHandler(service, { createConversationRuntime: async () => ({ creationAuthority: { principalId: 'fictional-principal', assertCurrent() {} } }) });
+  await handler(req, res);
+  assert.equal(deliveredWhileHeld, true);
+  assert.equal(sends, 1);
+  assert.equal(res.body.result.source.entryId, 'fictional-message');
 });

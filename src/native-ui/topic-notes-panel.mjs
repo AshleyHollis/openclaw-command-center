@@ -1,14 +1,20 @@
 import { mountTopicPage } from './topic-page.mjs';
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountTopicAttachmentReview } from './topic-attachment-review.mjs';
+import { createNativeTopicNavigation } from './topic-navigation.mjs';
 
 /** The native pane supplies a locator; only the source owner resolves Topic identity. */
 export function mountTopicNotesPanel(container, context, state) {
   const host = context.host;
+  let sourceNavigation;
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let currentContext = context;
   let generation = 0;
   let child;
+  let childContext;
   let childLifetime;
+  let attachmentReview;
   let defaultFiles;
   const shell = container.ownerDocument.createElement('section');
   const controls = container.ownerDocument.createElement('div');
@@ -21,7 +27,7 @@ export function mountTopicNotesPanel(container, context, state) {
   shell.append(controls, content); container.replaceChildren(shell);
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && currentContext.presented && readable() && generation === pending;
-  function clear() { defaultFiles?.(); defaultFiles = undefined; childLifetime?.abort(); child?.dispose(); child = undefined; controls.replaceChildren(); content.replaceChildren(); }
+  function clear() { sourceNavigation?.cancel(); attachmentReview?.dispose(); attachmentReview = undefined; defaultFiles?.(); defaultFiles = undefined; childLifetime?.abort(); child?.dispose(); child = undefined; childContext = undefined; controls.replaceChildren(); content.replaceChildren(); }
   function filesLocation(location) {
     const select = container.ownerDocument.createElement('select');
     select.setAttribute('aria-label', 'Files location');
@@ -35,7 +41,8 @@ export function mountTopicNotesPanel(container, context, state) {
   }
   function openDefaultFiles() {
     if (signal.aborted || !currentContext.presented || typeof currentContext.mountDefault !== 'function') return;
-    childLifetime?.abort(); child?.dispose(); child = undefined;
+    sourceNavigation?.cancel(); attachmentReview?.dispose(); attachmentReview = undefined;
+    childLifetime?.abort(); child?.dispose(); child = undefined; childContext = undefined;
     defaultFiles?.(); defaultFiles = currentContext.mountDefault(content);
     controls.replaceChildren(filesLocation('session'));
   }
@@ -68,13 +75,27 @@ export function mountTopicNotesPanel(container, context, state) {
       if (value.status !== 'bound' || !value.topicId || !value.sessionId || !value.referenceId) throw new Error('The exact Topic binding is unavailable.');
       controls.replaceChildren(filesLocation('topic'));
       childLifetime = new AbortController();
-      child = mountTopicPage(content, { ...currentContext,
+      childContext = { ...currentContext,
         signal: AbortSignal.any([signal, childLifetime.signal]), props: { topicId: value.topicId }
-      }, state, { panel: true, verifyContext: async () => {
+      };
+      child = mountTopicPage(content, childContext, state, { panel: true, proposalPanel: { sessionKey: value.sessionKey, sessionId: value.sessionId, referenceId: value.referenceId }, verifyContext: async () => {
         const response = await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey });
         const latest = response?.result ?? response;
         if (!current(pending) || latest?.status !== 'bound' || latest.sessionKey !== value.sessionKey || latest.sessionId !== value.sessionId || latest.topicId !== value.topicId || latest.referenceId !== value.referenceId) throw new Error('The Conversation’s exact Topic binding changed. Refresh Topic Notes.');
       } });
+      if (FIRST_LIVE_FEATURES.topicDocuments) {
+        const ownedNavigation = createNativeTopicNavigation({ signal: AbortSignal.any([signal, childLifetime.signal]), get connection() { return host.connection; }, request: (...args) => host.request(...args), sessions: host.sessions });
+        sourceNavigation = ownedNavigation;
+        attachmentReview = mountTopicAttachmentReview(controls, { host, signal: AbortSignal.any([signal, childLifetime.signal]), binding: value,
+          onFiled: document => child?.openFiledDocument(document),
+          onSource: source => { if (!current(pending)) throw new Error('The source Conversation view changed.'); return ownedNavigation.open({ topicId: value.topicId, referenceId: source.referenceId, expectedSessionId: source.sessionId, expectedSessionKey: source.sessionKey }); },
+          onSourceCancel: () => ownedNavigation.cancel(),
+          verifyContext: async () => {
+            const response = await host.request('command-center.v1.sessions.topic-context', { schemaVersion: 1, sessionKey });
+            const latest = response?.result ?? response;
+            if (!current(pending) || latest?.status !== 'bound' || latest.sessionKey !== value.sessionKey || latest.sessionId !== value.sessionId || latest.topicId !== value.topicId || latest.referenceId !== value.referenceId) throw new Error('The Conversation Topic changed. Refresh Files.');
+          } });
+      }
     } catch (error) {
       if (current(pending) && error?.name !== 'AbortError') message(host.redact(error?.message || 'Topic Notes are unavailable.'));
     }
@@ -96,6 +117,12 @@ export function mountTopicNotesPanel(container, context, state) {
       const changed = next.props.sessionKey !== currentContext.props.sessionKey || next.props.agentId !== currentContext.props.agentId || next.presented !== currentContext.presented;
       currentContext = next;
       if (changed) void load();
+      else if (child && childContext && !signal.aborted && !childLifetime.signal.aborted) {
+        // Refresh the host's revocable pane controls without remounting the
+        // verified Topic reader or extending its original lifetime.
+        childContext = { ...next, props: childContext.props, signal: childContext.signal };
+        child.update(childContext);
+      }
     },
     focus() { child?.focus?.(); },
     dispose() { generation += 1; lifetime.abort(); unsubscribe(); clear(); container.replaceChildren(); }

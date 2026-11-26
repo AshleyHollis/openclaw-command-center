@@ -152,7 +152,8 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   if (failures.length) throw captureFailure(failures, outcomes);
   validateSupplementalEvidence(results);
   const primary = results.get('primary');
-  assert.deepEqual(primary.startup.hostReceipt, releasePerformanceIdentity.hostReceipt, 'Startup must observe the pinned host receipt');
+  const expectedHostReceipt = { schemaVersion: descriptor.schemaVersion, commit: descriptor.commit, ...sealedIntegrity };
+  assert.deepEqual(primary.startup.hostReceipt, expectedHostReceipt, 'Startup must observe the supplied pinned host receipt');
   const { schemaVersion: _schema, commit: _commit, ...observedIntegrity } = primary.startup.hostReceipt;
   assert.deepEqual(observedIntegrity, sealedIntegrity, 'Startup must observe the supplied sealed host');
   const secure = results.get('secure');
@@ -182,7 +183,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
       exactIdentityValidated: restoration.exactIdentityValidated, postValidationMutation: restoration.postValidationMutation,
       boundaries: { beforeCommit: restoration.beforeCommitBytesPreserved, afterCommitBeforeManifest: restoration.afterCommitBytesPreserved } }
   ];
-  const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({ buildDigest: sealedDigest,
+  const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({ buildDigest: sealedDigest, expectedHostReceipt,
     rows: NON_PERFORMANCE_ROW_IDS.map((id, index) => ({ id, evidence: prerequisiteEvidence[index] })) });
   assert.equal(buildReceipt.digest, sealedDigest, 'The sealed build receipt changed during prerequisites');
   assert.deepEqual(descriptor.integrity, sealedIntegrity, 'The host identity changed during prerequisites');
@@ -242,7 +243,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   try {
     report = createAcceptanceReport({ buildDigest: sealedDigest,
       rows: RELEASE_ROW_IDS.map((id, index) => ({ id, outcome: 'passed', evidence: rowEvidence[index] })),
-      finalization: FINALIZATION_PHASES.map(phase => ({ phase })), performanceBaseline: qualifiedBaseline });
+      finalization: FINALIZATION_PHASES.map(phase => ({ phase })), performanceBaseline: qualifiedBaseline, expectedHostReceipt });
   } catch (error) {
     // TAP retains the outer message, not custom fields or nested evidence. Keep
     // all eight comparisons on failure, but never echo arbitrary source values.
@@ -255,6 +256,6 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     }]));
     throw new TypeError(`${error.message}; performance-comparison=${JSON.stringify(comparison)}`, { cause: error });
   }
-  assertAcceptanceReportPassed(report);
+  assertAcceptanceReportPassed(report, expectedHostReceipt);
   return Object.freeze({ report, capturedBaseline: capturePerformanceBaseline ? report.performanceBaseline : undefined });
 }

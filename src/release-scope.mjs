@@ -2,10 +2,12 @@ import { SourceServiceError } from './sources/errors.mjs';
 
 // ADR 0004: a build-owned policy, never a caller/configuration opt-in.
 export const FIRST_LIVE_FEATURES = Object.freeze({
-  topics: true, noteRead: true, conversations: true, topicDocuments: false,
+  topics: true, noteRead: true, conversations: true, topicDocuments: true,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
-  search: false, dashboard: true, scheduler: true, analysis: false,
-  notifications: false, noteMaintenance: false
+  search: false, topicNoteRecall: true, dashboard: true, scheduler: true, analysis: false,
+  notifications: false, noteMaintenance: false, acceptedChatCapture: true, noteProposals: true,
+  // Following Attention candidate: native admission prerequisite reviewed; isolated package qualification required before deployment.
+  billActions: true, conversationPlans: true
 });
 
 // The ownership catalogue deliberately retains deferred tools so their domain
@@ -13,12 +15,16 @@ export const FIRST_LIVE_FEATURES = Object.freeze({
 // manifest exposes neither tool; this mapping is the explicit audit bridge
 // between those two facts.
 export const FIRST_LIVE_DEFERRED_NATIVE_TOOLS = Object.freeze({
-  command_center_file_topic_attachment: 'topicDocuments',
   command_center_update_working_note: 'noteMaintenance'
 });
 
 export const FIRST_LIVE_COMMANDS = Object.freeze({
   bridge: Object.freeze([
+    'command-center.v1.conversation-plans.messages', 'command-center.v1.conversation-plans.track',
+    'command-center.v1.conversation-plans.reconcile', 'command-center.v1.conversation-plans.list',
+    'command-center.v1.bill-actions.list', 'command-center.v1.bill-actions.read',
+    'command-center.v1.bill-actions.admit', 'command-center.v1.bill-actions.handle',
+    'command-center.v1.bill-actions.defer', 'command-center.v1.bill-actions.reconcile',
     'command-center.v1.histories.list', 'command-center.v1.histories.read', 'command-center.v1.histories.attachment-read',
     'command-center.v1.sources.status', 'command-center.v1.migration.status',
     'command-center.v1.migration.review-failures', 'command-center.v1.topics.list',
@@ -52,10 +58,13 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.open-loops.renovation-decision-revise',
     'command-center.v1.briefings.set-read', 'command-center.v1.routines.decide'
   ]),
-  topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
+  topicAction: Object.freeze(['documents.attachments.list', 'documents.attachment.review', 'documents.attachment.prepare', 'documents.attachment.file', 'documents.attachment.check', 'documents.attachment.reopen', 'conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });
 
 export function assertFirstLiveCommand(surface, command) {
+  if (surface === 'bridge' && FIRST_LIVE_FEATURES.acceptedChatCapture &&
+      ['command-center.v1.chat-capture.accept', 'command-center.v1.chat-capture.load', 'command-center.v1.chat-capture.replay'].includes(command)) return;
+  if (surface === 'bridge' && FIRST_LIVE_FEATURES.noteProposals && ['prepare', 'context', 'publish', 'inspect', 'discard'].some(action => command === `command-center.v1.notes.proposals.${action}`)) return;
   if (!Object.hasOwn(FIRST_LIVE_COMMANDS, surface) || !FIRST_LIVE_COMMANDS[surface].includes(command)) {
     throw new SourceServiceError('feature-unavailable', 'This feature is not available in the first live release.', { retryable: false });
   }

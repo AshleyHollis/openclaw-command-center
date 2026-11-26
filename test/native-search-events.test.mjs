@@ -4,6 +4,7 @@ import { registerHooks } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
 import { createSearchRebuildService } from '../src/search/rebuild.mjs';
@@ -250,3 +251,9 @@ test('restart denies the old Search generation and reconciles transcript events 
     });
   }, { deferredGateway: true });
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

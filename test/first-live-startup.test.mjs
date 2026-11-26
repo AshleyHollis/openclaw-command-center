@@ -86,9 +86,27 @@ test('first-live startup serves core data and enables request-scoped native sche
     for (const name of ['search', 'analysis']) assert.equal(service.sourceService.capabilities[name].available, false);
     assert.deepEqual(nativeJobs, originalJobs);
     for (const invoke of [() => service.topicAnalysisRun({}), () => service.topicContextRetrieve({}), () => service.notificationReconcile({}), () => runNoteMaintenance({})]) assert.throws(invoke, error => error.code === 'capability-unavailable');
-    const dashboard = await service.dashboardGet({ schemaVersion: 1 });
+    await assert.rejects(service.dashboardGet({ schemaVersion: 1 }), error => error.code === 'unauthenticated');
+    let dashboardAuthorityCurrent = true;
+    let dashboardAuthorityChecks = 0;
+    const dashboardRuntime = {
+      principalId: 'fictional-dashboard-operator',
+      canWrite: false,
+      nativeRequest: forbidden('native bill actions'),
+      assertCurrent() {
+        dashboardAuthorityChecks += 1;
+        if (!dashboardAuthorityCurrent) throw Object.assign(new Error('Fictional Dashboard authority revoked.'), { code: 'unauthenticated' });
+      }
+    };
+    const dashboard = await service.dashboardGet({ schemaVersion: 1 }, dashboardRuntime);
     assert.deepEqual(dashboard.attention, []);
     assert.deepEqual(dashboard.inProgress, []);
+    assert.deepEqual(dashboard.billActions.rows, []);
+    assert.equal(dashboard.billActions.coverage, 'bound-actions-only');
+    assert.equal(dashboard.billActions.unavailableCount, 0);
+    assert.ok(dashboardAuthorityChecks > 0, 'Dashboard must retain current request authority even without bound bill actions.');
+    dashboardAuthorityCurrent = false;
+    await assert.rejects(service.dashboardGet({ schemaVersion: 1 }, dashboardRuntime), error => error.code === 'unauthenticated');
     await assert.rejects(service.searchRebuild({}), error => error.code === 'capability-unavailable');
     const reopened = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try { assert.equal(reopened.getTopicAnalysisSettings(), null); assert.equal(reopened.getTopic(topicId).revision, 0); } finally { reopened.close(); }

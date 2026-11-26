@@ -85,7 +85,9 @@ export async function withPreservedHistoryDestination(options, run) {
           if (replayOnly) fail('history-replay-missing');
           assertOwner();
           if (!isDeepStrictEqual(message, entry.message)) fail('history-message-conflict');
-          return message;
+          // The current host normalizes storage but leaves source text intact.
+          // Persist the pinned historical projection only for a fresh import.
+          return expectedMessage(entry);
         }
       });
       assertOwner();

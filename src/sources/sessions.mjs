@@ -79,7 +79,7 @@ export class SessionAdapter {
 
   async request(method, params, options) {
     if (this.gateway?.request) return this.gateway.request(method, params, options);
-    const rows = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
+    const rows = await this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     if (method === 'sessions.list') return { sessions: rows.map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) })) };
     if (method === 'sessions.patch') {
       const row = rows.find((item) => item.sessionKey === params.key);
@@ -133,10 +133,12 @@ export class SessionAdapter {
       if (!expectedKey) return { matched: false };
       // A newly created Session need not appear in the first catalog page.
       // Resolve its exact returned key through the public latest-read owner.
-      const exactEntry = this.sessionStore?.getSessionEntry
-        ? await this.sessionStore.getSessionEntry({ agentId: 'main', sessionKey: expectedKey, readConsistency: 'latest' })
-        : undefined;
-      const rows = this.sessionStore?.getSessionEntry
+      const readParams = { agentId: 'main', sessionKey: expectedKey, readConsistency: 'latest' };
+      const exactReaderAvailable = typeof this.sessionStore?.getSessionEntryAsync === 'function' || typeof this.sessionStore?.getSessionEntry === 'function';
+      const exactEntry = typeof this.sessionStore?.getSessionEntryAsync === 'function'
+        ? await this.sessionStore.getSessionEntryAsync(readParams)
+        : this.sessionStore?.getSessionEntry ? await this.sessionStore.getSessionEntry(readParams) : undefined;
+      const rows = exactReaderAvailable
         ? (exactEntry ? [{ sessionKey: expectedKey, entry: exactEntry }] : [])
         : await catalogRows();
       const matches = rows.filter((row) => responseKey(row) === expectedKey);
@@ -341,7 +343,7 @@ export class SessionAdapter {
 
   async authoritativeRows() {
     const listing = this.sessionStore?.listSessionEntries
-      ? this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }))
+      ? (await this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true })).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }))
       : await this.request('sessions.list', {});
     return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
   }

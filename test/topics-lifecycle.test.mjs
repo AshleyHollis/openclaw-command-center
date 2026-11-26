@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import filesystem from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
@@ -1105,3 +1106,9 @@ test('managed Session rename uses the public Session store with exact identity a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

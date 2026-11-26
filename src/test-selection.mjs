@@ -1,5 +1,16 @@
-const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
+const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs', 'notes-installed-package.test.mjs']);
 const browserHeavyTests = new Set([
+  'test/native-loading-focus.test.mjs',
+  'test/http-relay-ui.test.mjs',
+  'test/native-reader-tables.test.mjs',
+  'test/native-topic-assignment.test.mjs',
+  'test/native-topic-creation-dialog.test.mjs',
+  'test/native-topic-sidebar.test.mjs',
+  'test/native-ui-topic-attachment-review.test.mjs',
+  'test/native-workspace-selectors.test.mjs',
+  'test/note-render.test.mjs',
+  'test/topic-search-scale.test.mjs',
+  'test/native-note-proposals.test.mjs',
   'test/iframe-responsive-remount.test.mjs',
   'test/native-reader-workspace.test.mjs',
   'test/topic-notes-panel.test.mjs',
@@ -7,6 +18,7 @@ const browserHeavyTests = new Set([
   'test/native-operating-mode.test.mjs',
   'test/first-live-native-ui.test.mjs',
   'test/native-ui-attention.test.mjs',
+  'test/native-ui-conversation-plan.test.mjs',
   'test/native-ui-editing.test.mjs',
   'test/native-ui-page.test.mjs',
   'test/keyboard-batch.test.mjs',
@@ -76,6 +88,7 @@ const issue32TicketTests = new Set([
 // maintenance work. Keep its verification inventory explicit so an unrelated
 // deferred test cannot silently become an activation blocker.
 const readerMvpTests = new Set([
+  'native-loading-focus.test.mjs',
   'native-reader-workspace.test.mjs',
   'topic-notes-panel.test.mjs',
   'native-document-preview.test.mjs',
@@ -107,6 +120,8 @@ const focusedRealHostScenarios = Object.freeze({
   'native-control-ui-activation': Object.freeze(['native-control-ui-activation']),
   'topic-notes-visual': Object.freeze(['native-topic-files-workspace']),
   'topic-document-tools': Object.freeze(['topic-document-tools']),
+  'topic-document-filing': Object.freeze(['topic-document-filing']),
+  'conversation-plan-native-owner': Object.freeze(['conversation-plan-native-owner']),
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
   'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),
@@ -149,6 +164,7 @@ const diagnosticSliceLanes = Object.freeze({
   'diagnostic-combined-degraded': Object.freeze(['combined-degraded']),
   'diagnostic-dashboard-payload': Object.freeze(['dashboard-mixed-payload']),
   'diagnostic-accounted-mixed-email': Object.freeze(['accounted-mixed-email']),
+  'diagnostic-accepted-chat': Object.freeze(['accepted-chat']),
   'diagnostic-clarification-worker': Object.freeze(['accounted-mixed-email-worker']),
   'diagnostic-reader-refresh': Object.freeze(['reader-refresh-failed', 'reader-refresh-completed']),
   'diagnostic-topic-review': Object.freeze(['fresh-review']),

@@ -1,12 +1,13 @@
-import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, linkSync, lstatSync, readFileSync, openSync } from 'node:fs';
+import { assertAcceptedChatNote } from '../open-loops/accepted-chat-scope.mjs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSourceReference, effectiveSourceLocator, revisionForBytes } from './reference.mjs';
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
-import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
+import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isFilesSyncStatusName, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
-import { readNoteFolderIdentity } from './note-folder-identity.mjs';
+import { readNoteFolderIdentity, withVerifiedNoteFolderIdentity } from './note-folder-identity.mjs';
 import { sameTransientFilesystemIdentity } from './filesystem-object-identity.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
@@ -309,6 +310,50 @@ export class NoteAdapter {
     });
   }
 
+  // Internal read lease: retain descriptor identities until the model publication
+  // fence. No new filesystem writes or projection observations are performed.
+  async prepareRecallRead(input = {}) {
+    const note = await this.read({ ...input, observe: false });
+    const root = this.fsSafeRoot.rootReal;
+    const parent = await this.openParent(root, input.path, { operation: 'read' });
+    const descriptors = [];
+    let closed = false;
+    try {
+      await this.assertChainStable(parent.chain);
+      const fd = openSync(parent.target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptors.push(fd);
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1 || revisionForBytes(readFileSync(fd)) !== note.revision) throw sourceError('conflict', 'The Note changed before recall publication.');
+      const markerPath = this.descriptorPath({ fd: this.rootDescriptor }, '.command-center-folder-identity');
+      const markerFd = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptors.push(markerFd);
+      const markerStat = fstatSync(markerFd);
+      readFileSync(markerFd);
+      const rootRevision = this.rootObservedRevision;
+      const locatorVersion = this.rootLocatorVersion;
+      const rootStat = this.rootStat;
+      const assertCurrent = () => {
+        if (closed) throw sourceError('source-recovery', 'The Note recall lease ended.');
+        this.assertCurrentRoot(root);
+        if (this.rootObservedRevision !== rootRevision || this.rootLocatorVersion !== locatorVersion || !sameStat(rootStat, lstatSync(root)) || rootStat.mode !== lstatSync(root).mode) throw sourceError('source-recovery', 'The recall folder was replaced.');
+        for (const component of parent.chain) {
+          const named = lstatSync(component.namedPath);
+          if (!named.isDirectory() || named.isSymbolicLink() || !sameIdentity(component.stat, named) || component.stat.mode !== named.mode || component.stat.uid !== named.uid || component.stat.gid !== named.gid || component.stat.ctimeMs !== named.ctimeMs) throw sourceError('source-recovery', 'The recall directory was replaced.');
+        }
+        const named = lstatSync(path.join(root, ...note.path.split('/')));
+        if (!sameStat(stat, fstatSync(fd)) || !sameStat(stat, named) || named.isSymbolicLink() || named.nlink !== 1) throw sourceError('conflict', 'The recall Note changed.');
+        if (!sameStat(markerStat, fstatSync(markerFd)) || !sameStat(markerStat, lstatSync(markerPath))) throw sourceError('source-recovery', 'The recall folder witness changed.');
+      };
+      await parent.handle.close();
+      assertCurrent();
+      return Object.freeze({ note, assertCurrent, close() { if (!closed) { closed = true; for (const descriptor of descriptors) closeSync(descriptor); } } });
+    } catch (error) {
+      for (const descriptor of descriptors) closeSync(descriptor);
+      await parent.handle.close().catch(() => {});
+      throw error;
+    }
+  }
+
   async browse(input = {}) {
     if (!this.recovery.owned) return this.recovery.run(() => this.browse(input));
     this.recovery.assertReadAdmission();
@@ -328,6 +373,7 @@ export class NoteAdapter {
       const entries = await readdir(this.descriptorPath(directoryHandle), { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
       const visitEntry = async (entry) => {
+        if (!relative && isFilesSyncStatusName(entry.name)) return;
         const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
         await this.beforePathIo?.({ operation: 'browse', path: childRelative });
         const child = this.descriptorPath(directoryHandle, entry.name);
@@ -414,6 +460,7 @@ export class NoteAdapter {
       const directoryEntries = await readdir(this.descriptorPath(directoryHandle), { withFileTypes: true });
       directoryEntries.sort((left, right) => left.name.localeCompare(right.name));
       const visitEntry = async (entry) => {
+        if (!relative && isFilesSyncStatusName(entry.name)) return;
         const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
         await this.beforePathIo?.({ operation: 'browse', path: childRelative });
         const child = this.descriptorPath(directoryHandle, entry.name);
@@ -512,8 +559,13 @@ export class NoteAdapter {
     return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }
 
-  async create(input = {}) {
-    if (!this.recovery.owned) return this.recovery.run(() => this.create(input));
+  async create(input = {}, runtime) {
+    assertAcceptedChatNote(this.metadata, input);
+    if (!this.recovery.owned) return this.recovery.run(() => this.create(input, runtime));
+    if (runtime !== undefined && !runtime.folderWitness) {
+      const root = await this.resolveRoot();
+      return withVerifiedNoteFolderIdentity(root, this.rootObservedRevision, folderWitness => this.create(input, { ...runtime, folderWitness }));
+    }
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
     if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
@@ -553,7 +605,28 @@ export class NoteAdapter {
       // cannot distinguish an unstarted create from a published-then-deleted one.
       if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
-        await link(temporary, parent.target);
+        if (runtime !== undefined) {
+          if (typeof runtime.publish !== 'function') throw sourceError('unauthenticated', 'Trusted native create publication is required.');
+          let published = false;
+          let consumed = false;
+          let active = true;
+          const publish = () => {
+            if (!active) throw sourceError('unauthenticated', 'The create admission callback expired.');
+            if (consumed) throw sourceError('conflict', 'The create admission callback was already consumed.');
+            consumed = true;
+            this.assertCurrentRoot(root);
+            runtime.folderWitness.assertCurrent();
+            for (const part of parent.chain) if (!sameIdentity(lstatSync(part.namedPath), part.stat)) throw sourceError('conflict', 'The destination directory changed before publication.');
+            const staged = lstatSync(temporary);
+            if (!sameStat(staged, temporaryStat)) throw sourceError('conflict', 'The staged original changed before publication.');
+            assertAcceptedChatNote(this.metadata, input);
+            linkSync(temporary, parent.target);
+            published = true;
+          };
+          try { await runtime.publish(publish); } finally { active = false; }
+          if (!published) throw sourceError('unauthenticated', 'Create admission must publish exactly once.');
+        } else if (assertAcceptedChatNote(this.metadata, input)) linkSync(temporary, parent.target);
+        else await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
       } catch (error) {
         if (error?.code === 'EEXIST') throw await this.pathConflict(parent.target, notePath, 'The destination Note appeared before commit.');
@@ -578,8 +651,10 @@ export class NoteAdapter {
     }
     this.assertCurrentRoot(root);
     const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision, sourceReference };
+    assertAcceptedChatNote(this.metadata, input);
     note.sourceReference = await this.observe(note.sourceReference);
     this.assertCurrentRoot(root);
+    assertAcceptedChatNote(this.metadata, input);
     if (recoveryRecord) this.recovery.record(recoveryRecord, 'applied', 'metadata-applied');
     return mutationResult('applied', note, { logicalOperationId: input.logicalOperationId ?? null });
   }

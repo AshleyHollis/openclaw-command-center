@@ -6,6 +6,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { TopicProvisioningService } from '../src/topics/provisioning.mjs';
 
@@ -88,3 +89,9 @@ for (const change of ['topic-revision', 'locator-generation']) test(`Folder enro
     } else assert.equal(f.metadata.getSourceLocator(referenceId).locatorVersion, 2);
   });
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

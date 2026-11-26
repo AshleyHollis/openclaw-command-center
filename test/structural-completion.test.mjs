@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { installHostFilesystemIdentityFixture } from './support/host-file-access-fixture.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { enrollNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
@@ -337,3 +338,9 @@ test('legacy pending Primary replacement without an original completion basis re
     assert.equal(metadata.getSessionState('fixture-session').isPrimary, true);
   });
 });
+
+// This ordinary fixture supplies fictional filesystem metadata only. Directory,
+// marker, recovery, staging and SQLite exclusion owners retain their real paths.
+let releaseFilesystemIdentityFixture;
+test.before(() => { releaseFilesystemIdentityFixture = installHostFilesystemIdentityFixture(); });
+test.after(() => { releaseFilesystemIdentityFixture?.(); });

@@ -23,6 +23,22 @@ export async function assertNativeNoteSource(nativePage, fixture) {
   await nativePage.getByRole('button', { name: 'Reading', exact: true }).click();
 }
 
+export async function selectNativeSidebarView(sidebar, view, activate = button => button.press('Enter', { timeout: 10_000 })) {
+  const control = sidebar.locator(`button[data-navigation-view="${view}"]:visible`);
+  if (await control.isVisible() && await control.getAttribute('aria-pressed') !== 'true') await activate(control);
+}
+
+export async function resolveNativeManageTopicsLink(page, openPages) {
+  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  const link = sidebar.locator('[data-sidebar-entry="plugin:command-center/topics"]')
+    .getByRole('link', { name: 'Manage Topics', exact: true }).first();
+  if (!await link.isVisible()) {
+    await selectNativeSidebarView(sidebar, 'pages', openPages);
+    await link.waitFor({ state: 'visible', timeout: 10_000 });
+  }
+  return link;
+}
+
 // Native sidebar grouping is an operator presentation preference, not Topic
 // ownership. Exercise the host control explicitly so this journey can prove
 // that a verified Topic category is actually reachable in the sidebar.
@@ -58,19 +74,23 @@ export async function selectNativeCategoryGrouping(page) {
     // Keep the plugin projection compact before revealing its delegated native
     // Conversations view. The native grouping control lives inside that closed
     // disclosure and is not actionable until an operator opens it.
+    const topicOptions = sidebar.locator('.topic-sidebar summary[aria-label="Topic options"]:visible').first();
+    if (await topicOptions.count() && !(await topicOptions.evaluate(node => node.parentElement.open))) await topicOptions.click();
     const collapseTopics = sidebar.getByRole('button', { name: 'Collapse all Topics', exact: true }).first();
     if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
 
     topicSidebar = sidebar.locator('.topic-sidebar:visible').first();
     await topicSidebar.waitFor({ state: 'visible', timeout: 10_000 });
-    nativeDisclosure = topicSidebar.locator(':scope > details[aria-label="All native conversations"]').first();
+    const disclosureSelector = '.topic-sidebar:visible > details[aria-label="All native conversations"]';
+    nativeDisclosure = sidebar.locator(disclosureSelector).first();
     await nativeDisclosure.waitFor({ state: 'attached', timeout: 10_000 });
     if (!await nativeDisclosure.evaluate(element => element.open)) {
-      await nativeDisclosure.locator(':scope > summary').click({ timeout: 10_000 });
+      await nativeDisclosure.locator('summary').first().click({ timeout: 10_000 });
     }
-    await topicSidebar.locator(':scope > details[aria-label="All native conversations"][open]').waitFor({ state: 'attached', timeout: 10_000 });
+    await sidebar.locator(`${disclosureSelector}[open]`).first().waitFor({ state: 'attached', timeout: 10_000 });
 
-    groupingControl = nativeDisclosure.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible').first();
+    const sortSelector = 'button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible';
+    groupingControl = sidebar.locator(`.sidebar-session-toolbar ${sortSelector}, ${disclosureSelector}[open] ${sortSelector}`).first();
     await groupingControl.waitFor({ state: 'visible', timeout: 10_000 });
     await groupingControl.scrollIntoViewIfNeeded({ timeout: 10_000 });
     await groupingControl.click({ timeout: 10_000 });
@@ -102,9 +122,14 @@ export async function selectNativeCategoryGrouping(page) {
     const failure = { name: error?.name, tail: String(error?.message ?? error).split('\n').slice(-12) };
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify({ failure, state })}`, { cause: error });
   }
-  const category = page.locator('wa-dropdown-item[value="grouping:category"]:visible').first();
+  const filters = page.locator('openclaw-sidebar-session-filter-popover .sidebar-session-filter-panel:visible').first();
+  const grouping = filters.locator('openclaw-select-picker').filter({ has: page.locator('#sidebar-sessions-group') });
+  await grouping.locator('#sidebar-sessions-group').click({ timeout: 10_000 });
+  const category = grouping.locator('[role="option"][data-value="category"]:visible');
   await category.waitFor({ state: 'visible', timeout: 10_000 });
   await category.click({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await filters.waitFor({ state: 'hidden', timeout: 10_000 });
 }
 
 // Exercise only the visible native UI, using the authenticated journey's real
@@ -144,6 +169,7 @@ async function revealNativeTopic({ page, fixture, actionLabel }) {
   const topicSidebar = sidebar.locator('.topic-sidebar:visible').first();
   const topic = topicSidebar.locator(`[data-topic-id=${JSON.stringify(fixture.topicId)}]`);
   try {
+    if (!await topicSidebar.isVisible()) await selectNativeSidebarView(sidebar, 'sessions');
     await topicSidebar.waitFor({ state: 'visible', timeout: 10_000 });
     const category = topicSidebar.locator(`[data-topic-control-key=${JSON.stringify(`para:${fixture.paraCategory}`)}]`);
     await category.waitFor({ state: 'visible', timeout: 10_000 });
@@ -174,8 +200,15 @@ export async function openNativeTopicConversation({ page, fixture, referenceId, 
   await onStage?.('open-topic-conversation');
   const { sidebar, topic } = await revealNativeTopic({ page, fixture, actionLabel: 'Conversation' });
   const key = `conversation:${fixture.topicId}:${referenceId}`;
-  const conversation = topic.locator(`[data-topic-control-key=${JSON.stringify(key)}]`);
+  const conversationList = topic.locator(`[data-topic-control-key=${JSON.stringify(`conversations:${fixture.topicId}`)}]`);
+  let conversation = topic.locator(`[data-topic-control-key=${JSON.stringify(key)}]`);
   try {
+    await topic.locator('[data-topic-catalog-action]:not([aria-disabled="true"])').first().waitFor({ timeout: 10_000 });
+    if (await conversationList.count()) {
+      if (!(await conversationList.evaluate(node => node.parentElement.open))) await conversationList.click();
+    } else if (referenceId === fixture.sessionReferenceId) {
+      conversation = topic.getByRole('button', { name: `Open Chat for ${fixture.name}`, exact: true });
+    }
     await conversation.waitFor({ state: 'visible', timeout: 10_000 });
     await conversation.click({ timeout: 10_000 });
   } catch (error) {
@@ -239,6 +272,8 @@ export async function openNativeTopicFiles({ page, fixture, onStage } = {}) {
 export async function swapNativeTopicFilesWithChat({ page, nativeChat }) {
   const swap = nativeChat.locator('.chat-panel-swap:visible').first();
   try {
+    const layoutMenu = nativeChat.locator('wa-dropdown.chat-pane__layout-menu:visible').first();
+    if (await layoutMenu.count()) await layoutMenu.locator('button[slot="trigger"]').click({ timeout: 10_000 });
     await swap.waitFor({ state: 'visible', timeout: 10_000 });
     assert.equal(await swap.getAttribute('aria-label'), 'Swap Files and Chat');
     await swap.click({ timeout: 10_000 });
@@ -251,7 +286,7 @@ export async function swapNativeTopicFilesWithChat({ page, nativeChat }) {
   }
 }
 
-export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onStage } = {}) {
+export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onSuggestionOpen, onStage } = {}) {
   const workspace = await openNativeTopicFiles({ page, fixture, onStage });
   await onStage?.('select-overview-note');
   // The preceding reader journey deliberately leaves a filename filter and
@@ -260,7 +295,11 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   // the fixture Overview.  The former assertion assumed a fresh panel and
   // therefore mistook preserved reader state for missing Conversation context.
   const reader = workspace.locator('[data-topic-reader-page="panel"]');
-  const filter = reader.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
+  const showFiles = reader.getByRole('button', { name: 'Show Files', exact: true });
+  if (await showFiles.isVisible()) await showFiles.click({ timeout: 10_000 });
+  const nativeFilter = reader.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
+  const filenameFilter = reader.getByRole('searchbox', { name: 'Filter filenames', exact: true });
+  const filter = nativeFilter.or(filenameFilter);
   try {
     await filter.waitFor({ state: 'visible', timeout: 30_000 });
   } catch (error) {
@@ -280,7 +319,10 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   }
   await filter.fill('');
   await filter.fill(fixture.notePath);
-  const overview = reader.getByRole('button', { name: fixture.notePath.split('/').at(-1), exact: true });
+  const usesSharedExplorer = await nativeFilter.isVisible();
+  if (!usesSharedExplorer) await reader.getByText('1 matching Topic file.', { exact: true }).waitFor({ timeout: 30_000 });
+  const overviewName = usesSharedExplorer ? fixture.notePath.split('/').at(-1) : `Read ${fixture.notePath}`;
+  const overview = reader.getByRole('button', { name: overviewName, exact: true });
   try {
     await overview.waitFor({ state: 'visible', timeout: 30_000 });
   } catch (error) {
@@ -319,6 +361,21 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   assert.ok(notesBox && chatBox && notesBox.width > 0 && chatBox.width > 0);
   assert.ok(notesBox.x + notesBox.width <= chatBox.x + 2, 'Selected Note must occupy the center pane before Chat on the right');
   await onPromoted?.();
+  await onStage?.('verify-note-suggestion-menu');
+  const noteMenu = mainPanel.locator('summary', { hasText: 'Note actions' });
+  const suggestion = mainPanel.getByRole('dialog', { name: 'Suggest an edit', exact: true });
+  assert.equal(await mainPanel.getByRole('group', { name: 'Reference notes', exact: true }).count(), 0);
+  await noteMenu.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await suggestion.getByRole('group', { name: 'Reference notes', exact: true }).waitFor();
+  assert.equal(await suggestion.getByLabel('Saved suggestion ID', { exact: true }).isVisible(), false);
+  await onSuggestionOpen?.();
+  await page.keyboard.press('Escape');
+  await suggestion.waitFor({ state: 'hidden' });
+  assert.equal(await noteMenu.evaluate(summary => summary.getRootNode().activeElement === summary), true);
+  await assertNativeFormattedNote(promoted, fixture);
   // Pane promotion is host-owned.  Put an unsent value into its actual native
   // composer before swapping so the reader journey proves that the host moves
   // the existing Chat surface rather than replacing its session or draft.
@@ -329,7 +386,7 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   assert.equal(await nativeChat.evaluate((pane) => pane.sessionKey), fixture.sessionKey);
   assert.equal(await composer.inputValue(), unsentDraft);
   await onStage?.('swap-pane');
-  assert.equal(await page.locator('.sidebar-region__right-runtime').getByRole('tab', { name: 'Chat', exact: true }).count(), 1);
+  assert.equal(await page.locator('.sidebar-region__right-runtime .tabstrip-tab[data-tab-value="conversation"]').count(), 1);
   await swapNativeTopicFilesWithChat({ page, nativeChat });
   await onStage?.('verify-swapped-pane');
   await page.locator('.sidebar-region__primary[data-region="main"]').waitFor({ state: 'visible', timeout: 10_000 });

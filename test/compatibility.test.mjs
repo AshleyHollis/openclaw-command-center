@@ -10,10 +10,14 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '21f1ca697532a9bd9e9cc46322a598a31435de15';
+const controllerIntegrationCommit = '1798956652c089dc064ecdcb4ba68dfb00b7e657';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
-const controllerPackageVersion = '2026.9.5';
+const controllerPackageVersion = '2026.11.10';
 const publishedSdkVersion = controllerPackageVersion;
+
+test('does not reuse the previous stable candidate as the updated host', () => {
+  assert.notEqual(canonical.host.commit, '81cc7d85436ab8940559aaa417a064f6092b49c9');
+});
 
 test('release admission refuses unsupported or missing bridge declarations before activation', () => {
   assert.doesNotThrow(() => assertCapabilityBridgeDeclaration({ protocolVersion: 1 }));
@@ -23,29 +27,36 @@ test('release admission refuses unsupported or missing bridge declarations befor
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });
   assertDeclarativeMirror(canonical);
+  assertDeclarativeMirror(packageJson.commandCenter.compatibilityTuple);
   assert.deepEqual(packageLock.packages[''].commandCenter, packageJson.commandCenter, 'lockfile must retain the complete canonical runtime metadata');
   assert.deepEqual(packageJson.openclaw.extensions, ['./dist/plugin.mjs']);
 });
 
-test('pins product compatibility and the controller to the exact stable source boundary', () => {
+test('pins product compatibility and the controller to the exact selected native stable source boundary', () => {
   assert.equal(canonical.priorRelease.host.range, `=${supportedOpenClaw.version}`);
   assert.equal(canonical.priorRelease.host.commit, supportedOpenClaw.commit);
   assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
   assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
   assert.equal(canonical.pluginApi.range, `=${controllerPackageVersion}`);
   assert.equal(packageJson.peerDependencies.openclaw, publishedSdkVersion);
-  assert.equal(packageJson.devDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageJson.devDependencies.openclaw, 'file:./openclaw-current.tgz');
   assert.equal(packageJson.openclaw.compat.pluginApi, `=${controllerPackageVersion}`);
   assert.equal(packageJson.devDependencies['pdfjs-dist'], '6.3.289', 'the sealed build requires the pinned PDF extractor');
   assert.equal(packageJson.dependencies, undefined, 'the installed plugin must not declare unpackaged runtime dependencies');
   assert.equal(packageLock.packages[''].peerDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageLock.packages[''].devDependencies['pdfjs-dist'], packageJson.devDependencies['pdfjs-dist']);
-  assert.equal(packageLock.packages[''].devDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageLock.packages[''].devDependencies.openclaw, 'file:./openclaw-current.tgz');
+  assert.equal(packageLock.packages['node_modules/openclaw'].resolved, 'file:openclaw-current.tgz');
+  assert.equal(packageLock.packages['node_modules/openclaw'].integrity, 'sha512-wnom6VN32cRMvn5bAYiHAKjfkp5SR8rrcRJG+ZN2Wd6ZfuHU1htpeFfX2nZKSa0tuYSvk58vGoauN0E2rXt3MQ==');
   assert.equal(packageLock.packages['node_modules/openclaw'].version, publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/openclaw'].dependencies['@openclaw/ai'], publishedSdkVersion);
-  assert.equal(packageLock.packages['node_modules/@openclaw/ai'].version, publishedSdkVersion);
+  const aiDependency = packageLock.packages['node_modules/openclaw/node_modules/@openclaw/ai']
+    ?? packageLock.packages['node_modules/@openclaw/ai'];
+  assert.equal(aiDependency?.version, publishedSdkVersion);
   for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) {
-    assert.equal(packageLock.packages[`node_modules/${name}`]?.version, version, `${name} must match the stable package dependency graph`);
+    const dependency = packageLock.packages[`node_modules/openclaw/node_modules/${name}`]
+      ?? packageLock.packages[`node_modules/${name}`];
+    assert.equal(dependency?.version, version, `${name} must match the pinned package dependency graph`);
   }
   assert.equal(pinnedHost.packageVersion, controllerPackageVersion);
   assert.equal(pinnedHost.commit, controllerIntegrationCommit);

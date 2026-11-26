@@ -39,9 +39,11 @@ async function withStartedService(run, { pluginConfig = {}, sessionStore = true,
         metadata.recordSourceRecovery({ recoveryId: `recovery:${folderReferenceId}`, topicId, referenceId: folderReferenceId, sourceKind: 'note_folder', state: 'required', lastLocator: folder, lastIdentity: 'fictional-v1-identity', failure: 'exact-folder-identity-mismatch', diagnostics: [], updatedAt: '2026-09-06T00:00:00.000Z' });
       }
     } finally { metadata.close(); }
+    const readSessionEntry = ({ sessionKey: key }) => rows.has(key) ? { ...rows.get(key) } : undefined;
     const catalog = {
       listSessionEntries: () => [...rows].map(([key, entry]) => ({ sessionKey: key, entry: { ...entry } })),
-      getSessionEntry: ({ sessionKey: key }) => rows.has(key) ? { ...rows.get(key) } : undefined
+      getSessionEntry: readSessionEntry,
+      getSessionEntryAsync: async params => readSessionEntry(params)
     };
     const api = { runtime: { state: { resolveStateDir: () => stateDir }, fileAccess: createHostFileAccessFixture(), ...(sessionStore ? { agent: { session: typeof sessionStore === 'object' ? sessionStore : catalog } } : {}) }, pluginConfig, logger: { warn() {} } };
     service = createMetadataService(api);

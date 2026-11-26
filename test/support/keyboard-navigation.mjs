@@ -66,7 +66,21 @@ function readKeyboardFocus(target, prepare = false) {
   const editableText = active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement && ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(active.type);
   const nativeTextCaret = editableText && !active.readOnly && style?.caretColor !== 'transparent' && style?.caretColor !== 'rgba(0, 0, 0, 0)';
   const targetDialog = ancestor(target, 'dialog[open]');
-  return { focusOrder, accessibleName, identity: window.__acceptanceKeyboardIds.get(active), body: active === document.body, disabled: Boolean(active?.matches(':disabled')), index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: !active || !visible(active), outline: parseFloat(style?.outlineWidth ?? '0') > 0 && !['transparent', 'rgba(0, 0, 0, 0)'].includes(style?.outlineColor) ? style?.outlineStyle : 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: style?.boxShadow, baselineBoxShadow: baseline?.boxShadow, backgroundColor: style?.backgroundColor, baselineBackgroundColor: baseline?.backgroundColor, nativeTextCaret, nativeComposite, escapedDialog: Boolean(targetDialog) && ancestor(active, 'dialog[open]') !== targetDialog };
+  // Observe an actual controlled, nonmodal popup, including lazy portals whose
+  // first trigger focus was read before their controls entered the tab order.
+  const popup = ancestor(active, '[role="dialog"]:not([aria-modal="true"])');
+  const controller = popup?.id && tabbables.find(node => (node.getAttribute('aria-controls') ?? '').split(/\s+/u).includes(popup.id) && node.getAttribute('aria-expanded') === 'true');
+  const previousPopup = window.__acceptanceKeyboardPopup;
+  const closedPopupReturn = previousPopup && active === previousPopup.controller
+    && [null, 'false'].includes(active.getAttribute('aria-expanded'))
+    && !(active.getAttribute('aria-controls') ?? '').split(/\s+/u).includes(previousPopup.node.id)
+    && (!previousPopup.node.isConnected || !visible(previousPopup.node))
+    ? previousPopup.identity : null;
+  if (controller) {
+    if (!window.__acceptanceKeyboardIds.has(popup)) window.__acceptanceKeyboardIds.set(popup, ++window.__acceptanceKeyboardNextId);
+    window.__acceptanceKeyboardPopup = { node: popup, controller, identity: window.__acceptanceKeyboardIds.get(popup) };
+  } else window.__acceptanceKeyboardPopup = null;
+  return { closedPopupReturn, focusOrder, accessibleName, identity: window.__acceptanceKeyboardIds.get(active), body: active === document.body, disabled: Boolean(active?.matches(':disabled')), index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: !active || !visible(active), outline: parseFloat(style?.outlineWidth ?? '0') > 0 && !['transparent', 'rgba(0, 0, 0, 0)'].includes(style?.outlineColor) ? style?.outlineStyle : 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: style?.boxShadow, baselineBoxShadow: baseline?.boxShadow, backgroundColor: style?.backgroundColor, baselineBackgroundColor: baseline?.backgroundColor, nativeTextCaret, nativeComposite, escapedDialog: Boolean(targetDialog) && ancestor(active, 'dialog[open]') !== targetDialog };
 }
 
 function requireVisibleFocus(state, indicatorDeferred = false) {
@@ -108,6 +122,7 @@ export async function tabTo(locator, { reverse = false, limit, deferredIndicator
   // date/time fields have several internal segments sharing one DOM identity.
   const budget = limit ?? order.count * 8 + 1;
   const visited = new Set();
+  const popupReturns = new Set();
   const traversal = [];
   let previousIdentity; let nativeSegments = 0;
   for (let step = 1; step <= budget; step += 1) {
@@ -136,7 +151,9 @@ export async function tabTo(locator, { reverse = false, limit, deferredIndicator
     // Closing a keyboard-opened popup legitimately returns to its trigger.
     // A cycle repeats the focus destination AND the available sequential order.
     const visit = `${state.identity}:${state.focusOrder}`;
-    assert.ok((sameComposite && nativeSegments < 8) || !visited.has(visit), `Sequential keyboard traversal cycled before reaching ${order.targetState.name}: ${JSON.stringify({ order, backwards, traversal })}`);
+    const popupReturned = state.closedPopupReturn !== null && !popupReturns.has(visit);
+    if (popupReturned) popupReturns.add(visit);
+    assert.ok((sameComposite && nativeSegments < 8) || popupReturned || !visited.has(visit), `Sequential keyboard traversal cycled before reaching ${order.targetState.name}: ${JSON.stringify({ order, backwards, traversal })}`);
     visited.add(visit); previousIdentity = state.identity;
   }
   throw new Error(`Sequential keyboard traversal did not reach ${order.targetState.name} within its bounded focus path.`);

@@ -483,26 +483,67 @@ test('email reader location changes after a move without changing accepted effec
   } finally { metadata?.close(); await temporary.cleanup(); }
 });
 
-test('simultaneous email reader writers cannot publish different locations for one observation time', async () => {
+test('simultaneous email reader writers cannot publish different locations for one observation time', { timeout: 30_000 }, async () => {
   const temporary = await temporaryStateDir('command-center-email-reader-race-');
+  const writers = [];
+  let deadlineTimer;
+  const stopWriters = signal => {
+    for (const { child } of writers) if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+  };
+  const settledWithin = async milliseconds => {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.all(writers.map(writer => writer.outcome)).then(() => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), milliseconds); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
   try {
     const seed = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
     try { recordIntakeSourcePlan(seed, sourcePlan()); } finally { seed.close(); }
     const first = { sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', messageId: 'fictional-one', status: 'available', webLink: 'https://outlook.office.com/mail/id/fictional-one', observedAt: '2026-09-22T01:02:00.000Z' };
     const second = { ...first, messageId: 'fictional-two', webLink: 'https://outlook.office.com/mail/id/fictional-two' };
-    const run = input => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL('./support/email-reader-write-child.mjs', import.meta.url)), temporary.path, JSON.stringify(input)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const run = input => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./support/email-reader-write-child.mjs', import.meta.url)), temporary.path, JSON.stringify(input)], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       let stdout = ''; let stderr = '';
       child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
-      child.once('error', reject); child.once('exit', code => resolve({ code, stdout, stderr }));
+      const outcome = new Promise(resolve => child.once('close', code => resolve({ code, stdout, stderr })));
+      const ready = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Writer admission timed out: ${stderr}`)), 10_000);
+        const finish = (error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+        child.once('message', message => finish(message?.type === 'ready' ? undefined : new Error('Unexpected writer readiness message')));
+        child.once('error', finish);
+        child.once('close', code => finish(new Error(`Writer exited before admission: ${code}; ${stderr}`)));
+      });
+      const writer = { child, ready, outcome }; writers.push(writer); return writer;
+    };
+    // Startup admission may legitimately refuse a competing write. This case races
+    // writes only after both real public services have finished admission.
+    const deadline = new Promise((resolve, reject) => {
+      deadlineTimer = setTimeout(() => {
+        stopWriters('SIGTERM');
+        reject(new Error('Writer fixture exceeded its parent deadline.'));
+      }, 20_000);
     });
-    const outcomes = await Promise.all([run(first), run(second)]);
-    assert.deepEqual(outcomes.map(item => item.code).sort(), [0, 2]);
+    const one = run(first); await Promise.race([one.ready, deadline]);
+    const two = run(second); await Promise.race([two.ready, deadline]);
+    for (const { child } of writers) child.send({ type: 'write' }, error => { if (error) child.kill('SIGTERM'); });
+    const outcomes = await Promise.race([Promise.all(writers.map(writer => writer.outcome)), deadline]);
+    assert.deepEqual(outcomes.map(item => item.code).sort(), [0, 2], JSON.stringify(outcomes));
     assert.ok(outcomes.some(item => /(?:conflict|recovery-only)/u.test(item.stderr)), JSON.stringify(outcomes));
     const verification = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
     try { assert.equal(verification.listOperations().filter(item => item.operationKind === 'email-reader.locator.v1').length, 1); }
     finally { verification.close(); }
-  } finally { await temporary.cleanup(); }
+  } finally {
+    clearTimeout(deadlineTimer);
+    stopWriters('SIGTERM');
+    if (!await settledWithin(2_000)) {
+      stopWriters('SIGKILL');
+      if (!await settledWithin(2_000)) throw new Error('Owned writer children did not settle; shared state retained.');
+    }
+    await temporary.cleanup();
+  }
 });
 
 test('mixed email accounting distinguishes accounted-for from resolved and retains bounded enumeration gaps', async () => {

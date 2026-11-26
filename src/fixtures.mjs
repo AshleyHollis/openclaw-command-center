@@ -134,6 +134,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
       const gatewayAuth = { mode: 'token', [credentialField]: gatewayCredential };
       const fixtureModelCredentialField = ['api', 'Key'].join('');
       const fixtureModelProvider = {
+        api: 'openai-completions',
         baseUrl: 'http://127.0.0.1:9/v1',
         models: [{ id: 'fixture-model', name: 'Fixture model' }]
       };

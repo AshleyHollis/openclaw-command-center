@@ -205,10 +205,11 @@ test('combined journey diagnostic retains dependent desktop, scale, Activity, ke
   assert.deepEqual(ordinaryTestLanes(['test/topic-review-focus.test.mjs']), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-review-focus.test.mjs'] }]);
 });
 
-test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
+test('ordinary suite keeps both descriptor-owned installed receipt tests in their dedicated lanes', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
     'storage-recovery.test.mjs',
     'real-host.acceptance.test.mjs',
+    'notes-installed-package.test.mjs',
     'attention-service.integration.test.mjs',
     'fixtures'
   ]), [
@@ -254,7 +255,7 @@ test('ordinary suite uses bounded isolated workers on the medium evaluator', () 
 test('package test command selects every current ordinary test and preserves the dedicated receipt path', async () => {
   const entries = await readdir(new URL('./', import.meta.url));
   const selected = selectOrdinaryTestFiles(entries);
-  const ordinary = entries.filter((entry) => entry.endsWith('.test.mjs') && entry !== 'real-host.acceptance.test.mjs');
+  const ordinary = entries.filter((entry) => entry.endsWith('.test.mjs') && !['real-host.acceptance.test.mjs', 'notes-installed-package.test.mjs'].includes(entry));
   assert.equal(selected.length, ordinary.length);
   assert.equal(selected.includes('test/real-host.acceptance.test.mjs'), false);
   assert.equal(entries.includes('real-host.acceptance.test.mjs'), true);
@@ -314,9 +315,12 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });
 test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-accepted-chat'), { kind: 'focused', scenarioIds: [], isolatedSliceIds: ['accepted-chat'] });
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['native-topic-chat-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
   assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-document-filing').scenarioIds, ['topic-document-filing']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('conversation-plan-native-owner').scenarioIds, ['conversation-plan-native-owner']);
 });
 
 test('reader MVP selection includes its reader ownership boundaries and excludes deferred filing and maintenance', () => {
@@ -340,7 +344,52 @@ test('reader MVP selection includes its reader ownership boundaries and excludes
     'test/topic-notes-panel.test.mjs'
   ]);
   assert.deepEqual(ordinaryTestLanes(selected), [
-    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/bridge-contract.test.mjs', 'test/note-render.test.mjs'] },
-    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/native-document-preview.test.mjs', 'test/native-reader-workspace.test.mjs', 'test/native-ui-page.test.mjs', 'test/topic-notes-panel.test.mjs'] }
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/bridge-contract.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/native-document-preview.test.mjs', 'test/native-reader-workspace.test.mjs', 'test/native-ui-page.test.mjs', 'test/note-render.test.mjs', 'test/topic-notes-panel.test.mjs'] }
   ]);
+});
+
+test('every additional Chromium owner stays exclusively in the existing serial browser lane', () => {
+  const browserFiles = [
+    'test/http-relay-ui.test.mjs',
+    'test/native-reader-tables.test.mjs',
+    'test/native-topic-assignment.test.mjs',
+    'test/native-topic-creation-dialog.test.mjs',
+    'test/native-topic-sidebar.test.mjs',
+    'test/native-ui-topic-attachment-review.test.mjs',
+    'test/native-workspace-selectors.test.mjs',
+    'test/note-render.test.mjs',
+    'test/topic-search-scale.test.mjs',
+  ];
+  const parallelFile = 'test/bridge-contract.test.mjs';
+  const lanes = ordinaryTestLanes([parallelFile, ...browserFiles]);
+  assert.deepEqual(lanes, [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', parallelFile] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', ...browserFiles] }
+  ]);
+});
+
+test('ordinary and preflight lane partitions retain every selected test exactly once', async () => {
+  const entries = await readdir(new URL('./', import.meta.url));
+  const ordinary = selectOrdinaryTestFiles(entries);
+  const preflight = selection.selectCapturePreflightTestFiles(entries);
+  for (const selected of [ordinary, preflight]) {
+    const lanes = ordinaryTestLanes(selected);
+    assert.deepEqual(lanes.map(lane => lane.argv.slice(0, 2)), [
+      ['--test', '--test-concurrency=4'], ['--test', '--test-concurrency=1']
+    ]);
+    const partition = lanes.flatMap(lane => lane.argv.slice(2));
+    assert.equal(new Set(partition).size, partition.length, 'lanes must not duplicate selected tests');
+    assert.deepEqual([...partition].sort(), [...selected].sort(), 'lanes must not omit selected tests');
+    assert.equal(partition.includes('test/real-host.acceptance.test.mjs'), false);
+    assert.equal(partition.includes('test/notes-installed-package.test.mjs'), false);
+  }
+  assert.deepEqual(ordinary.filter(file => !preflight.includes(file)), ['test/performance-baseline-artifact.test.mjs']);
+});
+
+
+test('loading-phase focus regressions stay in reader-MVP and the serialized browser lane', () => {
+  const file = 'test/native-loading-focus.test.mjs';
+  assert.deepEqual(selectReaderMvpTestFiles(['native-loading-focus.test.mjs']), [file]);
+  assert.deepEqual(ordinaryTestLanes([file]), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', file] }]);
 });

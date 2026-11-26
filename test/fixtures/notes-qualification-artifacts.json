@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "nativeCommit": "4ded2ba68f161a231d3733c0f2a7b3fcaaa7072b",
+  "candidates": {
+    "proposals": {
+      "sourceCommit": "e904d3a6799f3e0de70ee7924cb2c7581033c759",
+      "buildDigest": "9f70b04c3356b2fd0f379232fa95a499cf4b3cd15f4b82cc17a7a0d7b6e48279",
+      "archiveSha256": "7d957e2b11a948b663be9037bf5340698fb6ebf55cfa96209d262ccd68db1e31",
+      "artifactId": 101,
+      "runId": 111,
+      "zipSha256": "1793ef127dff49377ebcb06479cb6dd750359f99ea0f217e782b93473a93ae16"
+    },
+    "recall": {
+      "sourceCommit": "57637a10913bcd1f496c055aa8563c5a70d6f029",
+      "buildDigest": "5f9973c6ef241e1011881463083960e53ed0354dff7df7a5c76bb2943a443eb9",
+      "archiveSha256": "f39a9e80a10962d973e53a2de086abdd20672b58f661d9af3132fc4de4f293e7",
+      "artifactId": 102,
+      "runId": 112,
+      "zipSha256": "0bc099837726dc6b8fd00f062c15fcf6135e3f17354c05f4399781db5614537d"
+    }
+  }
+}
